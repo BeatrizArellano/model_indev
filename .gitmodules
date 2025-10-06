@@ -1,0 +1,3 @@
+[submodule "external/fabm"]
+	path = external/fabm
+	url = https://github.com/fabm-model/fabm.git
