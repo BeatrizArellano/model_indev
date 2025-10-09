@@ -12,16 +12,58 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS Debug Release MinSizeRel RelWithDebInfo)
 endif()
 
-# ------------------------------------------------------------------------------
-# Compiler flags (tweak freely)
-# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------
+# Per-config Fortran flags + optional heavy debug
+# ------------------------------------------------------------------
+# Let "debug" be fast-enough dev builds; "heavy-debug" adds extra checks.
+option(HEAVY_DEBUG "Enable extra runtime checks/sanitizers in Debug" OFF)
+
 if(CMAKE_Fortran_COMPILER_ID STREQUAL "GNU")
-  set(CMAKE_Fortran_FLAGS "${CMAKE_Fortran_FLAGS} -ffree-line-length-none")
-elseif(CMAKE_Fortran_COMPILER_ID STREQUAL "Intel")
+  # Common
+  set(CMAKE_Fortran_FLAGS "${CMAKE_Fortran_FLAGS} -ffree-line-length-none -Wall -Wextra")
+
+  # Debug (used by heavy-debug preset)
+  set(CMAKE_Fortran_FLAGS_DEBUG "-O0 -g -fcheck=all -fbacktrace -ffpe-trap=invalid,zero,overflow -finit-real=snan")
+
+  # Normal dev mode (RelWithDebInfo): optimized + symbols
+  set(CMAKE_Fortran_FLAGS_RELWITHDEBINFO "-O2 -g -DNDEBUG")
+
+  # Release: fast
+  set(CMAKE_Fortran_FLAGS_RELEASE "-O3 -march=native -funroll-loops -DNDEBUG")
+
+  # MinSizeRel
+  set(CMAKE_Fortran_FLAGS_MINSIZEREL "-Os -DNDEBUG")
+
+  # Extra: sanitizers in HEAVY_DEBUG (GNU & recent clang/gfortran)
+  if(HEAVY_DEBUG)
+    # Add to Debug only
+    set(CMAKE_Fortran_FLAGS_DEBUG
+        "${CMAKE_Fortran_FLAGS_DEBUG} -fno-omit-frame-pointer -fsanitize=address,undefined,leak")
+    set(CMAKE_EXE_LINKER_FLAGS_DEBUG
+        "${CMAKE_EXE_LINKER_FLAGS_DEBUG} -fsanitize=address,undefined,leak")
+  endif()
+
+elseif(CMAKE_Fortran_COMPILER_ID MATCHES "Intel")
+  # ifx/ifort
   set(CMAKE_Fortran_FLAGS "${CMAKE_Fortran_FLAGS} -warn all")
+  set(CMAKE_Fortran_FLAGS_DEBUG "-O0 -g -check all -traceback -fpe0 -ftrapuv")
+  set(CMAKE_Fortran_FLAGS_RELWITHDEBINFO "-O2 -g -DNDEBUG")
+  set(CMAKE_Fortran_FLAGS_RELEASE "-O3 -xHost -qopt-report=1 -DNDEBUG")
+  set(CMAKE_Fortran_FLAGS_MINSIZEREL "-Os -DNDEBUG")
+  # (Intel sanitizers differ; heavy-debug will still give strong runtime checks)
+
 elseif(CMAKE_Fortran_COMPILER_ID STREQUAL "Cray")
   set(CMAKE_Fortran_FLAGS "${CMAKE_Fortran_FLAGS} -N 1023")
+  set(CMAKE_Fortran_FLAGS_DEBUG "-O0 -G2")
+  set(CMAKE_Fortran_FLAGS_RELWITHDEBINFO "-O2 -G2 -DNDEBUG")
+  set(CMAKE_Fortran_FLAGS_RELEASE "-O3 -h aggress -DNDEBUG")
+  set(CMAKE_Fortran_FLAGS_MINSIZEREL "-Os -DNDEBUG")
 endif()
+
+# For multi-config generators (optional future-proofing)
+set(CMAKE_Fortran_MODULE_DIRECTORY ${CMAKE_BINARY_DIR}/mod/$<CONFIG>)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+
 
 # ------------------------------------------------------------------------------
 # Optional libs
@@ -58,9 +100,9 @@ endif()
 # ------------------------------------------------------------------------------
 # FABM submodule + embedded YAML
 # ------------------------------------------------------------------------------
+
 set(FABM_BASE "${CMAKE_SOURCE_DIR}/external/fabm")
 
-# Guard: fail early if submodule is missing
 if(NOT EXISTS "${FABM_BASE}/CMakeLists.txt")
   message(FATAL_ERROR
     "\nFABM submodule not found at: ${FABM_BASE}\n"
@@ -70,17 +112,35 @@ if(NOT EXISTS "${FABM_BASE}/CMakeLists.txt")
   )
 endif()
 
-# Use bundled Fortran YAML in FABM (no external YAML needed)
 set(FABM_USE_YAML ON CACHE BOOL "" FORCE)
 set(FABM_EMBED_YAFYAML ON CACHE BOOL "" FORCE)
-
-# Host domain (1D now; change as needed)
 set(FABM_DIMENSION 1 CACHE STRING "" FORCE)
 set(FABM_VECTOR_DIM 1 CACHE STRING "" FORCE)
-
-# Build FABM first
 set(FABM_FORCED_HOST shelf_model)
+
+# ---- Build FABM with warnings suppressed (only inside its subdir) ----
+# Save current directory compile options (may be empty)
+get_directory_property(_SAVED_COMPILE_OPTIONS COMPILE_OPTIONS)
+if(NOT _SAVED_COMPILE_OPTIONS)
+  set(_SAVED_COMPILE_OPTIONS "")
+endif()
+
+if(CMAKE_Fortran_COMPILER_ID STREQUAL "GNU")
+  set_directory_properties(PROPERTIES COMPILE_OPTIONS "-w")
+elseif(CMAKE_Fortran_COMPILER_ID MATCHES "Intel")
+  set_directory_properties(PROPERTIES COMPILE_OPTIONS "-w")
+elseif(CMAKE_Fortran_COMPILER_ID STREQUAL "Cray")
+  # adjust if needed; this often mutes most messages
+  set_directory_properties(PROPERTIES COMPILE_OPTIONS "-hmsg=0")
+endif()
+
+# Use a single unique binary dir for FABM
 add_subdirectory(${FABM_BASE} ${CMAKE_BINARY_DIR}/fabm-build)
+
+# Restore options for the rest of your project (your code keeps -Wall -Wextra)
+set_directory_properties(PROPERTIES COMPILE_OPTIONS "${_SAVED_COMPILE_OPTIONS}")
+
+
 
 # ------------------------------------------------------------------------------
 # Your model sources

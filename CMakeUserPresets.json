@@ -1,38 +1,44 @@
 {
-  "version": 5,
+  "version": 6,
   "cmakeMinimumRequired": { "major": 3, "minor": 23, "patch": 0 },
-
   "configurePresets": [
     {
-      "name": "base",
-      "hidden": true,
-      "binaryDir": "${sourceDir}/build/${presetName}",
+      "name": "release",
+      "displayName": "Release",
+      "binaryDir": "build/release",
       "cacheVariables": {
-        "CMAKE_Fortran_MODULE_DIRECTORY": "${sourceDir}/build/${presetName}/mod",
-        "CMAKE_RUNTIME_OUTPUT_DIRECTORY": "${sourceDir}/build/${presetName}/bin",
+        "CMAKE_BUILD_TYPE": "Release",
         "USE_OPENMP": "ON",
         "USE_NETCDF": "ON"
       }
     },
     {
-      "name": "release",
-      "inherits": "base",
+      "name": "debug",
+      "displayName": "RelWithDebInfo (normal dev)",
+      "binaryDir": "build/debug",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release"
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "USE_OPENMP": "ON",
+        "USE_NETCDF": "ON"
       }
     },
     {
-      "name": "debug",
-      "inherits": "base",
+      "name": "heavy-debug",
+      "displayName": "Heavy Debug (checks + sanitizers)",
+      "binaryDir": "build/heavy-debug",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug"
+        "CMAKE_BUILD_TYPE": "Debug",
+        "HEAVY_DEBUG": "ON",
+        "USE_OPENMP": "ON",
+        "USE_NETCDF": "ON"
       }
     }
   ],
-
   "buildPresets": [
-    { "name": "release", "configurePreset": "release" },
-    { "name": "debug", "configurePreset": "debug" }
+    { "name": "release",      "configurePreset": "release" },
+    { "name": "debug",        "configurePreset": "debug" },
+    { "name": "heavy-debug",  "configurePreset": "heavy-debug" }
   ]
 }
+
 
