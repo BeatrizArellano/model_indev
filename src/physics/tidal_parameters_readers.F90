@@ -1,20 +1,20 @@
 module tidal_parameters_readers
-  use iso_fortran_env,  only: real64
+  use precision_types, only: rk
   use read_config_yaml, only: ConfigParams
+  use precision_utils, only: is_equal, is_unequal, is_zero
+  use, intrinsic :: ieee_arithmetic, only: ieee_is_nan
   implicit none
   private
   public :: read_tidal_parameters
-
-  integer, parameter :: rk = selected_real_kind(12, 200)
 
   !-------------DATA STRUCTURES------------------------------------------
   !Data structure for each Tidal constituent
   type, public :: Constituent
     character(len=:), allocatable :: name
-    real(real64) :: sema    = 0.0_real64
-    real(real64) :: semi    = 0.0_real64
-    real(real64) :: inc_deg = 0.0_real64
-    real(real64) :: pha_deg = 0.0_real64
+    real(rk) :: sema    = 0.0_rk
+    real(rk) :: semi    = 0.0_rk
+    real(rk) :: inc_deg = 0.0_rk
+    real(rk) :: pha_deg = 0.0_rk
   end type
   ! Data structure for all Tidal Parameters
   type, public :: TidalParams
@@ -48,15 +48,15 @@ contains
     type(TidalParams),  intent(out) :: tide_const
 
     character(len=:), allocatable :: fname
-    real(real64) :: lon, lat, tol
+    real(rk) :: lon, lat, tol
     integer :: idx, n, k
 
     ! temps to receive data from the file reader
     character(len=:), allocatable :: names(:)
-    real(real64),     allocatable :: sema(:), semi(:), inc(:), pha(:)
+    real(rk),     allocatable :: sema(:), semi(:), inc(:), pha(:)
 
     fname = cfg%get_param_str('physics.tides.filename')
-    tol   = cfg%get_param_num('physics.tides.tol_deg', 0.1_real64)
+    tol   = cfg%get_param_num('physics.tides.tol_deg', 0.1_rk)
     lat   = cfg%get_param_num('main.location.latitude')
     lon   = cfg%get_param_num('main.location.longitude')
 
@@ -87,8 +87,8 @@ contains
 
     integer :: i, nall
     character(len=:), allocatable :: base
-    real(real64), parameter :: MISS = -huge(1.0_real64)
-    real(real64) :: a, b, ai, ap
+    real(rk), parameter :: MISS = -huge(1.0_rk)
+    real(rk) :: a, b, ai, ap
     logical :: found
 
     nall = size(constituents)
@@ -100,10 +100,11 @@ contains
       ! Retrieve with sentinel defaults
       a  = cfg%get_param_num(base // '.semi_major', MISS)
       b  = cfg%get_param_num(base // '.semi_minor', MISS)
-      ai = cfg%get_param_num(base // '.inclination', 0.0_real64)
-      ap = cfg%get_param_num(base // '.phase_ang',  0.0_real64)
+      ai = cfg%get_param_num(base // '.inclination', 0.0_rk)
+      ap = cfg%get_param_num(base // '.phase_ang',  0.0_rk)
 
-      found = (a /= MISS .and. b /= MISS)
+      found = (.not. ieee_is_nan(a)) .and. (.not. ieee_is_nan(b)) &
+            .and. (a /= MISS)       .and. (b /= MISS)
 
       if (found) then
         tide_const%c(i)%name    = lower(trim(constituents(i)))
@@ -114,10 +115,10 @@ contains
       else
         ! Constituent missing -> fill zeros, warn
         tide_const%c(i)%name    = lower(trim(constituents(i)))
-        tide_const%c(i)%sema    = 0.0_real64
-        tide_const%c(i)%semi    = 0.0_real64
-        tide_const%c(i)%inc_deg = 0.0_real64
-        tide_const%c(i)%pha_deg = 0.0_real64
+        tide_const%c(i)%sema    = 0.0_rk
+        tide_const%c(i)%semi    = 0.0_rk
+        tide_const%c(i)%inc_deg = 0.0_rk
+        tide_const%c(i)%pha_deg = 0.0_rk
         write(*,'(A)') 'Warning [read_from_yaml]: Constituent ' // trim(constituents(i)) // &
                       ' not found in YAML; set to zero.'
       end if
@@ -296,7 +297,7 @@ contains
       lon = vals(1); lat = vals(2)
       data_row_count = data_row_count + 1
 
-      if (tol == 0.0_rk) then
+      if (is_zero(tol, abs_=5.0e-4_rk)) then
         ! "exact" match to printed precision
         if (abs(lon - lon_t) <= eps_exact .and. abs(lat - lat_t) <= eps_exact) then
           found_idx = data_row_count
@@ -318,7 +319,7 @@ contains
 100 continue
     close(iu)
 
-    if (tol == 0.0_rk) then
+    if (is_zero(tol, abs_=5.0e-4_rk)) then
       if (found_idx == 0) stop 'No exact tidal-parameters match at this lon/lat (to 3 decimal points).'
     else
       if (found_idx == 0) stop 'No data rows found.'

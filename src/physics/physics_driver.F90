@@ -1,6 +1,6 @@
 ! src/physics/physics_driver.F90
 module physics_driver
-  use iso_fortran_env,  only: real64
+  use precision_types, only: rk
   use read_config_yaml, only: ConfigParams
   use tidal_parameters_readers, only: TidalParams, Constituent, read_tidal_parameters
   implicit none
@@ -18,21 +18,21 @@ module physics_driver
   !======================
   type :: Grid1D
      integer :: nz = 0
-     real(real64), allocatable :: z(:)     ! cell centers [m]
-     real(real64), allocatable :: dz(:)    ! layer thickness [m]
-     real(real64), allocatable :: z_w(:)   ! interfaces (optional)
+     real(rk), allocatable :: z(:)     ! cell centers [m]
+     real(rk), allocatable :: dz(:)    ! layer thickness [m]
+     real(rk), allocatable :: z_w(:)   ! interfaces (optional)
   end type
 
   type :: LocParams
-     real(real64) :: lat
-     real(real64) :: lon
-     real(real64) :: depth      ! depth [m]
+     real(rk) :: lat
+     real(rk) :: lon
+     real(rk) :: depth      ! depth [m]
   end type
 
   type :: PhysState
-     real(real64), allocatable :: T(:)      ! temperature [°C]
-     !real(real64), allocatable :: S(:)      ! salinity [psu]
-     real(real64), allocatable :: Kz(:)     ! vertical diffusivity [m2/s]
+     real(rk), allocatable :: T(:)      ! temperature [°C]
+     !real(rk), allocatable :: S(:)      ! salinity [psu]
+     real(rk), allocatable :: Kz(:)     ! vertical diffusivity [m2/s]
      ! add more prognostics/diagnostics as you grow
   end type
 
@@ -55,7 +55,7 @@ contains
   !======================
   subroutine physics_init(user_cfg)    
     type(ConfigParams), intent(in) :: user_cfg
-    real(real64) :: latitude, longitude, depth
+    real(rk) :: latitude, longitude, depth
     integer :: i
 
 

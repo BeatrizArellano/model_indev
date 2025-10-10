@@ -17,17 +17,15 @@ module read_config_yaml
    !!   dt = params%get_param_num('physics.time.dt')
    !!   print *, params%get_param_str('output.file', 'out.nc')   ! name-only if unique
    !!
+   use precision_types, only: rk
    use yaml_types
    use yaml, only: yaml_parse => parse, yaml_error_length => error_length
 
    implicit none
    private
-
-   ! Public API
-   public :: rk
+ 
    public :: ConfigParams
 
-   integer, parameter :: rk = selected_real_kind(12)
    integer, parameter :: PARAMLEN = 256
    integer, parameter :: STRLEN = 512
 

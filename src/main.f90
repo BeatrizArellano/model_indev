@@ -1,11 +1,11 @@
-program main
-  use iso_fortran_env, only: real64
+program shelfmodel_main
+  use precision_types, only: rk
   use read_config_yaml
   use physics_driver
   implicit none
 
   type(ConfigParams) :: cfg_user
-  real(real64) :: dt, t
+  real(kind=8) :: dt, t
   integer :: nsteps, n
 
   call cfg_user%init()
@@ -16,7 +16,7 @@ program main
 
   call physics_end()
 
-end program main
+end program shelfmodel_main
 
 
 
