@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.23)
 project(ShelfModel LANGUAGES Fortran C)
 
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake/Modules")
 # ------------------------------------------------------------------------------
 # Output structure
 # ------------------------------------------------------------------------------
@@ -74,28 +75,6 @@ if(USE_OPENMP)
   find_package(OpenMP COMPONENTS Fortran)
 endif()
 
-# ------------------------------------------------------------------------------
-# NetCDF (C + Fortran) detection 
-# ------------------------------------------------------------------------------
-option(USE_NETCDF "Enable NetCDF I/O support" ON)
-
-if(USE_NETCDF)
-  # Prefer CMake config packages provided by libnetcdf-dev & libnetcdff-dev
-  find_package(NetCDF CONFIG)                 # C library; target: NetCDF::NetCDF
-  find_package(NetCDF-Fortran CONFIG)         # Fortran;   target: NetCDF::NetCDF_Fortran
-
-  if(TARGET NetCDF::NetCDF_Fortran)
-    message(STATUS "Found NetCDF-Fortran (target NetCDF::NetCDF_Fortran)")
-    # Link Fortran (which pulls C transitively on most distros)
-    target_link_libraries(shelf_model PRIVATE NetCDF::NetCDF_Fortran)
-  elseif(TARGET NetCDF::NetCDF)
-    message(WARNING "Found NetCDF C but not Fortran. Install libnetcdff-dev or set USE_NETCDF=OFF.")
-    target_link_libraries(shelf_model PRIVATE NetCDF::NetCDF)
-  else()
-    message(WARNING "NetCDF not found; continuing without it. Install libnetcdf-dev & libnetcdff-dev or set USE_NETCDF=OFF.")
-  endIf()
-endif()
-
 
 # ------------------------------------------------------------------------------
 # FABM submodule + embedded YAML
@@ -152,6 +131,20 @@ file(GLOB_RECURSE MODEL_SOURCES CONFIGURE_DEPENDS
 
 add_executable(shelf_model ${MODEL_SOURCES})
 set_property(TARGET shelf_model PROPERTY Fortran_STANDARD 2008)
+# --- your sources & exe (already in your file) ---
+# file(GLOB_RECURSE MODEL_SOURCES ... )
+# add_executable(shelf_model ${MODEL_SOURCES})
+# set_property(TARGET shelf_model PROPERTY Fortran_STANDARD 2008)
+
+# ------------------------------------------------------------------------------
+# NetCDF (C + Fortran) detection & linking (Debian-friendly)
+# ------------------------------------------------------------------------------
+option(USE_NETCDF "Enable NetCDF I/O support" ON)
+if (USE_NETCDF)
+  find_package(NetCDF REQUIRED)                    # uses cmake/Modules/FindNetCDF.cmake
+  target_link_libraries(shelf_model PRIVATE NetCDF::NetCDF_Fortran)
+endif()
+
 
 # Pass FABM macros to host
 target_compile_definitions(shelf_model PRIVATE
@@ -173,9 +166,6 @@ if(TARGET OpenMP::OpenMP_Fortran)
   target_link_libraries(shelf_model PRIVATE OpenMP::OpenMP_Fortran)
 endif()
 
-if(USE_NETCDF AND NetCDF_FOUND)
-  target_link_libraries(shelf_model PRIVATE NetCDF::NetCDF_Fortran)
-endif()
 
 message(STATUS "ShelfModel configured. FABM at: ${FABM_BASE}")
 
