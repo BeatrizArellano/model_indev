@@ -6,8 +6,7 @@ program shelfmodel_main
 
   type(ConfigParams) :: cfg_user
   real(kind=8) :: dt, t
-  integer :: nsteps, n
-
+  
   call cfg_user%init()
   call cfg_user%load_yaml_content('physics.yaml','physics')
   call cfg_user%load_yaml_content('main.yaml','main')
