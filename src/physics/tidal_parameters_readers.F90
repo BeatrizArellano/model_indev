@@ -1,7 +1,8 @@
 module tidal_parameters_readers
-  use precision_types, only: rk
+  use precision_types,  only: rk
   use read_config_yaml, only: ConfigParams
-  use precision_utils, only: is_equal, is_unequal, is_zero
+  use precision_utils,  only: is_equal, is_unequal, is_zero
+  use str_utils,        only: to_lower
   use, intrinsic :: ieee_arithmetic, only: ieee_is_nan
   implicit none
   private
@@ -27,38 +28,40 @@ module tidal_parameters_readers
 contains
 
   !--------------------- Main subroutine------------------------------------
-  subroutine read_tidal_parameters(cfg, tide_const)
+  subroutine read_tidal_parameters(cfg,lat,lon,tide_const)
     !! Reads tidal ellipses either from file (preferred) or from YAML block.
     type(ConfigParams), intent(in)  :: cfg
+    real(rk),           intent(in)  :: lat,lon
     type(TidalParams),  intent(out) :: tide_const
+    
+
 
     logical :: from_file
-    from_file = cfg%get_param_logical('physics.tides.read_from_file', .true.)
+    from_file = cfg%get_param_logical('tides.read_from_file', default=.true., strict=.false.)
 
     if (from_file) then
-      call read_from_file(cfg, tide_const)
+      call read_from_file(cfg,lat,lon, tide_const)
     else
       call read_from_yaml(cfg, tide_const)
     end if
   end subroutine read_tidal_parameters
 
   !------------------ Read tidal parameters from dat file ----------------------
-  subroutine read_from_file(cfg, tide_const)
+  subroutine read_from_file(cfg,lat,lon, tide_const)
     type(ConfigParams), intent(in)  :: cfg
-    type(TidalParams),  intent(out) :: tide_const
+    real(rk),           intent(in)  :: lat,lon
+    type(TidalParams),  intent(out) :: tide_const    
 
     character(len=:), allocatable :: fname
-    real(rk) :: lon, lat, tol
-    integer :: idx, n, k
+    real(rk) :: tol
+    integer  :: idx, n, k
 
     ! temps to receive data from the file reader
     character(len=:), allocatable :: names(:)
     real(rk),     allocatable :: sema(:), semi(:), inc(:), pha(:)
 
-    fname = cfg%get_param_str('physics.tides.filename')
-    tol   = cfg%get_param_num('physics.tides.tol_deg', 0.1_rk)
-    lat   = cfg%get_param_num('main.location.latitude')
-    lon   = cfg%get_param_num('main.location.longitude')
+    fname = cfg%get_param_str('tides.filename', required=.true., trim_value=.true., empty_ok=.false.)
+    tol   = cfg%get_param_num('tides.tol_deg', 0.1_rk, nonnegative=.true., max=10.0_rk, finite=.true.)
 
     call read_tides_at_point(fname, lon, lat, names, sema, semi, inc, pha, idx, tol_deg=tol)
 
@@ -89,32 +92,35 @@ contains
     character(len=:), allocatable :: base
     real(rk), parameter :: MISS = -huge(1.0_rk)
     real(rk) :: a, b, ai, ap
-    logical :: found
+    logical  :: fa, fb, fai, fap, found   ! found flags
 
     nall = size(constituents)
     allocate(tide_const%c(nall))
 
     do i = 1, nall
-      base = 'physics.tides.ellipse_params.' // trim(constituents(i))
+      base = 'tides.ellipse_params.' // trim(constituents(i))
 
-      ! Retrieve with sentinel defaults
-      a  = cfg%get_param_num(base // '.semi_major', MISS)
-      b  = cfg%get_param_num(base // '.semi_minor', MISS)
-      ai = cfg%get_param_num(base // '.inclination', 0.0_rk)
-      ap = cfg%get_param_num(base // '.phase_ang',  0.0_rk)
+      ! Retrieve cnstituents
+      a  = cfg%get_param_num(base // '.semi_major', found=fa, nonnegative=.true., finite=.true.)
+      b  = cfg%get_param_num(base // '.semi_minor', found=fb, finite=.true.)
+      ai = cfg%get_param_num(base // '.inclination', default=0.0_rk, found=fai, finite=.true.)
+      ap = cfg%get_param_num(base // '.phase_ang', default=0.0_rk, found=fap, finite=.true.)
 
-      found = (.not. ieee_is_nan(a)) .and. (.not. ieee_is_nan(b)) &
-            .and. (a /= MISS)       .and. (b /= MISS)
+      found = fa .and. fb
 
       if (found) then
-        tide_const%c(i)%name    = lower(trim(constituents(i)))
+        if (abs(b) > a + 1.0e-12_rk) then
+          error stop 'Tidal ellipse invalid at '//trim(base)//': |semi_minor| > semi_major.'
+        end if
+
+        tide_const%c(i)%name    = to_lower(trim(constituents(i)))
         tide_const%c(i)%sema    = a
         tide_const%c(i)%semi    = b
         tide_const%c(i)%inc_deg = ai
         tide_const%c(i)%pha_deg = ap
       else
         ! Constituent missing -> fill zeros, warn
-        tide_const%c(i)%name    = lower(trim(constituents(i)))
+        tide_const%c(i)%name    = to_lower(trim(constituents(i)))
         tide_const%c(i)%sema    = 0.0_rk
         tide_const%c(i)%semi    = 0.0_rk
         tide_const%c(i)%inc_deg = 0.0_rk
@@ -127,21 +133,6 @@ contains
   
 
   !================HELPERS====================================================
-
-  pure function lower(s) result(t)
-    ! Returns the lowercase version of the string s
-    ! Converts character by character
-    character(len=*), intent(in) :: s
-    character(len=len(s))        :: t
-    integer :: i
-    t = s
-    do i=1,len(s)
-      select case(s(i:i))
-      case('A':'Z'); t(i:i) = achar(iachar(s(i:i)) + 32)
-      case default
-      end select
-    end do
-  end function lower
 
   subroutine get_column_names(line, col_names)
     !! Split a header line on whitespace (compressing multiple spaces)
@@ -194,7 +185,7 @@ contains
     !! Read a header line starting with '#'.
     !! Outputs:
     !!  nconst          : number of constituents (groups of four after lon/lat)
-    !!  names(1:nconst) : constituent names (lowercase, e.g. 'm2','k1')
+    !!  names(1:nconst) : constituent names (to_lowercase, e.g. 'm2','k1')
     !!  idx0(1:nconst)  : 1-based starting column index for SEMA in numeric rows
     integer, intent(in) :: unit
     integer, intent(out) :: nconst
@@ -216,7 +207,7 @@ contains
     ncol = size(cols)
 
     if (ncol < 2) stop 'parse_header: header must include "lon lat".'
-    if (lower(cols(1)) /= 'lon' .or. lower(cols(2)) /= 'lat') then
+    if (to_lower(cols(1)) /= 'lon' .or. to_lower(cols(2)) /= 'lat') then
       stop 'parse_header: first tokens must be "lon lat".'
     end if
     if (mod(ncol-2, 4) /= 0) then
@@ -239,7 +230,7 @@ contains
     do k = 1, nconst
       ius = index(cols(2 + 4*(k-1) + 1), '_')
       names(k) = ' '
-      names(k)(1:ius-1) = lower(adjustl(cols(2 + 4*(k-1) + 1)(1:ius-1)))
+      names(k)(1:ius-1) = to_lower(adjustl(cols(2 + 4*(k-1) + 1)(1:ius-1)))
       idx0(k)  = 2 + 1 + 4*(k-1)    ! 1-based numeric column index for SEMA
     end do
     return
@@ -343,7 +334,7 @@ contains
     integer :: i
     character(len=:), allocatable :: key
 
-    key = lower(trim(name))
+    key = to_lower(trim(name))
     c = Constituent()  
 
     do i = 1, size(self%c)

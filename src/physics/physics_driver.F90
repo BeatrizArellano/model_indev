@@ -1,16 +1,20 @@
 ! src/physics/physics_driver.F90
 module physics_driver
-  use precision_types, only: rk
+  use precision_types,  only: rk
   use read_config_yaml, only: ConfigParams
+  use geo_utils,        only: LocationInfo
+  use time_utils,       only: DateTime
+  use calendar_types,   only: CFCalendar
   use tidal_parameters_readers, only: TidalParams, Constituent, read_tidal_parameters
+  
   implicit none
   private
 
   !======================
   ! Public API
   !======================
-  public :: physics_init            ! set up grid, parameters, state
-  public :: physics_end        ! release resources
+  public :: physics_init             ! set up grid, parameters, state
+  public :: physics_end              ! release resources
   !public :: physics_get_grid        ! optional accessor(s)
 
   !======================
@@ -23,12 +27,6 @@ module physics_driver
      real(rk), allocatable :: z_w(:)   ! interfaces (optional)
   end type
 
-  type :: LocParams
-     real(rk) :: lat
-     real(rk) :: lon
-     real(rk) :: depth      ! depth [m]
-  end type
-
   type :: PhysState
      real(rk), allocatable :: T(:)      ! temperature [°C]
      !real(rk), allocatable :: S(:)      ! salinity [psu]
@@ -37,10 +35,9 @@ module physics_driver
   end type
 
   ! Module-scope singletons (encapsulated)
-  type(Grid1D)     :: Grid
-  type(LocParams)  :: Loc
-  type(PhysState)  :: PState
-  type(TidalParams):: Tides
+  type(Grid1D)       :: Grid
+  type(PhysState)    :: PState
+  type(TidalParams)  :: Tides
   type(Constituent)  :: m2
   type(Constituent)  :: s2
   type(Constituent)  :: k1
@@ -53,25 +50,45 @@ contains
   !======================
   ! Initialization
   !======================
-  subroutine physics_init(user_cfg)    
-    type(ConfigParams), intent(in) :: user_cfg
-    real(rk) :: latitude, longitude, depth
-    integer :: i
+  subroutine physics_init(location, start_datetime, end_datetime, calendar)
+    ! Receives from main: user config, simulation dates and calendar   
+    type(LocationInfo), intent(in) :: location
+    type(DateTime),     intent(in) :: start_datetime, end_datetime
+    type(CFCalendar),   intent(in) :: calendar    
+
+    type(ConfigParams) :: physics_cfg
+
+
+    character(len=:), allocatable :: filename, file_var
+    real(rk) :: test_param
+    integer  :: i
+
+    call physics_cfg%init()    
+    call physics_cfg%load_yaml_content('physics.yaml')
+
+    filename       = physics_cfg%get_param_str('forcing.filename',default='')
+    ! Per-var filename: use it only if set (not null/missing/empty)
+    if (physics_cfg%is_set('forcing.surf_air_temp.filename')) then
+      file_var = physics_cfg%get_param_str('forcing.surf_air_temp.filename', empty_ok=.false., trim_value=.true.)
+    else
+      file_var = filename
+    end if
+
+    write(*,*)  'filename=', adjustl(trim(file_var))
+
+
+    if (.not. physics_cfg%is_null('forcing.surf_air_temp.constant')) then     
+      test_param = physics_cfg%get_param_num('forcing.surf_air_temp.constant', finite=.true.)
+      write(*,*)  'constant=', test_param
+    else
+      write(*,*)  'constant is Null and not active'
+    end if
+
 
 
     if (is_initialized) return
 
-    ! ---- 1) Read site/config ----
-    latitude = user_cfg%get_param_num('main.location.latitude')
-    longitude = user_cfg%get_param_num('main.location.longitude')    
-    depth = user_cfg%get_param_num('main.location.depth') ! read depth as a parameter
-
-    Loc%lat  = latitude
-    Loc%lon  = longitude
-    Loc%depth = depth
-
-    write(*,*) 'latitude=', latitude, ' longitude=', longitude, ' depth=', depth
-
+    
     ! ---- 2) Build grid ----
     !call build_vertical_grid(nz, P%h, G)
 
@@ -80,7 +97,7 @@ contains
     !call set_initial_conditions(cfg, G, X)
 
     ! ---- 4) Read tidal parameters once ----
-    call read_tidal_parameters(user_cfg, Tides)   ! Reads tidal parameters
+    call read_tidal_parameters(physics_cfg, location%lat,location%lon, Tides)   ! Reads tidal parameters
     call Tides%get('m2', m2)
     call Tides%get('s2', s2)
     call Tides%get('k1', k1)
@@ -96,8 +113,6 @@ contains
           Tides%c(i)%inc_deg, Tides%c(i)%pha_deg
     end do
     print *, '-----------------------------------------------'
-
-
 
     ! ---- 5) Initialize turbulence/mixing scheme ----
     !call turbulence_init(cfg, G, P, X)
