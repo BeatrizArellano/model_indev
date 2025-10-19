@@ -1,4 +1,4 @@
-!===============================================================================
+!=====================================================================================
 !>                      NetCDF Input/Output utilities 
 !! This module provides wrappers for the NetCDF Fortran-90 API
 !! for safely opening, creating, reading, and writing NetCDF files.  
@@ -10,11 +10,12 @@
 !!   - Simple metadata queries (variable type, rank, dimensions)
 !! All routines call nc_check for consistent error handling.
 !! Some routines and documentation were refined with assistance from ChatGPT (OpenAI).
-!===============================================================================
+!======================================================================================
 
 module netcdf_io
     use precision_types, only: rk, ik
     use netcdf
+    use find_utils,      only: find_name
 
     implicit none
     private 
@@ -26,10 +27,10 @@ module netcdf_io
     end type NcFile
     public :: NcFile
     ! Readers
-    public :: nc_open, nc_close
-    public :: nc_has_var, nc_dimlen, nc_var_ndims, nc_var_dims, nc_var_type
+    public :: nc_open, nc_close, nc_check
+    public :: nc_has_var, nc_dimlen, nc_var_ndims, nc_var_dims, nc_var_type, nc_len_of_var_1d
     public :: nc_get_att_str, nc_get_att_int, nc_get_att_real
-    public :: nc_read_real, nc_read_real_1d, nc_read_real_2d, nc_read_real_3d
+    public :: nc_read_real, nc_read_real_1d, nc_read_real_2d, nc_read_real_3d, nc_read_real_1d_slice
     public :: nc_read_calendar_info
     ! Writers
     public :: nc_open_rw, nc_create, nc_sync, nc_redef, nc_enddef
@@ -65,13 +66,13 @@ module netcdf_io
   contains
 
     subroutine nc_check(status, where)
-    ! Helper to test the success of any call to a Netcdf function
-    integer, intent(in) :: status
-    character(*), intent(in) :: where
-    if (status /= nf90_noerr) then
-        write(*,'(A,1X,A,1X,A)') 'FATAL(netcdf_io):', trim(where), trim(nf90_strerror(status))
-        stop 1
-    end if
+        ! Helper to test the success of any call to a Netcdf function
+        integer, intent(in) :: status
+        character(*), intent(in) :: where
+        if (status /= nf90_noerr) then
+            write(*,'(A,1X,A,1X,A)') 'FATAL(netcdf_io):', trim(where), trim(nf90_strerror(status))
+            stop 1
+        end if
     end subroutine nc_check
 
     subroutine nc_open(db, path)
@@ -127,6 +128,21 @@ module netcdf_io
                     'inquire_variable('//trim(varname)//')' )
         nc_var_ndims = nd
     end function nc_var_ndims
+
+    ! Length of a 1D coordinate variable  
+    integer function nc_len_of_var_1d(db, varname) result(n)
+        type(NcFile), intent(in) :: db
+        character(*), intent(in) :: varname
+        character(len=:), allocatable :: dimnames(:)
+        integer, allocatable :: dimlens(:)
+
+        call nc_var_dims(db, varname, dimnames, dimlens)
+        if (size(dimlens) /= 1) then
+            n = -1     ! signal error to caller
+            return
+        end if
+        n = dimlens(1)
+    end function nc_len_of_var_1d
 
     subroutine nc_var_dims(db, varname, dimnames, dimlens)
         !> Retrieve the names and lengths of all dimensions used by a variable in the NetCDF file.
@@ -262,6 +278,7 @@ module netcdf_io
         call nc_get_att_str(db, trim(time_var), 'units',    units,    present_units)
     end subroutine nc_read_calendar_info
 
+
   ! ---------- Core reads (real) -----------------------------------------------------
   !-------------------------------------------------------------------------------------------
     subroutine nc_read_real_1d(db, varname, data_vec)
@@ -272,9 +289,24 @@ module netcdf_io
         !! Example: call nc_read_real_1d(db, 'latitude', lat)
         type(NcFile), intent(in) :: db
         character(*), intent(in) :: varname
-        real(rk), intent(out)    :: data_vec(:)
-        integer :: vid
+        real(rk),     intent(out):: data_vec(:)
+
+        integer :: vid, xtype, ndims, dimids(NF90_MAX_VAR_DIMS), natts
+
         call nc_check(nf90_inq_varid(db%ncid, trim(varname), vid), 'inq_varid('//trim(varname)//')')
+
+        call nc_check(nf90_inquire_variable(db%ncid, vid, xtype=xtype, ndims=ndims, &
+                                            dimids=dimids, nAtts=natts), 'inquire_variable('//trim(varname)//')')
+
+        if (ndims /= 1) then
+            call nc_check(NF90_EINVALCOORDS, 'read_real_1d: variable '//trim(varname)//' must be 1-D')
+        end if
+
+        ! Treat anything except CHAR as numeric; this keeps us portable across NetCDF-Fortran versions.
+        if (xtype == NF90_CHAR) then
+            call nc_check(NF90_EBADTYPE, 'read_real_1d: variable '//trim(varname)//' is character, not numeric')
+        end if
+        ! NetCDF will auto-convert integer/float types to real(rk).
         call nc_check(nf90_get_var(db%ncid, vid, data_vec), 'get_var('//trim(varname)//')')
     end subroutine nc_read_real_1d
 
@@ -287,8 +319,29 @@ module netcdf_io
         type(NcFile), intent(in) :: db
         character(*), intent(in) :: varname
         real(rk), intent(out)    :: data_array(:,:)
-        integer :: vid
+        integer :: vid, xtype, ndims, dimids(NF90_MAX_VAR_DIMS), natts
+        integer :: j, lenj
+        integer :: shp(2)
+        character(len=64) :: want_s, got_s
+
         call nc_check(nf90_inq_varid(db%ncid, trim(varname), vid), 'inq_varid('//trim(varname)//')')
+        call nc_check(nf90_inquire_variable(db%ncid, vid, xtype=xtype, ndims=ndims, dimids=dimids, nAtts=natts), &
+                        'inquire_variable('//trim(varname)//')')
+
+        if (ndims /= 2) call nc_check(NF90_EINVALCOORDS, 'read_real_2d: variable '//trim(varname)//' must be 2-D')
+        if (xtype == NF90_CHAR) call nc_check(NF90_EBADTYPE, 'read_real_2d: variable '//trim(varname)//' is character')
+
+        shp = shape(data_array)
+        do j = 1, 2
+            call nc_check(nf90_inquire_dimension(db%ncid, dimids(j), len=lenj), 'inquire_dimension('//trim(varname)//')')
+            if (lenj /= shp(j)) then
+                write(want_s,'(I0,",",I0)') shp(1), shp(2)
+                write(got_s ,'(I0,",",I0)') merge(lenj, -1, j==1), merge(lenj, -1, j==2)  ! quick hint; or query both lens
+                call nc_check(NF90_EEDGE, 'read_real_2d: size mismatch for '//trim(varname)//' want('//trim(want_s)// &
+                                        ') vs file dims(~'//trim(got_s)//')')
+            end if
+        end do
+
         call nc_check(nf90_get_var(db%ncid, vid, data_array), 'get_var('//trim(varname)//')')
     end subroutine nc_read_real_2d
 
@@ -301,8 +354,29 @@ module netcdf_io
         type(NcFile), intent(in) :: db
         character(*), intent(in) :: varname
         real(rk), intent(out)    :: data_array(:,:,:)
-        integer :: vid
+        integer :: vid, xtype, ndims, dimids(NF90_MAX_VAR_DIMS), natts
+        integer :: j, lenj
+        integer :: shp(3)
+        character(len=96) :: want_s, got_s
+
         call nc_check(nf90_inq_varid(db%ncid, trim(varname), vid), 'inq_varid('//trim(varname)//')')
+        call nc_check(nf90_inquire_variable(db%ncid, vid, xtype=xtype, ndims=ndims, dimids=dimids, nAtts=natts), &
+                        'inquire_variable('//trim(varname)//')')
+
+        if (ndims /= 3) call nc_check(NF90_EINVALCOORDS, 'read_real_3d: variable '//trim(varname)//' must be 3-D')
+        if (xtype == NF90_CHAR) call nc_check(NF90_EBADTYPE, 'read_real_3d: variable '//trim(varname)//' is character')
+
+        shp = shape(data_array)
+        do j = 1, 3
+            call nc_check(nf90_inquire_dimension(db%ncid, dimids(j), len=lenj), 'inquire_dimension('//trim(varname)//')')
+            if (lenj /= shp(j)) then
+                write(want_s,'(I0,",",I0,",",I0)') shp(1), shp(2), shp(3)
+                write(got_s ,'(I0,",",I0,",",I0)') merge(lenj, -1, j==1), merge(lenj, -1, j==2), merge(lenj, -1, j==3)
+                call nc_check(NF90_EEDGE, 'read_real_3d: size mismatch for '//trim(varname)//' want('//trim(want_s)// &
+                                        ') vs file dims(~'//trim(got_s)//')')
+            end if
+        end do
+
         call nc_check(nf90_get_var(db%ncid, vid, data_array), 'get_var('//trim(varname)//')')
     end subroutine nc_read_real_3d
 
@@ -380,22 +454,46 @@ module netcdf_io
         end if
     end subroutine  
 
+
+    ! ------------- Read a slice of a 1D array
+    subroutine nc_read_real_1d_slice(db, varname, dim_name, i0, i1, out)
+        ! Read a contiguous slice from a 1-D numeric variable along its sole dimension.
+        ! Requires that the variable is 1-D and its dimension name matches dim_name.        
+        type(NcFile), intent(in) :: db
+        character(*), intent(in) :: varname, dim_name
+        integer,      intent(in) :: i0, i1
+        real(rk),     intent(out):: out(:)
+
+        integer :: vid, ndims, dimids(NF90_MAX_VAR_DIMS), xtype, natts
+        character(len=:), allocatable :: dnames(:)
+        integer, allocatable :: dlens(:)
+        integer :: len, start, count
+
+        call nc_check(nf90_inq_varid(db%ncid, trim(varname), vid),        'inq_varid('//trim(varname)//')')
+        call nc_check(nf90_inquire_variable(db%ncid, vid, xtype=xtype, ndims=ndims, dimids=dimids, nAtts=natts), &
+                        'inquire_variable('//trim(varname)//')')
+        if (ndims /= 1) call nc_check(NF90_EINVALCOORDS, 'read_1d_slice: '//trim(varname)//' must be 1-D')
+        if (xtype == NF90_CHAR) call nc_check(NF90_EBADTYPE, 'read_1d_slice: '//trim(varname)//' is character')
+
+        call nc_var_dims(db, varname, dnames, dlens)
+        if (find_name(dnames, trim(dim_name)) /= 1) then
+            call nc_check(NF90_EBADDIM, 'read_1d_slice: dim name mismatch for '//trim(varname))
+        end if
+
+        len = dlens(1)
+        if (i0 < 1 .or. i1 < i0 .or. i1 > len) call nc_check(NF90_EEDGE, 'read_1d_slice: indices out of range')
+        if (size(out) /= (i1 - i0 + 1))         call nc_check(NF90_EEDGE, 'read_1d_slice: output size mismatch')
+
+        start = i0
+        count = i1 - i0 + 1
+
+        call nc_check(nf90_get_var(db%ncid, vid, out, start=(/start/), count=(/count/)), 'get_var slice '//trim(varname))
+    end subroutine nc_read_real_1d_slice
+
+
+
   !-------------------------------------------------------------------------------------------------
   ! ---------------------------------- Netcdf writers ----------------------------------------------
-
-
-    subroutine nc_open_rw(db, path)
-        !> Open an existing NetCDF file for read–write access.
-        !! Closes any previously open file in the NcFile handle, then reopens the new one in write mode.
-        !! @param[inout] db    NcFile handle to initialize or reuse.
-        !! @param[in]    path  Path to the existing NetCDF file to open for modification.
-        !! Example: call nc_open_rw(db, 'results.nc')
-        type(NcFile), intent(inout) :: db
-        character(*), intent(in)    :: path
-        call nc_close(db)
-        call nc_check(nf90_open(trim(path), nf90_write, db%ncid), 'open_rw '//trim(path))
-        db%path = trim(path)
-    end subroutine nc_open_rw
 
     subroutine nc_create(db, path, overwrite)
         !> Create a new NetCDF file on disk.
@@ -425,6 +523,19 @@ module netcdf_io
         call nc_check(nf90_create(trim(path), mode, db%ncid), 'create '//trim(path))
         db%path = trim(path)
     end subroutine nc_create
+
+    subroutine nc_open_rw(db, path)
+        !> Open an existing NetCDF file in read–write mode.
+        !! Closes any previously open file in the NcFile handle, then reopens the new one in write mode.
+        !! @param[inout] db    NcFile handle to initialize or reuse.
+        !! @param[in]    path  Path to the existing NetCDF file to open for modification.
+        !! Example: call nc_open_rw(db, 'results.nc')
+        type(NcFile), intent(inout) :: db
+        character(*), intent(in)    :: path
+        call nc_close(db)
+        call nc_check(nf90_open(trim(path), nf90_write, db%ncid), 'open_rw '//trim(path))
+        db%path = trim(path)
+    end subroutine nc_open_rw
 
     subroutine nc_sync(db)
         !> Flushes all data_arrayfered changes for an open NetCDF file to disk.
