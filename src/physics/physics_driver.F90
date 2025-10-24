@@ -70,6 +70,8 @@ contains
     integer  :: i, y, k, nt, iu
     character(len=128) :: fname
 
+    if (is_initialized) return
+
     call physics_cfg%init()    
     call physics_cfg%load_yaml_content('physics.yaml')
 
@@ -77,12 +79,29 @@ contains
     write(*,'(A)') 'Scanning forcing data...'
     call init_forcing(physics_cfg, calendar, location, start_datetime, end_datetime, FS, ok, errmsg)
     if (.not. ok) then
-      write(*,*) trim(errmsg)  ! optional
-      stop                      ! return / exit; just don’t use FS
+      write(*,*) trim(errmsg)  
+      stop                    
     end if
     call print_forcing_summary(FS)
+    ! ---- 4) Read tidal parameters once ----
+    call read_tidal_parameters(physics_cfg, location%lat,location%lon, Tides)   ! Reads tidal parameters
+    call Tides%get('m2', m2)
+    call Tides%get('s2', s2)
+    call Tides%get('k1', k1)
+    call Tides%get('o1', o1)
+    call Tides%get('n2', n2)
+    print *, '-----------------------------------------------'
+    print *, 'Tidal constituents loaded: ', size(Tides%c)
+    print *, '-----------------------------------------------'
+    do i = 1, size(Tides%c)
+      write(*,'(A3, 2X, "SEMA=",F8.3, 2X, "SEMI=",F8.3, 2X, &
+              "INC=",F7.2," deg", 2X, "PHA=",F7.2," deg")') &
+          trim(Tides%c(i)%name), Tides%c(i)%sema, Tides%c(i)%semi, &
+          Tides%c(i)%inc_deg, Tides%c(i)%pha_deg
+    end do
+    print *, '-----------------------------------------------'
     
-
+    !--------------- Tests -----------------------
     
     do y = start_datetime%year, end_datetime%year
       k = y - FS%sim_y_start + 1
@@ -144,7 +163,7 @@ contains
 
 
 
-    if (is_initialized) return
+    
 
     
     ! ---- 2) Build grid ----
@@ -154,23 +173,7 @@ contains
     !call allocate_state(G, X)
     !call set_initial_conditions(cfg, G, X)
 
-    ! ---- 4) Read tidal parameters once ----
-    call read_tidal_parameters(physics_cfg, location%lat,location%lon, Tides)   ! Reads tidal parameters
-    call Tides%get('m2', m2)
-    call Tides%get('s2', s2)
-    call Tides%get('k1', k1)
-    call Tides%get('o1', o1)
-    call Tides%get('n2', n2)
-    print *, '-----------------------------------------------'
-    print *, 'Tidal constituents loaded: ', size(Tides%c)
-    print *, '-----------------------------------------------'
-    do i = 1, size(Tides%c)
-      write(*,'(A3, 2X, "SEMA=",F8.3, 2X, "SEMI=",F8.3, 2X, &
-              "INC=",F7.2," deg", 2X, "PHA=",F7.2," deg")') &
-          trim(Tides%c(i)%name), Tides%c(i)%sema, Tides%c(i)%semi, &
-          Tides%c(i)%inc_deg, Tides%c(i)%pha_deg
-    end do
-    print *, '-----------------------------------------------'
+    
 
     ! ---- 5) Initialize turbulence/mixing scheme ----
     !call turbulence_init(cfg, G, P, X)
