@@ -5,6 +5,7 @@ module physics_driver
   use geo_utils,        only: LocationInfo
   use time_utils,       only: DateTime
   use calendar_types,   only: CFCalendar
+  use load_forcing,     only: ForcingState, ForcingYearData, init_forcing, load_year_data, print_forcing_summary
   use tidal_parameters_readers, only: TidalParams, Constituent, read_tidal_parameters
   
   implicit none
@@ -57,18 +58,76 @@ contains
     type(CFCalendar),   intent(in) :: calendar    
 
     type(ConfigParams) :: physics_cfg
+    type(ForcingState) :: FS
+    type(ForcingYearData):: surf
+
 
 
     character(len=:), allocatable :: filename, file_var
-    real(rk) :: test_param
-    integer  :: i
+    real(rk) :: test_param, time
+    logical :: ok
+    character(len=256) :: errmsg
+    integer  :: i, y, k, nt, iu
+    character(len=128) :: fname
 
     call physics_cfg%init()    
     call physics_cfg%load_yaml_content('physics.yaml')
 
+    ! ------------------ Forcing data -------------------------------------
+    write(*,'(A)') 'Scanning forcing data...'
+    call init_forcing(physics_cfg, calendar, location, start_datetime, end_datetime, FS, ok, errmsg)
+    if (.not. ok) then
+      write(*,*) trim(errmsg)  ! optional
+      stop                      ! return / exit; just don’t use FS
+    end if
+    call print_forcing_summary(FS)
+    
+
+    
+    do y = start_datetime%year, end_datetime%year
+      k = y - FS%sim_y_start + 1
+
+      call load_year_data(FS, k, surf, ok, errmsg)
+      if (.not. ok) stop trim(errmsg)
+
+      ! assume all vars same length and file-backed for this quick test
+      nt = size(surf%air_temp%data)
+
+      write(fname,'(A,I0,A)') 'forcing_', y, '.dat'   ! e.g., forcing_2001.dat
+      open(newunit=iu, file=trim(fname), status='replace', action='write')
+
+      write(iu,'(A)') 'surf_air_temp sl_pressure relative_humidity shortwave_radiation longwave_radiation wind_speed wind_direction co2_air'
+      do i = 1, nt
+        write(iu,'(8(1X,ES16.8))') surf%air_temp%data(i), surf%slp%data(i),       &
+                                    surf%rel_hum%data(i),  surf%short_rad%data(i), &
+                                    surf%long_rad%data(i), surf%wind_spd%data(i),  &
+                                    surf%wind_dir%data(i), surf%co2_air%const_value
+      end do
+      close(iu)
+    end do
+
+    call load_year_data(FS, 1, surf, ok, errmsg)
+    if (.not. ok) stop trim(errmsg)
+
+    !call surf%air_temp%init_cursor()
+    time = (30*86400)+10
+    write(*,'(A,1X,ES12.5)') 'Tair_:',   surf%air_temp%value_at_step(time)
+    time = (359*86400) + 86300
+    write(*,'(A,1X,ES12.5)') 'Tair_180:', surf%air_temp%value_at_step(time)
+    write(*,'(A,1X,ES12.5)') 'psl:', surf%slp%value_at_step(time)
+    write(*,'(A,1X,ES12.5)') 'wind_speed:', surf%wind_spd%value_at_step(time)
+    write(*,'(A,1X,ES12.5)') 'wind_dir:', surf%wind_dir%value_at_step(time)
+    write(*,'(A,1X,ES12.5)') 'shortwave:', surf%short_rad%value_at_step(time)
+    write(*,'(A,1X,ES12.5)') 'longwave:', surf%long_rad%value_at_step(time)
+    write(*,'(A,1X,ES12.5)') 'rel_hum:', surf%rel_hum%value_at_step(time)
+    write(*,'(A,1X,ES12.5)') 'co2:', surf%co2_air%value_at_step(time)
+
+    
+
+
     filename       = physics_cfg%get_param_str('forcing.filename',default='')
     ! Per-var filename: use it only if set (not null/missing/empty)
-    if (physics_cfg%is_set('forcing.surf_air_temp.filename')) then
+    if (.not. physics_cfg%is_disabled('forcing.surf_air_temp.filename')) then
       file_var = physics_cfg%get_param_str('forcing.surf_air_temp.filename', empty_ok=.false., trim_value=.true.)
     else
       file_var = filename
@@ -76,8 +135,7 @@ contains
 
     write(*,*)  'filename=', adjustl(trim(file_var))
 
-
-    if (.not. physics_cfg%is_null('forcing.surf_air_temp.constant')) then     
+    if (.not. physics_cfg%is_disabled('forcing.surf_air_temp.constant')) then     
       test_param = physics_cfg%get_param_num('forcing.surf_air_temp.constant', finite=.true.)
       write(*,*)  'constant=', test_param
     else

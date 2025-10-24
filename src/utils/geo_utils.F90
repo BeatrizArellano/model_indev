@@ -38,7 +38,7 @@ contains
     pure real(rk) function convert_to_lon180(lon) result(lon180)
         real(rk), intent(in) :: lon
         lon180 = modulo(lon + 180._rk, 360._rk) - 180._rk
-        if (lon180 == -180._rk) lon180 = 180._rk  ! Convert -180 to +180
+        if (abs(lon180 + 180._rk) <= 1000._rk*spacing(180._rk)) lon180 = 180._rk  ! Convert -180 to +180
     end function convert_to_lon180
 
     pure real(rk) function convert_to_lon360(lon) result(lon360)

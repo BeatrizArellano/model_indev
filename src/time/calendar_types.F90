@@ -10,6 +10,7 @@ module calendar_types
   integer, parameter, public :: cal_noleap           = 3  ! "noleap" or "365_day"
   integer, parameter, public :: cal_all_leap         = 4  ! "all_leap" or "366_day"
   integer, parameter, public :: cal_360_day          = 5  ! "360_day"
+  integer, parameter, public :: cal_standard         = 6  !  equal to "gregorian"
 
   type, public :: CFCalendar
     ! kind : one of the calendar IDs
@@ -17,6 +18,8 @@ module calendar_types
   contains
      procedure, pass(self) :: name => cfcalendar_name   ! method
   end type CFCalendar
+
+  public :: calendar_compatible
 
 contains
 
@@ -32,5 +35,21 @@ contains
       case default;         name = 'unknown'
       end select
     end function cfcalendar_name
+   
+
+    logical function calendar_compatible(cala, calb) result(ok)
+      implicit none
+      integer, intent(in) :: cala, calb
+
+      logical :: a_greg, b_greg
+      a_greg = (cala == cal_gregorian) .or. (cala == cal_proleptic) .or. (cala == cal_standard)
+      b_greg = (calb == cal_gregorian) .or. (calb == cal_proleptic) .or. (calb == cal_standard)
+
+      if (a_greg .and. b_greg) then
+          ok = .true.
+      else
+          ok = (cala == calb)
+      end if
+    end function calendar_compatible
   
 end module calendar_types

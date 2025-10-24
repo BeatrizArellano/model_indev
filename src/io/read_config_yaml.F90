@@ -40,7 +40,7 @@
 !    * End clearing resources using call %clear().
 !
 !  YAML conventions:
-!    * Null / “unset”:  ~, null/NULL/Null, none/None, nil, "", or empty scalar (key:)
+!    * Null / “unset”:  ~, null/NULL/Null, none/None, no, "", or empty scalar (key:)
 !      - Missing and null are treated the same by getters and predicates.
 !    * Booleans:
 !        - Preferred: true/false (case-insensitive).
@@ -134,6 +134,7 @@ module read_config_yaml
       procedure :: list_params         => cfg_list_params
       procedure :: is_absent           => cfg_is_absent
       procedure :: is_null             => cfg_is_null
+      procedure :: is_disabled         => cfg_is_disabled
       procedure :: is_set              => cfg_is_set
       procedure :: is_numeric          => cfg_is_numeric
       procedure :: is_boolean          => cfg_is_boolean
@@ -237,7 +238,7 @@ contains
       integer  :: ios, ival
       character(len=STRLEN) :: str, low
 
-      ! --- Treat empty / "null" / "~" / "none" / "nil" as YAML null ---
+      ! Treat empty / "null" / "~" / "none"/'nil' as YAML null ---
       str = trim(adjustl(s%string))
       low = to_lower(str)
       if (len_trim(str) == 0 .or. low=='null' .or. low=='~' .or. low=='none' .or. low=='nil') then
@@ -755,6 +756,44 @@ contains
       end if
       ! Anything else (real/int/bool/map/seq) → not string
    end function cfg_is_string
+
+   logical function cfg_is_disabled(self, key) result(tf)
+      class(ConfigParams), intent(in) :: self
+      character(len=*),    intent(in) :: key
+      character(len=PARAMLEN) :: full
+      integer :: i
+      character(len=STRLEN) :: s
+
+      ! Null / empty / "null"/"none"/"~" → disabled
+      tf = self%is_null(key, include_empty_scalar=.true., coerce_none=.true.)
+      if (tf) return
+
+      full = self%resolve_key(key)
+      if (len_trim(full) == 0) then
+         tf = .true.; return  ! unresolved → treat as disabled
+      end if
+
+      ! Logical false → disabled
+      i = self%find_log_key(full)
+      if (i /= 0) then
+         tf = .not. self%store_logs(i)%val
+         return
+      end if
+
+      ! String false-tokens → disabled (case-insensitive)
+      i = self%find_str_key(full)
+      if (i /= 0) then
+         s = to_lower(trim(adjustl(self%store_strs(i)%val)))
+         if (s == 'off' .or. s == 'no' .or. s == 'false') then
+            tf = .true.; return
+         end if
+      end if
+
+      ! Numeric nodes (including 0) → NOT disabled
+      tf = .false.
+   end function cfg_is_disabled
+
+
 
 
    !==================== Resolution & lookups ====================

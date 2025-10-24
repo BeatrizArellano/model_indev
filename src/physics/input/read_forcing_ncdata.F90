@@ -17,7 +17,6 @@ module read_forcing_ncdata
   private
 
   public :: ForcingScan, scan_forcing, get_ts_slice_from_point
-
   !---------------------------------------------------------------------------
   ! Results/handle of Scan storing results from scanning a forcing NetCDF file.
   ! - Contains coordinate metadata (time, lat, lon) and validation results.
@@ -38,13 +37,16 @@ module read_forcing_ncdata
      real(rk) :: lat_found = 0.0_rk, lon_found = 0.0_rk  ! coords at (yi,xi), or requested if point
 
      ! time axis
-     type(CFUnits)    :: u                               ! parsed time-units
-     type(CFCalendar) :: cal                             ! parsed/derived calendar
-     type(TimeAxis)   :: axis                            ! Contains t_s(:) [seconds since epoch], t_first, t_last
-     integer :: i0 = 1, i1 = 1                           ! Time indices covering simulation time
-     real(rk) :: step_s = 0.0_rk                         ! Time-step (median time-srep) in seconds
-     logical  :: is_regular = .true.                     ! true if time-step deviations ≤ tolerance for all time-steps
-     real(rk) :: rel_max_dev = 0.0_rk                    ! Maximum relative deviation (divided by time-step)
+     type(CFUnits)          :: u                         ! parsed time-units
+     type(CFCalendar)       :: cal                       ! parsed/derived calendar
+     type(TimeAxis)         :: axis                      ! Contains t_s(:) [seconds since epoch], t_first, t_last     
+     integer                :: i0 = 1, i1 = 1            ! Time indices covering simulation time
+     real(rk)               :: median_dt = 0.0_rk        ! Time-step (median time-srep) in seconds
+     logical                :: is_regular = .true.       ! true if time-step deviations ≤ tolerance for all time-steps
+     real(rk)               :: rel_max_dev = 0.0_rk      ! Maximum relative deviation (divided by time-step)
+     integer, allocatable   :: years(:)                  ! Array of years in forcing data    
+     integer, allocatable   :: i0_year(:), i1_year(:)  
+     logical, allocatable   :: has_full_year(:)
 
      ! variables
      character(:), allocatable :: vars_present(:)        ! Required variables found
@@ -98,7 +100,7 @@ contains
       integer, allocatable :: dimlens(:)
       integer :: ntime
       real(rk), allocatable :: time_orig(:)
-      real(rk) :: t_start, t_end
+      real(rk) :: t_start, t_end, tol_cover
       real(rk) :: lonq
       real(rk), parameter :: default_max_sep_deg = 0.25_rk
       real(rk) :: sep_limit, sep_deg
@@ -177,8 +179,8 @@ contains
       end if
 
       ! Detecting time-step in forcing data and regularity
-      call detect_frequency(info%axis%t_s, info%step_s, info%is_regular, info%rel_max_dev)
-      if (info%step_s <= 0.0_rk) then
+      call detect_frequency(info%axis%t_s, info%median_dt, info%is_regular, info%rel_max_dev)
+      if (info%median_dt <= 0.0_rk) then
          errmsg = 'Detected non-positive time step.'
          call nc_close(db); return
       end if
@@ -255,7 +257,7 @@ contains
          ! Check whether the site falls within max_sep_deg (default 0.25°)
          sep_deg = simple_distance_deg(lat0, lonq, info%lat_found, info%lon_found)
          if (sep_deg > sep_limit) then
-            errmsg = 'No nearby grid point: nearest at ~'//realtostr(sep_deg,3)// &
+            errmsg = 'No nearby grid point to load forcing data: nearest at ~'//realtostr(sep_deg,3)// &
                      '° (> '//realtostr(sep_limit,3)//'°) from requested site.'
             call nc_close(db); return
          end if
@@ -272,11 +274,13 @@ contains
       info%y0=y0; info%mon0=mon0; info%d0=d0; info%h0=h0; info%mi0=mi0; info%s0=s0
       info%y1=y1; info%mon1=mon1; info%d1=d1; info%h1=h1; info%mi1=mi1; info%s1=s1
 
+      tol_cover = 0.999 * info%median_dt      
+
       ! Convert requested start/end datetimes to seconds since reference date
       t_start = seconds_since_datetime(info%cal, info%u, y0, mon0, d0, h0, mi0, s0)
       t_end   = seconds_since_datetime(info%cal, info%u, y1, mon1, d1, h1, mi1, s1)
       ! Coverage check
-      if (t_start < info%axis%t_first .or. t_end > info%axis%t_last .or. t_end < t_start) then
+      if (t_start < info%axis%t_first - tol_cover .or. t_end > info%axis%t_last + tol_cover .or. t_end < t_start) then
          errmsg = 'Forcing data does not cover simulation period'
          call nc_close(db); return
       end if
@@ -321,7 +325,7 @@ contains
                                              info%lat_name, info%lon_name, info%has_latlon, &
                                              info%i0, info%i1, info%yi, info%xi)) then
                errmsg = 'Variable "'//trim(info%vars_present(i))// &
-                        '" contains NaN/Inf in the requested simulation period at the selected site.'
+                        '" contains NaN/Inf values in the requested simulation period for the selected location.'
                call nc_close(db); return
             end if
          end do

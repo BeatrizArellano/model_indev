@@ -85,10 +85,22 @@ contains
                                 u%reference_min, u%reference_sec, u%has_time, ok_reference_date, errmsg)
         if (.not. ok_reference_date) return
 
+        if (len_trim(calendar_attr) == 0 .and. &
+           (len_trim(default_calendar) == 0 .or. to_lower(trim(default_calendar)) == 'unknown' ) ) then
+            ok     = .false.
+            errmsg = 'Forcing data: missing calendar (no file attribute and parameter in main.yaml). ' //  &
+                     'Please add CF ''calendar'' to the file or set time.calendar in main config file.'
+            return
+        end if
+
         if (len_trim(calendar_attr) > 0) then
             cal_str = to_lower(trim(calendar_attr))
-        else                
-            cal_str = to_lower(trim(default_calendar))  ! use default calendar if calendar_attr=''
+        else         
+            if ( to_lower(trim(default_calendar)) == 'unknown' ) then
+                cal_str = ''                            ! treats "unknown" as missing so verify_calendar_str won't see it
+            else
+                cal_str = to_lower(trim(default_calendar))  ! uses default calendar if calendar_attr=''
+            end if       
         end if
         ! Verifies support for the calendar
         call verify_calendar_str(cal_str, cal%kind, ok_cal)

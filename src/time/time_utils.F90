@@ -21,10 +21,10 @@ module time_utils
   end type DateTime
 
   public :: is_leap_gregorian, check_time_monotonic
-  public :: parse_datetime_str, datetime_from_string
+  public :: parse_datetime_str, datetime_from_string, datetime_to_str
   public :: validate_datetime, validate_calendar
   public :: is_datetime_before, is_datetime_equal, is_datetime_after
-  public :: index_at_or_before, index_linear_weights, detect_frequency
+  public :: index_at_or_before, index_at_or_after, index_linear_weights, detect_frequency
 
 contains
 
@@ -291,6 +291,23 @@ contains
         ok = .true.; errmsg = ''
     end function datetime_from_string
 
+    !> Convert a DateTime to "YYYY-MM-DD" or "YYYY-MM-DD HH:MM:SS" (if has_time=.true.)
+    pure function datetime_to_str(dt) result(s)
+        type(DateTime), intent(in) :: dt
+        character(:), allocatable  :: s
+        character(len=19) :: buf19
+        character(len=10) :: buf10
+
+        if (dt%has_time) then
+        write(buf19,'(I4.4,"-",I2.2,"-",I2.2," ",I2.2,":",I2.2,":",I2.2)') &
+                dt%year, dt%month, dt%day, dt%hour, dt%minute, dt%second
+        s = trim(buf19)
+        else
+        write(buf10,'(I4.4,"-",I2.2,"-",I2.2)') dt%year, dt%month, dt%day
+        s = trim(buf10)
+        end if
+    end function datetime_to_str
+
 
     !-----------------------------------------------------------
     ! Returns index in time array of requested time (in seconds) 
@@ -324,6 +341,39 @@ contains
         end do
         i0 = lo
     end function index_at_or_before
+
+    pure integer function index_at_or_after(t_s, t_query) result(i1)
+        real(rk), intent(in) :: t_s(:)
+        real(rk), intent(in) :: t_query
+        integer :: lo, hi, mid, n
+
+        n = size(t_s)
+        if (n == 0) then
+            i1 = 0             ! empty input
+            return
+        end if
+        if (t_query <= t_s(1)) then
+            i1 = 1
+            return
+        end if
+        if (t_query > t_s(n)) then
+            i1 = n + 1         ! sentinel: "one past the last"
+            return
+        end if
+
+        ! Binary search for first i with t_s(i) >= t_query
+        lo = 1; hi = n
+        do while (lo < hi)
+            mid = (lo + hi) / 2
+            if (t_s(mid) < t_query) then
+            lo = mid + 1
+            else
+            hi = mid
+            end if
+        end do
+        i1 = lo
+    end function index_at_or_after
+
 
     !----------------------------------------------------------------------------
     ! Given a time (t_query), index_linear_weights finds bracketing indices 

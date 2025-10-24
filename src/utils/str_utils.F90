@@ -1,7 +1,7 @@
 ! Useful functions for strings
 module str_utils
   use precision_types, only: rk
-  use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+  use, intrinsic :: ieee_arithmetic, only: ieee_is_finite, ieee_is_nan
   implicit none
   private
 
@@ -58,7 +58,7 @@ contains
 
         ! Special values first
         if (.not. ieee_is_finite(x)) then
-            if (x /= x) then
+            if (ieee_is_nan(x)) then
                 s = 'NaN'
             else
                 if (x > 0.0_rk) then

@@ -1,15 +1,17 @@
 module validation_utils
   use precision_types,  only: rk, ik    ! Importing real64 and int32
+  use precision_utils,  only: round_to
   use read_config_yaml, only: ConfigParams
-  use time_utils,       only: DateTime, &                        
+  use time_utils,       only: DateTime, datetime_to_str, &                        
                               validate_calendar, datetime_from_string, is_datetime_before, is_datetime_equal
   use calendar_types,   only: CFCalendar, cal_gregorian
   use geo_utils,        only: LocationInfo, is_lat_valid, is_lon_valid, is_depth_valid, convert_to_lon180
+  use str_utils,        only: realtostr
 
   implicit none
   private
 
-  public :: validate_input_dates, validate_location_input
+  public :: validate_input_dates, validate_location_input, print_header
 
 contains
 
@@ -54,6 +56,22 @@ contains
         !Parse & validate dates under that calendar 
         start_datetime = datetime_from_string(trim(start_date_str), ok, msg, calcode_val)
         end_datetime   = datetime_from_string(trim(end_date_str),   ok, msg, calcode_val)
+
+        ! Normalize missing times: start -> 00:00:00, end -> 23:59:59 (inclusive)
+        if (.not. start_datetime%has_time) then
+            start_datetime%hour   = 0
+            start_datetime%minute = 0
+            start_datetime%second = 0
+            start_datetime%has_time = .false.
+        end if
+
+        if (.not. end_datetime%has_time) then
+            end_datetime%hour   = 23
+            end_datetime%minute = 59
+            end_datetime%second = 59
+            end_datetime%has_time = .false.
+        end if
+
 
         ! Validate that start_datetime is before end_datetime
         if (.not. is_datetime_before(start_datetime, end_datetime)) then
@@ -119,5 +137,27 @@ contains
         loc%depth = depth
         loc%name = trim(name_str)
     end subroutine validate_location_input
+
+    subroutine print_header(location, start_datetime, end_datetime)
+        use, intrinsic :: iso_fortran_env, only: output_unit
+        implicit none
+        type(LocationInfo), intent(in) :: location
+        type(DateTime),     intent(in) :: start_datetime, end_datetime
+
+        character(len=32) :: slat, slon, sdep
+
+        ! Optional location name (only if non-empty)
+        if (len_trim(location%name) > 0) then
+            write(output_unit,'(7X,"Location: ",A)') trim(location%name)
+        end if
+        write(output_unit,'("Latitude: ",F0.3,4X,"Longitude:",F0.1,4X,"Depth: ",F0.1," m")') &
+                            location%lat, location%lon, location%depth
+
+
+        ! Simulation start / end
+        write(output_unit,'("start: ",A,"   end: ",A)') trim(datetime_to_str(start_datetime)), &
+                                                            trim(datetime_to_str(end_datetime))
+    end subroutine print_header
+
 
 end module validation_utils
