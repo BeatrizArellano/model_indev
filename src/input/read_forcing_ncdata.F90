@@ -1,13 +1,11 @@
 module read_forcing_ncdata
-  use precision_types, only: rk
+  use precision_types, only: rk, lk
   use netcdf
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use netcdf_io,       only: NcFile, nc_open, nc_close, nc_has_var, nc_check, &
                              nc_var_dims, nc_read_real_1d, nc_get_att_str, nc_read_real_1d_slice
-
-  use cf_time_utils,   only: CFUnits, TimeAxis, parse_cf_time,        &
-                               seconds_since_datetime
-  use calendar_types,  only: CFCalendar
+  use time_types,      only: CFUnits, TimeAxis, CFCalendar
+  use cf_time_utils,   only: parse_cf_time, seconds_since_datetime_file
   use time_utils,      only: detect_frequency, index_at_or_before, check_time_monotonic
   use str_utils,       only: inttostr, realtostr, list_to_str, append_string
   use find_utils,      only: find_name, has_name, argmin_abs_vec
@@ -44,6 +42,7 @@ module read_forcing_ncdata
      real(rk)               :: median_dt = 0.0_rk        ! Time-step (median time-srep) in seconds
      logical                :: is_regular = .true.       ! true if time-step deviations ≤ tolerance for all time-steps
      real(rk)               :: rel_max_dev = 0.0_rk      ! Maximum relative deviation (divided by time-step)
+     integer(lk)            :: sim_offset = 0_lk         ! Difference in seconds between file reference date and simulation start datetime
      integer, allocatable   :: years(:)                  ! Array of years in forcing data    
      integer, allocatable   :: i0_year(:), i1_year(:)  
      logical, allocatable   :: has_full_year(:)
@@ -277,15 +276,17 @@ contains
       tol_cover = 0.999 * info%median_dt      
 
       ! Convert requested start/end datetimes to seconds since reference date
-      t_start = seconds_since_datetime(info%cal, info%u, y0, mon0, d0, h0, mi0, s0)
-      t_end   = seconds_since_datetime(info%cal, info%u, y1, mon1, d1, h1, mi1, s1)
+      t_start = seconds_since_datetime_file(info%cal, info%u, y0, mon0, d0, h0, mi0, s0)
+      t_end   = seconds_since_datetime_file(info%cal, info%u, y1, mon1, d1, h1, mi1, s1)
       ! Coverage check
       if (t_start < info%axis%t_first - tol_cover .or. t_end > info%axis%t_last + tol_cover .or. t_end < t_start) then
          errmsg = 'Forcing data does not cover simulation period'
          call nc_close(db); return
       end if
 
-      ! Indices for [t_start, t_end]
+      info%sim_offset = int(nint(t_start), lk)
+      ! Indices for [t_start, t_end]    
+
       info%i0 = index_at_or_before(info%axis%t_s, t_start)
       info%i1 = index_at_or_before(info%axis%t_s, t_end)
       if (info%i0 < 1) info%i0 = 1

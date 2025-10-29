@@ -1,18 +1,17 @@
 module load_forcing
-   use precision_types,     only: rk
+   use precision_types,     only: rk, lk
    use str_utils,           only: to_lower, inttostr
    use read_config_yaml,    only: ConfigParams
-   use calendar_types,      only: CFCalendar, calendar_compatible
    use geo_utils,           only: LocationInfo
-   use time_utils,          only: DateTime
+   use time_types,          only: DateTime, CFCalendar, calendar_compatible
    use read_forcing_ncdata, only: ForcingScan, scan_forcing, get_ts_slice_from_point
-   use cf_time_utils,       only: seconds_since_datetime
+   use cf_time_utils,       only: seconds_since_datetime_file
    use time_utils,          only: index_at_or_before, index_at_or_after
    use netcdf_io,           only: NcFile, nc_open, nc_close
 
    implicit none
    private
-   public :: ForcingCfg, VarInfo, ForcingState, ForcingYearData, ForcingVarData, init_forcing, load_year_data, print_forcing_summary
+   public :: ForcingCfg, VarInfo, ForcingState, ForcingYearData, ForcingVarData, scan_and_init_forcing, load_year_data, print_forcing_summary
 
    integer, parameter :: in_file=1, in_constant=2, in_compute=3, in_off=4
 
@@ -45,18 +44,18 @@ module load_forcing
       type(ForcingScan), allocatable :: scans(:)           ! one per file
       type(CFCalendar)               :: sim_cal
       integer,           allocatable :: scan_idx_of_var(:) ! map var -> scans(:) index (0 if const/off)
-      integer :: sim_y_start = 0, sim_y_end = 0
+      integer                        :: sim_y_start = 0, sim_y_end = 0
    end type
 
    type :: ForcingVarData
       character(:), allocatable :: name
-      logical  :: is_const = .false.
-      real(rk) :: const_value = 0._rk
-      real(rk), allocatable  :: t_axis(:)
-      real(rk), allocatable  :: data(:)            ! year slice data (omit if const)
-      integer  :: idx   = 1                          ! current index in t_axis/data
-      integer  :: n     = 0
-      real(rk) :: t_next = 0._rk                     ! time of next change (var's units)
+      logical                   :: is_const = .false.
+      real(rk)                  :: const_value = 0._rk
+      integer(lk), allocatable  :: t_axis(:)             ! In model time (seconds since start datetime of simulation)
+      real(rk), allocatable     :: data(:)               ! year slice data (omit if const)
+      integer                   :: idx   = 1             ! current index in t_axis/data
+      integer                   :: n     = 0
+      real(rk)                  :: t_next = 0._rk        ! time of next change (var's units)
       contains
          procedure :: init_cursor
          procedure :: value_at_step
@@ -75,10 +74,11 @@ module load_forcing
 
 contains
 
-   subroutine init_forcing(params, calendar_cfg, location, start_datetime, end_datetime, state, ok, errmsg)
+
+   subroutine scan_and_init_forcing(params, calendar_cfg, location, start_datetime, end_datetime, state, ok, errmsg)
       implicit none
       ! inputs
-      type(ConfigParams), intent(inout) :: params
+      type(ConfigParams), intent(in)    :: params
       type(CFCalendar),   intent(in)    :: calendar_cfg
       type(LocationInfo), intent(in)    :: location
       type(DateTime),     intent(in)    :: start_datetime, end_datetime
@@ -182,7 +182,7 @@ contains
       do i=1, size(vars)
          if (vars(i)%input_type == in_file) then
             if (.not. associated(vars(i)%scan)) then
-               errmsg = 'init_forcing: missing scan for '//trim(vars(i)%id)
+               errmsg = 'scan_and_init_forcing: missing scan for '//trim(vars(i)%id)
                call clear_state(state)
                return
             end if
@@ -201,7 +201,7 @@ contains
             end if
             end do
             if (state%scan_idx_of_var(i) == 0) then
-               errmsg = 'init_forcing: file not found in scans for var '//trim(vars(i)%id); return
+               errmsg = 'scan_and_init_forcing: file not found in scans for var '//trim(vars(i)%id); return
                call clear_state(state)
             end if
          end if
@@ -224,13 +224,10 @@ contains
       end if
 
       ok = .true.
-   end subroutine init_forcing
-
-
-
+   end subroutine scan_and_init_forcing
 
    subroutine read_forcing_config(params, calendar, start_datetime, end_datetime, vars, ctl, global_file)
-      type(ConfigParams),  intent(inout)      :: params
+      type(ConfigParams),  intent(in)      :: params
       type(CFCalendar),    intent(in)         :: calendar
       type(DateTime),      intent(in)         :: start_datetime, end_datetime
       type(VarInfo),       allocatable, intent(out) :: vars(:)
@@ -305,25 +302,24 @@ contains
    end subroutine read_forcing_config
 
    subroutine load_year_data(forcmd, year_k, Y, ok, errmsg)
-      implicit none
-      type(ForcingState),         intent(in)    :: forcmd
-      integer,                    intent(in)    :: year_k
-      type(ForcingYearData),      intent(inout) :: Y
-      logical,                    intent(out)   :: ok
-      character(*),               intent(out)   :: errmsg
+      type(ForcingState),    intent(in)    :: forcmd
+      integer,               intent(in)    :: year_k
+      type(ForcingYearData), intent(inout) :: Y
+      logical,               intent(out)   :: ok
+      character(*),          intent(out)   :: errmsg
+
       type(NcFile) :: db
       integer :: i, j, i0, i1, nt
-      real(rk), allocatable :: ts_slice(:)
 
       ok = .false.; errmsg = ''
 
-      ! -------- Variables from files --------
+      ! -------- Variables from files (open each file once) --------
       do j = 1, size(forcmd%files)
          call nc_open(db, forcmd%files(j))
+
          do i = 1, size(forcmd%vars)
-            if (forcmd%vars(i)%input_type /= in_file) cycle
-            if (trim(forcmd%vars(i)%file_path) /= trim(forcmd%files(j))) cycle
-            if (forcmd%scan_idx_of_var(i) /= j) cycle
+            if (forcmd%vars(i)%input_type /= in_file)                cycle
+            if (forcmd%scan_idx_of_var(i) /= j)                      cycle
             if (.not. allocated(forcmd%vars(i)%idx_year)) then
                errmsg = 'load_year_data: idx_year not built for '//trim(forcmd%vars(i)%id); call nc_close(db); return
             end if
@@ -339,102 +335,61 @@ contains
                call nc_close(db); return
             end if
 
-            allocate(ts_slice(nt))
-            call get_ts_slice_from_point( db, trim(forcmd%vars(i)%name_in_file),                 &
-                                          trim(forcmd%scans(j)%time_name), i0, i1,               &
-                                          forcmd%scans(j)%has_latlon, trim(forcmd%scans(j)%lat_name),   &
-                                          trim(forcmd%scans(j)%lon_name), forcmd%scans(j)%yi, forcmd%scans(j)%xi, ts_slice )
-
-            ! Bind into Y: attach time slice pointer, copy data, init cursor
             select case (trim(forcmd%vars(i)%id))
-               case ('surf_air_temp')                  
-                  if (allocated(Y%air_temp%data)) deallocate(Y%air_temp%data)
-                  Y%air_temp%is_const = .false.
-                  if (allocated(Y%air_temp%t_axis)) deallocate(Y%air_temp%t_axis)
-                  allocate(Y%air_temp%t_axis(nt));  Y%air_temp%t_axis = forcmd%scans(j)%axis%t_s(i0:i1)
-                  allocate(Y%air_temp%data(nt)); Y%air_temp%data = ts_slice
-                  Y%air_temp%n   = nt; Y%air_temp%idx = 1
-                  Y%air_temp%t_next = merge(Y%air_temp%t_axis(2), huge(1.0_rk), nt >= 2)
-                  Y%air_temp%name = forcmd%vars(i)%id
+            case ('surf_air_temp')
+               call load_var_series( Y%air_temp, forcmd%scans(j), db, forcmd%vars(i)%name_in_file, &
+                                    forcmd%scans(j)%time_name, i0, i1, forcmd%scans(j)%has_latlon, &
+                                    forcmd%scans(j)%yi, forcmd%scans(j)%xi )
+               Y%air_temp%name = forcmd%vars(i)%id
 
-               case ('sl_pressure')
-                  if (allocated(Y%slp%data)) deallocate(Y%slp%data)
-                  Y%slp%is_const = .false.
-                  if (allocated(Y%slp%t_axis)) deallocate(Y%slp%t_axis)
-                  allocate(Y%slp%t_axis(nt));  Y%slp%t_axis = forcmd%scans(j)%axis%t_s(i0:i1)
-                  allocate(Y%slp%data(nt)); Y%slp%data = ts_slice
-                  Y%slp%n = nt; Y%slp%idx = 1
-                  Y%slp%t_next = merge(Y%slp%t_axis(2), huge(1.0_rk), nt >= 2)
-                  Y%slp%name = forcmd%vars(i)%id
+            case ('sl_pressure')
+               call load_var_series( Y%slp, forcmd%scans(j), db, forcmd%vars(i)%name_in_file, &
+                                    forcmd%scans(j)%time_name, i0, i1, forcmd%scans(j)%has_latlon, &
+                                    forcmd%scans(j)%yi, forcmd%scans(j)%xi )
+               Y%slp%name = forcmd%vars(i)%id
 
-               case ('relative_humidity')
-                  if (allocated(Y%rel_hum%data)) deallocate(Y%rel_hum%data)
-                  Y%rel_hum%is_const = .false.                  
-                  if (allocated(Y%rel_hum%t_axis)) deallocate(Y%rel_hum%t_axis)
-                  allocate(Y%rel_hum%t_axis(nt));  Y%rel_hum%t_axis = forcmd%scans(j)%axis%t_s(i0:i1)
-                  allocate(Y%rel_hum%data(nt)); Y%rel_hum%data = ts_slice
-                  Y%rel_hum%n = nt; Y%rel_hum%idx = 1
-                  Y%rel_hum%t_next = merge(Y%rel_hum%t_axis(2), huge(1.0_rk), nt >= 2)
-                  Y%rel_hum%name = forcmd%vars(i)%id
+            case ('relative_humidity')
+               call load_var_series( Y%rel_hum, forcmd%scans(j), db, forcmd%vars(i)%name_in_file, &
+                                    forcmd%scans(j)%time_name, i0, i1, forcmd%scans(j)%has_latlon, &
+                                    forcmd%scans(j)%yi, forcmd%scans(j)%xi )
+               Y%rel_hum%name = forcmd%vars(i)%id
 
-               case ('shortwave_radiation')
-                  if (allocated(Y%short_rad%data)) deallocate(Y%short_rad%data)
-                  Y%short_rad%is_const = .false.
-                  if (allocated(Y%short_rad%t_axis)) deallocate(Y%short_rad%t_axis)
-                  allocate(Y%short_rad%t_axis(nt));  Y%short_rad%t_axis = forcmd%scans(j)%axis%t_s(i0:i1)
-                  allocate(Y%short_rad%data(nt)); Y%short_rad%data = ts_slice
-                  Y%short_rad%n = nt; Y%short_rad%idx = 1
-                  Y%short_rad%t_next = merge(Y%short_rad%t_axis(2), huge(1.0_rk), nt >= 2)
-                  Y%short_rad%name = forcmd%vars(i)%id
+            case ('shortwave_radiation')
+               call load_var_series( Y%short_rad, forcmd%scans(j), db, forcmd%vars(i)%name_in_file, &
+                                    forcmd%scans(j)%time_name, i0, i1, forcmd%scans(j)%has_latlon, &
+                                    forcmd%scans(j)%yi, forcmd%scans(j)%xi )
+               Y%short_rad%name = forcmd%vars(i)%id
 
-               case ('longwave_radiation')
-                  if (allocated(Y%long_rad%data)) deallocate(Y%long_rad%data)
-                  Y%long_rad%is_const = .false.
-                  if (allocated(Y%long_rad%t_axis)) deallocate(Y%long_rad%t_axis)
-                  allocate(Y%long_rad%t_axis(nt));  Y%long_rad%t_axis = forcmd%scans(j)%axis%t_s(i0:i1)
-                  allocate(Y%long_rad%data(nt)); Y%long_rad%data = ts_slice
-                  Y%long_rad%n = nt; Y%long_rad%idx = 1
-                  Y%long_rad%t_next = merge(Y%long_rad%t_axis(2), huge(1.0_rk), nt >= 2)
-                  Y%long_rad%name = forcmd%vars(i)%id
+            case ('longwave_radiation')
+               call load_var_series( Y%long_rad, forcmd%scans(j), db, forcmd%vars(i)%name_in_file, &
+                                    forcmd%scans(j)%time_name, i0, i1, forcmd%scans(j)%has_latlon, &
+                                    forcmd%scans(j)%yi, forcmd%scans(j)%xi )
+               Y%long_rad%name = forcmd%vars(i)%id
 
-               case ('wind_speed')
-                  if (allocated(Y%wind_spd%data)) deallocate(Y%wind_spd%data)
-                  Y%wind_spd%is_const = .false.
-                  if (allocated(Y%wind_spd%t_axis)) deallocate(Y%wind_spd%t_axis)
-                  allocate(Y%wind_spd%t_axis(nt));  Y%wind_spd%t_axis = forcmd%scans(j)%axis%t_s(i0:i1)
-                  allocate(Y%wind_spd%data(nt)); Y%wind_spd%data = ts_slice
-                  Y%wind_spd%n = nt; Y%wind_spd%idx = 1
-                  Y%wind_spd%t_next = merge(Y%wind_spd%t_axis(2), huge(1.0_rk), nt >= 2)
-                  Y%wind_spd%name = forcmd%vars(i)%id
+            case ('wind_speed')
+               call load_var_series( Y%wind_spd, forcmd%scans(j), db, forcmd%vars(i)%name_in_file, &
+                                    forcmd%scans(j)%time_name, i0, i1, forcmd%scans(j)%has_latlon, &
+                                    forcmd%scans(j)%yi, forcmd%scans(j)%xi )
+               Y%wind_spd%name = forcmd%vars(i)%id
 
-               case ('wind_direction')
-                  if (allocated(Y%wind_dir%data)) deallocate(Y%wind_dir%data)
-                  Y%wind_dir%is_const = .false.
-                  if (allocated(Y%wind_dir%t_axis)) deallocate(Y%wind_dir%t_axis)
-                  allocate(Y%wind_dir%t_axis(nt));  Y%wind_dir%t_axis = forcmd%scans(j)%axis%t_s(i0:i1)
-                  allocate(Y%wind_dir%data(nt)); Y%wind_dir%data = ts_slice
-                  Y%wind_dir%n = nt; Y%wind_dir%idx = 1
-                  Y%wind_dir%t_next = merge(Y%wind_dir%t_axis(2), huge(1.0_rk), nt >= 2)
-                  Y%wind_dir%name = forcmd%vars(i)%id
+            case ('wind_direction')
+               call load_var_series( Y%wind_dir, forcmd%scans(j), db, forcmd%vars(i)%name_in_file, &
+                                    forcmd%scans(j)%time_name, i0, i1, forcmd%scans(j)%has_latlon, &
+                                    forcmd%scans(j)%yi, forcmd%scans(j)%xi )
+               Y%wind_dir%name = forcmd%vars(i)%id
 
+            case ('co2_air')
+               call load_var_series( Y%co2_air, forcmd%scans(j), db, forcmd%vars(i)%name_in_file, &
+                                    forcmd%scans(j)%time_name, i0, i1, forcmd%scans(j)%has_latlon, &
+                                    forcmd%scans(j)%yi, forcmd%scans(j)%xi )
+               Y%co2_air%name = forcmd%vars(i)%id
 
-               case ('co2_air')
-                  if (allocated(Y%co2_air%data)) deallocate(Y%co2_air%data)
-                  Y%co2_air%is_const = .false.
-                  if (allocated(Y%co2_air%t_axis)) deallocate(Y%co2_air%t_axis)
-                  allocate(Y%co2_air%t_axis(nt));  Y%co2_air%t_axis = forcmd%scans(j)%axis%t_s(i0:i1)
-                  allocate(Y%co2_air%data(nt)); Y%co2_air%data = ts_slice
-                  Y%co2_air%n = nt; Y%co2_air%idx = 1
-                  Y%co2_air%t_next = merge(Y%co2_air%t_axis(2), huge(1.0_rk), nt >= 2)
-                  Y%co2_air%name = forcmd%vars(i)%id
-
-               case default
-                  errmsg = 'load_year_data: unknown variable id='//trim(forcmd%vars(i)%id)
-                  deallocate(ts_slice); call nc_close(db); return
+            case default
+               errmsg = 'load_year_data: unknown variable id='//trim(forcmd%vars(i)%id)
+               call nc_close(db); return
             end select
-
-            deallocate(ts_slice)
          end do
+
          call nc_close(db)
       end do
 
@@ -496,19 +451,13 @@ contains
          end if
       end do
 
-      ! Initialize cursors for this year's data (safe for consts & series)
-      call Y%air_temp%init_cursor()
-      call Y%slp%init_cursor()
-      call Y%rel_hum%init_cursor()
-      call Y%short_rad%init_cursor()
-      call Y%long_rad%init_cursor()
-      call Y%wind_spd%init_cursor()
-      call Y%wind_dir%init_cursor()
-      call Y%co2_air%init_cursor()
+      ! Initialize cursors
+      call Y%air_temp%init_cursor(); call Y%slp%init_cursor();      call Y%rel_hum%init_cursor()
+      call Y%short_rad%init_cursor(); call Y%long_rad%init_cursor(); call Y%wind_spd%init_cursor()
+      call Y%wind_dir%init_cursor();  call Y%co2_air%init_cursor()
 
       ok = .true.
    end subroutine load_year_data
-
 
 
    subroutine init_cursor(self)
@@ -520,16 +469,17 @@ contains
       end if
       self%idx = 1
       if (self%is_const .or. self%n <= 1) then
-         self%t_next = huge(1.0_rk)                  ! never advances
+         self%t_next = huge(1_lk)                  ! never advances
       else
          self%t_next = self%t_axis(2)
       end if
    end subroutine
 
    
+   ! Gets the value at a given t (model time in seconds) for a forcing variable
    real(rk) function value_at_step(self, t) result(v)
       class(ForcingVarData), intent(inout) :: self
-      real(rk),              intent(in)    :: t     ! model time in this var's units
+      integer(lk),           intent(in)    :: t     ! model time
       integer :: nloc
 
       if (self%is_const) then
@@ -544,13 +494,15 @@ contains
          if (self%idx < nloc) then
             self%t_next = self%t_axis(self%idx+1)
          else
-            self%t_next = huge(1.0_rk)               ! no further changes
+            self%t_next = huge(1_lk)               ! no further changes
          end if
       end do
 
-      ! hold-last-before (step hold)
+      ! If time is before first position, return first, 
+      ! if time is after last position, returns last index in the year
+      ! Need to safeguard this bit later if I had empty time-series
       v = self%data(max(1, min(self%idx, nloc)))
-   end function
+   end function value_at_step
 
    subroutine print_forcing_summary(state)
       use, intrinsic :: iso_fortran_env, only: output_unit
@@ -705,9 +657,9 @@ contains
          yf = merge(repeat_year, y, repeat_enabled)
 
          ! Build year window in the file’s calendar/units (Jan-01 00:00 to Dec-31 23:59:59 equivalent)
-         t0 = seconds_since_datetime(var%scan%cal, var%scan%u, yf, 1, 1, 0, 0, 0)
+         t0 = seconds_since_datetime_file(var%scan%cal, var%scan%u, yf, 1, 1, 0, 0, 0)
          ! Use next year's start minus a tiny epsilon to be inclusive
-         t1 = seconds_since_datetime(var%scan%cal, var%scan%u, yf+1, 1, 1, 0, 0, 0)
+         t1 = seconds_since_datetime_file(var%scan%cal, var%scan%u, yf+1, 1, 1, 0, 0, 0)
 
          ! Clip to the overall available range (and to sim start/end in your driver later if needed)
          if (t0 < var%scan%axis%t_first) t0 = var%scan%axis%t_first
@@ -744,6 +696,45 @@ contains
       allocate(character(len=1) :: s%files(0))
       allocate(s%scan_idx_of_var(0))
    end subroutine
+
+   ! Load a single series into a ForcingVarData structure
+   subroutine load_var_series(Yv, scan, db, varname, time_name, i0, i1, has_latlon, yi, xi)
+      type(ForcingVarData), intent(inout) :: Yv
+      type(ForcingScan),    intent(in)    :: scan
+      type(NcFile),         intent(in)    :: db
+      character(*),         intent(in)    :: varname, time_name
+      integer,              intent(in)    :: i0, i1, yi, xi
+      logical,              intent(in)    :: has_latlon
+      integer :: nt
+
+      nt = max(0, i1 - i0 + 1)
+      if (nt <= 0) stop 'load_var_series: empty time window'
+
+      ! Ensure t_axis has the right size, then fill directly from slice
+      if (.not. allocated(Yv%t_axis) .or. size(Yv%t_axis) /= nt) then
+         if (allocated(Yv%t_axis)) deallocate(Yv%t_axis)
+         allocate(Yv%t_axis(nt))
+      end if
+
+      ! Align with simulation time
+      Yv%t_axis = int(nint(scan%axis%t_s(i0:i1)), lk) - scan%sim_offset
+
+
+      ! Ensure data has the right size, then read directly into it
+      if (.not. allocated(Yv%data) .or. size(Yv%data) /= nt) then
+         if (allocated(Yv%data)) deallocate(Yv%data)
+         allocate(Yv%data(nt))
+      end if
+      call get_ts_slice_from_point( db, trim(varname), trim(time_name), i0, i1, has_latlon, &
+                                    trim(scan%lat_name), trim(scan%lon_name), yi, xi, Yv%data )
+
+      ! Cursor metadata
+      Yv%is_const = .false.
+      Yv%n        = nt
+      Yv%idx      = 1
+      Yv%t_next   = merge(Yv%t_axis(2), huge(1_lk), nt >= 2)
+   end subroutine load_var_series
+
 
 
    pure integer function find_var_index(vars, id) result(idx)

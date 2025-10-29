@@ -1,6 +1,17 @@
-module calendar_types
+module time_types
+  use precision_types, only: rk, ik     ! Importing real64 and lk
   implicit none
   private
+
+ type, public :: DateTime
+    integer(ik) :: year   = 0
+    integer(ik) :: month  = 0
+    integer(ik) :: day    = 0
+    integer(ik) :: hour   = 0
+    integer(ik) :: minute = 0
+    integer(ik) :: second = 0
+    logical     :: has_time = .false.
+  end type DateTime
 
   !--------------------------------------------------------------------
   ! Calendar identifiers, names according to CF Metadata convention
@@ -18,6 +29,22 @@ module calendar_types
   contains
      procedure, pass(self) :: name => cfcalendar_name   ! method
   end type CFCalendar
+
+  type, public :: CFUnits
+    ! Holds the CF units since the reference point in time (date)
+     real(rk) :: timeunit_to_seconds = 0.0_rk    !conversion factor from the declared CF time unit to seconds (e.g. 86400 for "days since")
+     integer  :: reference_year = 1990, reference_month = 1, reference_day = 1
+     integer  :: reference_hour = 0,    reference_min = 0, reference_sec = 0
+     logical  :: has_time = .false.
+  end type
+
+  type, public :: TimeAxis
+    ! Data structure to hold a time coordinate using seconds as reference date
+     type(CFCalendar) :: cal                        ! calendar
+     type(CFUnits)    :: u                          ! units
+     real(rk), allocatable :: t_s(:)                ! seconds since reference date
+     real(rk) :: t_first = 0.0_rk, t_last = 0.0_rk  ! earliest and last time values in in seconds since the reference date
+  end type
 
   public :: calendar_compatible
 
@@ -52,4 +79,4 @@ contains
       end if
     end function calendar_compatible
   
-end module calendar_types
+end module time_types

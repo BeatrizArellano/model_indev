@@ -11,34 +11,21 @@
 !           "<units> since YYYY-MM-DD hh:mm:ss"
 ! where units can be seconds, minutes, hours, days, weeks
 module cf_time_utils
-  use precision_types, only: rk, lk     ! Importing real64 and int64
+  use precision_types, only: rk, lk     ! Importing real64 and lk
   use str_utils,       only: to_lower
   use time_utils,      only: is_leap_gregorian, parse_datetime_str                             
   use stats_utils,     only: sort_real_inplace
-  use calendar_types,  only: CFCalendar, cal_gregorian, cal_proleptic, cal_noleap, cal_all_leap, cal_360_day
+  use time_types,      only: DateTime, CFUnits, TimeAxis, &
+                             CFCalendar, cal_gregorian, cal_proleptic, cal_noleap, cal_all_leap, cal_360_day
 
 
   implicit none
   private
 
-  type, public :: CFUnits
-    ! Holds the CF units since the reference point in time (date)
-     real(rk) :: timeunit_to_seconds = 0.0_rk    !conversion factor from the declared CF time unit to seconds (e.g. 86400 for "days since")
-     integer  :: reference_year = 1990, reference_month = 1, reference_day = 1
-     integer  :: reference_hour = 0,    reference_min = 0, reference_sec = 0
-     logical  :: has_time = .false.
-  end type
+  
 
-  type, public :: TimeAxis
-    ! Data structure to hold a time coordinate using seconds as reference date
-     type(CFCalendar) :: cal                        ! calendar
-     type(CFUnits)    :: u                          ! units
-     real(rk), allocatable :: t_s(:)                ! seconds since reference date
-     real(rk) :: t_first = 0.0_rk, t_last = 0.0_rk  ! earliest and last time values in in seconds since the reference date
-  end type
-
-  public :: parse_cf_time, seconds_since_datetime, seconds_to_datetime
-  public :: get_days_in_year  
+  public :: parse_cf_time, seconds_since_datetime_file, seconds_to_datetime, seconds_between_datetimes
+  public :: get_days_in_year
 
   ! Cumulative days before each month for a non-leap year and for a leap year
   !Month:      Jan  Feb  Mar  Apr  May  Jun  Jul  Aug  Sep  Oct  Nov  Dec
@@ -115,7 +102,7 @@ contains
     !-----------------------------------------------------
     ! Convert a date/time to seconds since CF reference date
     !-------------------------------------------------
-    pure function seconds_since_datetime(cal, u, year, month, day, hour, minute, second) result(tsec)
+    pure function seconds_since_datetime_file(cal, u, year, month, day, hour, minute, second) result(tsec)
         type(CFCalendar), intent(in) :: cal
         type(CFUnits),    intent(in) :: u
         integer, intent(in) :: year, month, day, hour, minute, second
@@ -132,38 +119,75 @@ contains
         delta_sec    = numdays_since_ref*86400_lk + (nsec_in_target_time - nsec_in_reftime)
 
         tsec = real(delta_sec, rk)
-    end function seconds_since_datetime
+    end function seconds_since_datetime_file
+
+
+    ! Seconds since a reference datetime (ref_datetime) exactly at the datetime (datime) of interest
+    pure integer(lk) function seconds_between_datetimes(cal, datime, ref_datetime) result(sec)    
+        type(CFCalendar), intent(in) :: cal
+        type(DateTime),   intent(in) :: datime, ref_datetime
+        integer(lk), parameter       :: SPD = 86400_lk
+        integer(lk) :: days_datetime, days_ref, sod_datetime, sod_ref
+
+        days_datetime  = int(date_to_number_of_days(cal%kind, datime%year,   datime%month,   datime%day  ), lk)
+        days_ref = int(date_to_number_of_days(cal%kind, ref_datetime%year, ref_datetime%month, ref_datetime%day), lk)
+
+        sod_datetime  = 3600_lk*int(datime%hour, lk)   + 60_lk*int(datime%minute, lk)   + int(datime%second, lk)
+        sod_ref = 3600_lk*int(ref_datetime%hour, lk) + 60_lk*int(ref_datetime%minute, lk) + int(ref_datetime%second, lk)
+
+        sec = (days_datetime - days_ref)*SPD + (sod_datetime - sod_ref)
+    end function seconds_between_datetimes
 
     !-------------------------------------------
     ! Convert seconds since reference date to date/time
     !-------------------------------------------
     pure subroutine seconds_to_datetime(cal, u, tsec, year, month, day, hour, minute, second, doy)
-        type(CFCalendar), intent(in) :: cal              ! Calendar
-        type(CFUnits),    intent(in) :: u                ! Time units
-        real(rk),         intent(in) :: tsec             ! Number of seconds since reference date
+        type(CFCalendar), intent(in) :: cal
+        type(CFUnits),    intent(in) :: u
+        real(rk),         intent(in) :: tsec
         integer,          intent(out):: year, month, day, hour, minute, second, doy
 
         integer(lk) :: total_s, days_since_ref, remaining_seconds
-        integer(lk) :: numdays_in_ref, numdays_in_target_date
+        integer(lk) :: numdays_in_ref, numdays_in_target
+        integer(lk) :: ref_secs_of_day
+        integer(lk), parameter :: SPD = 86400_lk
 
-        total_s = nint(tsec, lk)
-        days_since_ref = total_s / 86400_lk              ! Number of whole days since reference date (Integer)
-        remaining_seconds = mod(total_s, 86400_lk)       ! Remaining number of seconds in the last day
+        ! Reference time-of-day in seconds (00:00:00 -> 0)
+        ref_secs_of_day = 3600_lk*int(u%reference_hour, lk) + &
+                            60_lk  *int(u%reference_min , lk) + &
+                                    int(u%reference_sec , lk)
+
+        ! Total offset in whole seconds relative to midnight of the reference date,
+        ! INCLUDING the reference time-of-day (so tsec=0 → the exact reference hms).
+        ! Use FLOOR so negative fractional seconds don’t round toward zero.
+        total_s = int(floor(tsec), lk) + ref_secs_of_day
+
+        ! Split into whole days since the reference DATE and leftover seconds within the day.
+        days_since_ref    = total_s / SPD                ! truncates toward zero
+        remaining_seconds = mod(total_s, SPD)            ! has sign of total_s
+
+        ! Fix-up for negative remainders so that 0 ≤ remaining_seconds < SPD
         if (remaining_seconds < 0_lk) then
-            remaining_seconds = remaining_seconds + 86400_lk
-            days_since_ref = days_since_ref - 1_lk
+            remaining_seconds = remaining_seconds + SPD
+            days_since_ref    = days_since_ref - 1_lk
         end if
 
-        numdays_in_ref  = date_to_number_of_days(cal%kind, u%reference_year, u%reference_month, u%reference_day)
-        numdays_in_target_date = numdays_in_ref + days_since_ref
+        ! Map reference DATE → absolute day count, then add the day offset
+        numdays_in_ref    = date_to_number_of_days(cal%kind, u%reference_year, u%reference_month, u%reference_day)
+        numdays_in_target = numdays_in_ref + days_since_ref
 
-        ! Obtains the date for the number of seconds
-        call numdays_to_date(cal%kind, numdays_in_target_date, year, month, day)
-        hour = int(remaining_seconds / 3600_lk)                  ! Number of hours
-        minute = int(mod(remaining_seconds, 3600_lk) / 60_lk)    ! Number of minutes
-        second = int(mod(remaining_seconds, 60_lk))              ! Number of seconds
-        doy = get_day_of_year(cal%kind, year, month, day)        ! Day of year
+        ! Convert absolute day count back to Y-M-D in the chosen calendar
+        call numdays_to_date(cal%kind, numdays_in_target, year, month, day)
+
+        ! Time of day from remaining_seconds
+        hour   = int( remaining_seconds / 3600_lk )
+        minute = int( mod(remaining_seconds, 3600_lk) / 60_lk )
+        second = int( mod(remaining_seconds, 60_lk) )
+
+        ! Day-of-year for convenience
+        doy = get_day_of_year(cal%kind, year, month, day)
     end subroutine seconds_to_datetime
+
 
     !----------------------------------------------------------
     ! Number of Days in a given year depending on the Calendar
@@ -264,7 +288,7 @@ contains
     !==============================================
 
     ! Calculates the number of days in a given date since the Common Era started
-    ! This calculation depends on the kiven calendar. 
+    ! This calculation depends on the calendar. 
     pure integer(lk) function date_to_number_of_days(cal_kind, y, m, d) result(num_days)
         integer, intent(in) :: cal_kind, y, m, d
         integer :: mm

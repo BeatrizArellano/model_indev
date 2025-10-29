@@ -503,9 +503,9 @@ contains
       if (present(nonnegative)  .and.  nonnegative  .and.      (val < 0.0_rk))  &
          call stop_missingpar('get_param_num','"'//trim(key)//'" must be >= 0.')
       if (present(min)          .and.               (val < min))                &
-         call stop_missingpar('get_param_num','"'//trim(key)//'" must be >= min.')
+         call stop_missingpar('get_param_num', limit_msg_num(key, '>=', min, val))
       if (present(max)          .and.               (val > max))                &
-         call stop_missingpar('get_param_num','"'//trim(key)//'" must be <= max.')
+         call stop_missingpar('get_param_num', limit_msg_num(key, '<=', max, val))
       if (present(finite) .and. finite .and. ieee_is_nan(val))    &
          call stop_missingpar('get_param_num','"'//trim(key)//'" must be finite.')
 
@@ -513,12 +513,12 @@ contains
    end function cfg_get_param_num
 
 
-   integer function cfg_get_param_int(self, key, default, found, required, min, max) result(ival)
+   integer function cfg_get_param_int(self, key, default, found, required, min, max, positive) result(ival)
       class(ConfigParams), intent(in) :: self
       character(len=*),    intent(in) :: key
       integer,  optional,  intent(in) :: default, min, max
       logical,  optional,  intent(out):: found
-      logical,  optional,  intent(in) :: required
+      logical,  optional,  intent(in) :: required, positive
       real(rk) :: r
       logical :: has
       integer :: dmin, dmax
@@ -542,6 +542,9 @@ contains
       end if
       if (present(max)) then
          if (ival > max) call stop_missingpar('get_param_int','"'//trim(key)//'" must be <= max.')
+      end if
+      if (present(positive)     .and.  positive     .and. .not.(ival > 0))  then
+         call stop_missingpar('get_param_int','"'//trim(key)//'" must be > 0.')
       end if
 
       if (present(found)) found = has
@@ -1069,6 +1072,17 @@ contains
       write(*,'(A,1X,A)') '[FATAL:'//trim(where)//']', trim(msg)
       stop 1
    end subroutine stop_missingpar
+
+   pure function limit_msg_num(key, op, limit, val) result(msg)
+      character(*), intent(in) :: key, op
+      real(rk),    intent(in) :: limit, val
+      character(:), allocatable :: msg
+      character(48) :: slimit, sval
+      write(slimit,'(G0)') limit
+      write(sval,  '(G0)') val
+      msg = '"'//trim(key)//'" ('//trim(sval)//') must be '//trim(op)//' '//trim(slimit)//'.'
+   end function limit_msg_num
+
 
 
    pure function join_key(prefix, key) result(out)

@@ -2,7 +2,7 @@
 module time_utils
   use, intrinsic :: iso_fortran_env, only: error_unit
   use precision_types, only: rk, ik                  ! Importing real64 and int32
-  use calendar_types,  only: CFCalendar, cal_gregorian, cal_proleptic, cal_noleap, cal_all_leap, cal_360_day
+  use time_types,      only: DateTime, cal_gregorian, cal_proleptic, cal_noleap, cal_all_leap, cal_360_day
   use str_utils,       only: replace_char_inplace
   use stats_utils,     only: median_rk
 
@@ -10,15 +10,7 @@ module time_utils
   private
 
 
-  type, public :: DateTime
-    integer(ik) :: year   = 0
-    integer(ik) :: month  = 0
-    integer(ik) :: day    = 0
-    integer(ik) :: hour   = 0
-    integer(ik) :: minute = 0
-    integer(ik) :: second = 0
-    logical     :: has_time = .false.
-  end type DateTime
+
 
   public :: is_leap_gregorian, check_time_monotonic
   public :: parse_datetime_str, datetime_from_string, datetime_to_str

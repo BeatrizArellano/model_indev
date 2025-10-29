@@ -2,9 +2,9 @@ module validation_utils
   use precision_types,  only: rk, ik    ! Importing real64 and int32
   use precision_utils,  only: round_to
   use read_config_yaml, only: ConfigParams
-  use time_utils,       only: DateTime, datetime_to_str, &                        
+  use time_types,       only: DateTime, CFCalendar, cal_gregorian
+  use time_utils,       only: datetime_to_str, &                        
                               validate_calendar, datetime_from_string, is_datetime_before, is_datetime_equal
-  use calendar_types,   only: CFCalendar, cal_gregorian
   use geo_utils,        only: LocationInfo, is_lat_valid, is_lon_valid, is_depth_valid, convert_to_lon180
   use str_utils,        only: realtostr
 
