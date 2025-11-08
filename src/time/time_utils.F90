@@ -9,7 +9,7 @@ module time_utils
   implicit none
   private
 
-
+  
 
 
   public :: is_leap_gregorian, check_time_monotonic
@@ -17,6 +17,11 @@ module time_utils
   public :: validate_datetime, validate_calendar
   public :: is_datetime_before, is_datetime_equal, is_datetime_after
   public :: index_at_or_before, index_at_or_after, index_linear_weights, detect_frequency
+  public :: sec_per_day, sec_per_hour
+
+  real(rk), parameter :: sec_per_day  = 86400.0_rk
+  real(rk), parameter :: sec_per_hour = 3600.0_rk
+
 
 contains
 

@@ -5,7 +5,7 @@ module str_utils
   implicit none
   private
 
-  public :: to_lower, replace_char_inplace
+  public :: to_lower, to_upper, replace_char_inplace
   public :: inttostr, realtostr
   public :: list_to_str, append_string
 contains
@@ -25,6 +25,25 @@ contains
             end if
         end do
     end function to_lower
+
+
+    ! Convert string to uppercase
+    ! Notes: Only 'a'..'z' are mapped; other chars are unchanged.
+    pure function to_upper(s) result(t)
+        character(*), intent(in) :: s
+        character(len=len(s)) :: t
+        integer :: i, ich
+
+        do i = 1, len(s)
+            ich = iachar(s(i:i))
+            if (ich >= iachar('a') .and. ich <= iachar('z')) then
+                t(i:i) = achar(ich - 32)
+            else
+                t(i:i) = s(i:i)
+            end if
+        end do
+    end function to_upper
+
 
     ! Replace all occurrences of a character in-place, returning new string
     ! Replace character a with b in string s

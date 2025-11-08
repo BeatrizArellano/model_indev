@@ -7,9 +7,9 @@ module shelfseas
   use validation_utils, only: validate_input_dates, validate_location_input, print_header
   use sim_clocks,       only: init_clock
   use grid_builders,    only: VerticalGrid, build_water_grid, write_vertical_grid
-  use forcing_manager, only: ForcingManager, ForcingSnapshot
-  use physics_main,     only: init_physics, end_physics
-  
+  use forcing_manager,  only: ForcingManager, ForcingSnapshot
+  use physics_main,     only: init_physics, solve_physics, end_physics, PhysicsState, PhysicsEnv
+
   implicit none
   private
 
@@ -35,6 +35,7 @@ module shelfseas
   type(VerticalGrid)    :: wgrid
   type(ForcingManager)  :: ForcMan
   type(ForcingSnapshot) :: ForcSnp
+  type(PhysicsEnv)      :: PE
   
 
 contains
@@ -74,7 +75,7 @@ contains
         call ForcMan%prepare(dt, preload_pad_sec=3600_lk, ok=ok, errmsg=msg)
         if (.not. ok) stop 'prepare_forcing failed: '//trim(msg)
         ! Initialise physics
-        call init_physics(cfg_params,location)
+        call init_physics(cfg_params, location, wgrid, PE)
         is_main_initialized = .true.
     end subroutine init_shelfseas
 
@@ -82,64 +83,30 @@ contains
     ! Main time loop is here. 
     subroutine run_shelfseas()
         implicit none
-        integer(lk) :: i, t_step_sec, dt_win
 
-        !----------- For testing--------------------------------------------
-        integer, parameter :: SECS_PER_DAY = 86400
-        integer, parameter :: n_tests = 6
-        integer, parameter :: test_days(n_tests) = [1, 7, 157, 360, 361, 500]
-        logical            :: printed(n_tests)
-        integer            :: k, day_num
-        printed = .false.
-        !---------------------------------------------------------------------
-
+        integer(lk)         :: i, elapsed_time
+        integer            :: ierr
+        character(len=512) :: errmsg
+        logical            :: is_first_step = .true.  
 
         if (.not. is_main_initialized) error stop 'run_shelfseas: shelfseas not initialised.'
         do i = 1_lk, n_steps
-            ! Model time at the start of this step (seconds since start_datetime)
-            t_step_sec = (i - 1_lk) * dt
-            call ForcMan%tick(t_step_sec)                    ! Time-manager to load yearly forcing data on time
-            call ForcMan%sample(t_step_sec, ForcSnp)         ! get forcing snapshot for the current model time
-
-            !-------------- TEST --------------------------------------------------------
-            ! Determine (1-based) day number for current step
-            day_num = int(t_step_sec / SECS_PER_DAY, kind=lk) + 1
-
-            ! If this is one of the target days and we haven't printed yet, dump the snapshot
-            do k = 1, n_tests
-            if (.not. printed(k) .and. day_num == test_days(k)) then
-                write(*,'(A,I0)') '--- Forcing snapshot at day ', test_days(k)
-                write(*,'(A,F12.5)') '  air_temp       = ', ForcSnp%air_temp
-                write(*,'(A,F12.5)') '  slp            = ', ForcSnp%slp
-                write(*,'(A,F12.5)') '  rel_hum        = ', ForcSnp%rel_hum
-                write(*,'(A,F12.5)') '  short_rad      = ', ForcSnp%short_rad
-                write(*,'(A,F12.5)') '  long_rad       = ', ForcSnp%long_rad
-                write(*,'(A,F12.5)') '  wind_spd       = ', ForcSnp%wind_spd
-                write(*,'(A,F12.5)') '  wind_dir       = ', ForcSnp%wind_dir
-                write(*,'(A,F12.5)') '  co2_air        = ', ForcSnp%co2_air
-                printed(k) = .true.
+            if (i > 1_lk) is_first_step = .false.
+            elapsed_time = (i - 1_lk) * dt
+            call ForcMan%tick(elapsed_time)                                   ! Time-manager to load yearly forcing data on time
+            call ForcMan%sample(elapsed_time, ForcSnp)                        ! get forcing snapshot for the current model time
+            call solve_physics(PE, ForcSnp, dt, elapsed_time, is_first_step, ierr, errmsg)
+            if (ierr /= 0) then
+                write(*,*) 'solve_physics failed: ', trim(errmsg)
+                return
             end if
-            end do
-            !--------------------------------------------------------------------------
-
-            ! Check Forcing: ensure active data covers [t_step_sec, t_step_sec + dt_win]            
-
-            ! Physics step (handles its own subcycling/implicit solves as needed)
-            ! call physics_step(t_step_sec, dt_win, wgrid, ...)
-
-            ! Transport step (only if enabled; also subcycles internally)
-            ! call transport_step(t_step_sec, dt_win, wgrid, ...)
-
-            ! Output/diagnostics if due
-            ! call output_maybe_write(t_step_sec, dt_win, ...)
         end do
-
 
     end subroutine run_shelfseas
 
     subroutine end_shelfseas()
         if (.not. is_main_initialized) return
-        call end_physics()
+        call end_physics(PE)
         call cfg_params%clear()
     end subroutine end_shelfseas 
 

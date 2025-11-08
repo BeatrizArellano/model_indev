@@ -4,19 +4,20 @@ module test_load_forcing
   use geo_utils,        only: LocationInfo
   use time_types,       only: DateTime, CFCalendar
   use load_forcing,     only: ForcingState, ForcingYearData, scan_and_init_forcing, load_year_data, print_forcing_summary
-  use tidal_parameters_readers, only: TidalParams, Constituent, read_tidal_parameters
+  use tidal_readers, only: read_tidal_parameters
+  use tidal,            only: TidalSet, TidalConstituent
   use validation_utils, only: validate_input_dates, validate_location_input
   
   implicit none
 
-  type(TidalParams)  :: Tides
-  type(Constituent)  :: m2, s2, k1, o1, n2
-  type(ConfigParams) :: main_cfg, physics_cfg
-  type(LocationInfo) :: location
-  type(DateTime)     :: start_datetime, end_datetime
-  type(CFCalendar)   :: calendar
-  type(ForcingState) :: FS
-  type(ForcingYearData):: surf
+  type(TidalSet)     :: Tides
+  type(TidalConstituent)     :: m2, s2, k1, o1, n2
+  type(ConfigParams)    :: main_cfg, physics_cfg
+  type(LocationInfo)    :: location
+  type(DateTime)        :: start_datetime, end_datetime
+  type(CFCalendar)      :: calendar
+  type(ForcingState)    :: FS
+  type(ForcingYearData) :: surf
 
   contains
     subroutine test_load_data()
@@ -45,7 +46,7 @@ module test_load_forcing
         write(*,*) 'Tidal constituents loaded:', size(Tides%c)
         do i = 1, size(Tides%c)
             write(*,'(A3,2X,"SEMA=",F8.3,2X,"SEMI=",F8.3,2X,"INC=",F7.2," deg",2X,"PHA=",F7.2," deg")') &
-                trim(Tides%c(i)%name), Tides%c(i)%sema, Tides%c(i)%semi, Tides%c(i)%inc_deg, Tides%c(i)%pha_deg
+                trim(Tides%c(i)%name), Tides%c(i)%smaj, Tides%c(i)%smin, Tides%c(i)%theta, Tides%c(i)%phase
         end do
 
         do y = start_datetime%year, end_datetime%year
@@ -91,3 +92,57 @@ module test_load_forcing
         write(*,'(A,1X,ES12.5)') 'co2:', surf%co2_air%value_at_step(time)
     end subroutine test_load_data
 end module test_load_forcing
+
+
+ !integer(lk) :: i, t_step_sec, dt_win
+
+        !!----------- For testing--------------------------------------------
+        !integer, parameter :: SECS_PER_DAY = 86400
+        !integer, parameter :: n_tests = 6
+        !integer, parameter :: test_days(n_tests) = [1, 7, 157, 360, 361, 500]
+        !logical            :: printed(n_tests)
+        !integer            :: k, day_num
+        !printed = .false.
+        !!---------------------------------------------------------------------
+
+
+        !if (.not. is_main_initialized) error stop 'run_shelfseas: shelfseas not initialised.'
+        !do i = 1_lk, n_steps
+        !    ! Model time at the start of this step (seconds since start_datetime)
+        !    t_step_sec = (i - 1_lk) * dt
+        !    call ForcMan%tick(t_step_sec)                    ! Time-manager to load yearly forcing data on time
+        !    call ForcMan%sample(t_step_sec, ForcSnp)         ! get forcing snapshot for the current model time
+
+        !    !-------------- TEST --------------------------------------------------------
+        !    ! Determine (1-based) day number for current step
+        !    !day_num = int(t_step_sec / SECS_PER_DAY, kind=lk) + 1
+        !    
+        !    ! If this is one of the target days and we haven't printed yet, dump the snapshot
+        !    do k = 1, n_tests
+        !        day_num = ((test_days(k) -1)* SECS_PER_DAY) + (3600 * 11)
+        !        !if (.not. printed(k) .and. day_num == test_days(k)) then
+        !        if (.not. printed(k) .and. t_step_sec >= day_num) then
+        !            write(*,'(A,I0)') '--- Forcing snapshot at day ', test_days(k)
+        !            write(*,'(A,F12.5)') '  air_temp       = ', ForcSnp%air_temp
+        !            write(*,'(A,F12.5)') '  slp            = ', ForcSnp%slp
+        !            write(*,'(A,F12.5)') '  rel_hum        = ', ForcSnp%rel_hum
+        !            write(*,'(A,F12.5)') '  short_rad      = ', ForcSnp%short_rad
+        !            write(*,'(A,F12.5)') '  long_rad       = ', ForcSnp%long_rad
+        !            write(*,'(A,F12.5)') '  wind_spd       = ', ForcSnp%wind_spd
+        !            write(*,'(A,F12.5)') '  wind_dir       = ', ForcSnp%wind_dir
+        !            write(*,'(A,F12.5)') '  co2_air        = ', ForcSnp%co2_air
+        !            printed(k) = .true.
+        !        end if
+        !    end do
+            !--------------------------------------------------------------------------
+
+            ! Check Forcing: ensure active data covers [t_step_sec, t_step_sec + dt_win]            
+
+            ! Physics step (handles its own subcycling/implicit solves as needed)
+            ! call physics_step(t_step_sec, dt_win, wgrid, ...)
+
+            ! Transport step (only if enabled; also subcycles internally)
+            ! call transport_step(t_step_sec, dt_win, wgrid, ...)
+
+            ! Output/diagnostics if due
+            ! call output_maybe_write(t_step_sec, dt_win, ...)
