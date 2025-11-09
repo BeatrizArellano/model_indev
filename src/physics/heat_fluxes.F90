@@ -94,7 +94,7 @@ contains
     rad_out = -(q_lw + q_sensible + q_latent)
 
     ! --- Shortwave split: sw_top_fraction to top layer, remainder decays with Beer–Lambert ---
-    !q_sw_top  = sw_top_fraction * rsds
+    !q_sw_top  = sw_top_fraction * rsds               ! Legacy S2P3
     !q_sw_rest = (1.0_rk - sw_top_fraction) * rsds
 
     ! Trying here a physical-based absorption in the top instead

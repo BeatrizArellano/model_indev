@@ -9,6 +9,10 @@ module shelfseas
   use grid_builders,    only: VerticalGrid, build_water_grid, write_vertical_grid
   use forcing_manager,  only: ForcingManager, ForcingSnapshot
   use physics_main,     only: init_physics, solve_physics, end_physics, PhysicsState, PhysicsEnv
+  use output_manager,   only: OutputManager
+
+  !Dev
+  use time_utils, only:   datetime_to_str
 
   implicit none
   private
@@ -36,6 +40,8 @@ module shelfseas
   type(ForcingManager)  :: ForcMan
   type(ForcingSnapshot) :: ForcSnp
   type(PhysicsEnv)      :: PE
+  type(OutputManager)   :: OM
+  character(:), allocatable :: time_units, calname
   
 
 contains
@@ -76,7 +82,15 @@ contains
         if (.not. ok) stop 'prepare_forcing failed: '//trim(msg)
         ! Initialise physics
         call init_physics(cfg_params, location, wgrid, PE)
-        is_main_initialized = .true.
+        !!!! In dev
+        time_units = 'seconds since ' // trim(datetime_to_str(start_datetime))
+        calname    = trim(calendar%name())
+        call OM%init(cfg_params, PE%grid, dt_s=dt, time_units=time_units, calendar_name=calname, &
+                     title='ShelfSeas output')
+
+
+        is_main_initialized = .true.     
+        
     end subroutine init_shelfseas
 
     ! Main subroutine to run ShelfSeas. 
@@ -90,6 +104,8 @@ contains
         logical            :: is_first_step = .true.  
 
         if (.not. is_main_initialized) error stop 'run_shelfseas: shelfseas not initialised.'
+
+        ! Main simulation loop
         do i = 1_lk, n_steps
             if (i > 1_lk) is_first_step = .false.
             elapsed_time = (i - 1_lk) * dt
@@ -100,6 +116,7 @@ contains
                 write(*,*) 'solve_physics failed: ', trim(errmsg)
                 return
             end if
+            call OM%step(PE%PS%temp, PE%PS%Kz) 
         end do
 
     end subroutine run_shelfseas
@@ -107,6 +124,7 @@ contains
     subroutine end_shelfseas()
         if (.not. is_main_initialized) return
         call end_physics(PE)
+        call OM%close(sync_now=.true.)
         call cfg_params%clear()
     end subroutine end_shelfseas 
 

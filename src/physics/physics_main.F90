@@ -250,8 +250,7 @@ contains
           PE%PS%rho = eos_density(PE%PS%temp, PE%PS%sal)
       end do        
 
-write(*,*) 'T(S)=', PE%PS%temp(N), ' T(B)=', PE%PS%temp(1), ' dt_sub=', dt_sub      
-
+!write(*,*) 'T(S)=', PE%PS%temp(N), ' T(B)=', PE%PS%temp(1), ' dt_sub=', dt_sub      
       deallocate(u_old, u_new, v_old, v_new)
     end subroutine solve_physics  
   

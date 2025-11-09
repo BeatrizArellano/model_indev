@@ -5,7 +5,7 @@ module str_utils
   implicit none
   private
 
-  public :: to_lower, to_upper, replace_char_inplace
+  public :: to_lower, to_upper, replace_char_inplace, remove_whitespaces
   public :: inttostr, realtostr
   public :: list_to_str, append_string
 contains
@@ -56,6 +56,21 @@ contains
         end do
     end subroutine replace_char_inplace
 
+     pure function remove_whitespaces(s) result(t)
+        character(*), intent(in) :: s
+        character(len=len(s))    :: t
+        integer :: i, j, ich
+        j = 0
+        do i = 1, len(s)
+            ich = iachar(s(i:i))
+            ! ASCII whitespace: 9..13 (TAB..CR), 32 (space); plus NBSP (160)
+            if (ich==9  .or. ich==10 .or. ich==11 .or. ich==12 .or. ich==13 .or. ich==32 .or. ich==160) cycle
+            j = j + 1
+            t(j:j) = s(i:i)
+        end do
+        if (j < len(t)) t(j+1:) = ' '
+    end function remove_whitespaces
+    
     ! Converts an integer to string
     pure function inttostr(i) result(s)
         integer, intent(in) :: i

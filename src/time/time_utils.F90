@@ -1,9 +1,9 @@
 ! Useful functions for time
 module time_utils
   use, intrinsic :: iso_fortran_env, only: error_unit
-  use precision_types, only: rk, ik                  ! Importing real64 and int32
+  use precision_types, only: rk, ik, lk                  ! Importing real64, int32 and int64
   use time_types,      only: DateTime, cal_gregorian, cal_proleptic, cal_noleap, cal_all_leap, cal_360_day
-  use str_utils,       only: replace_char_inplace
+  use str_utils,       only: replace_char_inplace, remove_whitespaces
   use stats_utils,     only: median_rk
 
   implicit none
@@ -17,10 +17,12 @@ module time_utils
   public :: validate_datetime, validate_calendar
   public :: is_datetime_before, is_datetime_equal, is_datetime_after
   public :: index_at_or_before, index_at_or_after, index_linear_weights, detect_frequency
-  public :: sec_per_day, sec_per_hour
+  public :: parse_interval_to_seconds
+  public :: sec_per_day, sec_per_hour, sec_per_min
 
-  real(rk), parameter :: sec_per_day  = 86400.0_rk
-  real(rk), parameter :: sec_per_hour = 3600.0_rk
+  integer(lk), parameter :: sec_per_day  = 86400_lk
+  integer(lk), parameter :: sec_per_hour = 3600_lk
+  integer(lk), parameter :: sec_per_min  = 60_lk
 
 
 contains
@@ -304,6 +306,32 @@ contains
         s = trim(buf10)
         end if
     end function datetime_to_str
+
+
+    ! Parses a string of the form "2d", "3600s", "12h" and returns number of seconds within that interval
+    subroutine parse_interval_to_seconds(txt, seconds)
+        character(*), intent(in) :: txt
+        integer(lk), intent(out) :: seconds
+        integer :: n, istat,             i
+        character(1) :: u
+        character(:), allocatable :: s
+
+        s = remove_whitespaces(adjustl(txt))
+        n = len_trim(s)
+        if (n < 2) then
+            seconds = 0_lk; return ! At least one digit and one time-unit
+        end if
+
+        u = s(n:n)                 ! Grab the last character, which should be the unit
+        select case (u)
+            case ('s','S'); read(s(1:n-1), *, iostat=istat) seconds  ! Parse everything before u as integer number of seconds
+            case ('m','M'); read(s(1:n-1), *, iostat=istat) seconds; seconds = seconds*sec_per_min
+            case ('h','H'); read(s(1:n-1), *, iostat=istat) seconds; seconds = seconds*sec_per_hour
+            case ('d','D'); read(s(1:n-1), *, iostat=istat) seconds; seconds = seconds*sec_per_day
+            case default   ; seconds = 0_lk; return
+        end select
+        if (istat /= 0) seconds = 0_lk
+    end subroutine parse_interval_to_seconds
 
 
     !-----------------------------------------------------------

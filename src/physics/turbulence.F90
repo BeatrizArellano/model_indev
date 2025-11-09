@@ -41,18 +41,19 @@ contains
         real(rk) :: dz_imh, du, dv
 
         ! ---- Shear (SS), Buoyancy freq (NN), Production P, Buoyancy term B ----
-        SS(0:N) = 0.0_rk
-        NN(0:N) = 0.0_rk
+        SS(0:N) = 1.0e-6_rk
+        NN(0:N) = 1.0e-6_rk
         P (0:N) = 0.0_rk
         B (0:N) = 0.0_rk
-
 
         do i=1, N-1
             dz_imh = 0.5_rk*(h(i)+h(i+1))   ! spacing across face i+1/2
             ! centered shear from u,v 
             du = velx(i+1) - velx(i)
             dv = vely(i+1) - vely(i)
-            SS(i) = (du/dz_imh)**2 + (dv/dz_imh)**2 !Shear at the layer interfaces
+            !SS(i) = (du/dz_imh)**2 + (dv/dz_imh)**2 !Shear at the layer interfaces
+            SS(i)= SS(i) + 0.5*((du*du)/(0.5*(h(i+1)+h(i)))/h(i)   + (du*du)/(0.5*(h(i+1)+h(i)))/h(i+1)) &
+                   + 0.5*((dv*dv)/(0.5*(h(i+1)+h(i)))/h(i) + (dv*dv)/(0.5*(h(i+1)+h(i)))/h(i+1))
             ! NOTE: Previously S2P3 had a super long line to compute SS using cnpar but the terms cancelled out, so it is reduced to this
 
             ! buoyancy frequency N^2 = -(g/rho0) * dρ/dz

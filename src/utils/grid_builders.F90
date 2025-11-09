@@ -144,9 +144,6 @@ contains
     end subroutine reorder_grid_bottom_first
 
 
-
-
-
     subroutine write_vertical_grid(grid, filename, ierr)
         type(VerticalGrid), intent(in)  :: grid
         character(*),    intent(in)  :: filename

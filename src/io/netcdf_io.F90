@@ -1,6 +1,6 @@
 !=====================================================================================
 !>                      NetCDF Input/Output utilities 
-!! This module provides wrappers for the NetCDF Fortran-90 API
+!! This module provides low-level wrappers for the NetCDF Fortran-90 API
 !! for safely opening, creating, reading, and writing NetCDF files.  
 !! Includes helpers for:
 !!   - File management (open, create, close, sync, redefine)
@@ -34,7 +34,7 @@ module netcdf_io
     public :: nc_read_calendar_info
     ! Writers
     public :: nc_open_rw, nc_create, nc_sync, nc_redef, nc_enddef
-    public :: nc_def_dim, nc_def_var_real, nc_put_att_str, nc_put_att_real, nc_put_att_int
+    public :: nc_def_dim, nc_def_var_real, nc_def_var_double, nc_put_att_str, nc_put_att_real, nc_put_att_int
     public :: nc_write_real, nc_write_int
 
     interface nc_read_real
@@ -608,6 +608,16 @@ module netcdf_io
             end if
         end if
     end function nc_def_var_real
+
+    ! For real64 data
+    integer function nc_def_var_double(db, name, dimids) result(varid)
+        type(NcFile), intent(in) :: db
+        character(*), intent(in) :: name
+        integer, intent(in)      :: dimids(:)
+        call nc_check(nf90_def_var(db%ncid, trim(name), nf90_double, dimids, varid), &
+                        'def_var_double('//trim(name)//')')
+    end function nc_def_var_double
+
 
     !> Defines a new integer variable with the given dimensions.
     !! @param[in]  db         NcFile handle for the open file (in define mode).
