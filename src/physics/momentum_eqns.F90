@@ -156,7 +156,8 @@ contains
             dz_imh  = 0.5_rk*(h(N-1) + h(N))                 ! face N-1/2 spacing
             flux_dn = Nz(N-1) * (vel_comp_old(N) - vel_comp_old(N-1)) / dz_imh
         end if
-        dv = dt * (-flux_dn / h(N) + tau_surf/(rho0*h(N)))
+        !dv = dt * (-flux_dn / h(N) + tau_surf/(rho0*h(N)))
+        dv = dt * (-flux_dn / h(N) + tau_surf/(rho_surf*h(N)))
         vel_comp_new(N) = vel_comp_old(N) + dv
         !	surface stress boundary conditions...
 

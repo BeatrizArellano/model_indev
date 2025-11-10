@@ -81,7 +81,7 @@ contains
         call ForcMan%prepare(dt, preload_pad_sec=3600_lk, ok=ok, errmsg=msg)
         if (.not. ok) stop 'prepare_forcing failed: '//trim(msg)
         ! Initialise physics
-        call init_physics(cfg_params, location, wgrid, PE)
+        call init_physics(cfg_params, location, wgrid, PE, dt)
         !!!! In dev
         time_units = 'seconds since ' // trim(datetime_to_str(start_datetime))
         calname    = trim(calendar%name())

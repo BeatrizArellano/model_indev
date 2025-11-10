@@ -59,6 +59,9 @@ module physics_main
     type(PhysicsParams)  :: params     ! per-column physics params (or shared elsewhere)
     type(TidalSet)       :: Tides      ! site-specific tides
     type(TridiagCoeff)   :: trid        ! workspace for implicit solves
+    ! Time-step for the inner cycle
+    real(rk)             :: dt_sub
+    integer              :: n_sub
     logical              :: is_init = .false. ! Flag to indicate that the physics is initialised for this water column
   end type PhysicsEnv
 
@@ -68,16 +71,22 @@ contains
     !======================
     ! Initialization
     !======================
-    subroutine init_physics(cfg_params,location, grid, PE)
+    subroutine init_physics(cfg_params,location, grid, PE, dt_main)
       ! Receives from main: user config and location
       type(ConfigParams), intent(in)    :: cfg_params
       type(LocationInfo), intent(in)    :: location
       type(VerticalGrid), intent(in)    :: grid
       type(PhysicsEnv),   intent(inout) :: PE
+      integer(lk),        intent(in)    :: dt_main
 
       integer :: k
       real(rk), allocatable :: Hface(:)
       real(rk) :: depth, zeta
+      real(rk) :: dtm
+      integer     :: ierr
+      character(len=512) :: errmsg
+
+      dtm = real(dt_main, kind=rk)
 
   
       if (PE%is_init) return
@@ -112,7 +121,7 @@ contains
       PE%PS%eps = 5.0e-10_rk
       PE%PS%cmue1 = 0.0_rk
   
-      ! --- A sensible initial length-scale (S2P3) ---
+      ! --- A sensible initial mixing length-scale (S2P3) ---
       depth = PE%grid%depth
       allocate(PE%PS%Lscale(0:PE%PS%N))
       allocate(Hface(0:PE%PS%N))
@@ -127,7 +136,7 @@ contains
         if (Hface(k) > depth)         Hface(k) = depth
       end do
 
-      ! Neutral mixing length 
+      ! Initial mixing length 
       PE%PS%Lscale = 0.0_rk
       do k = 1, PE%PS%N-1
         zeta = Hface(k)/max(depth, 1.0e-12_rk)
@@ -142,6 +151,9 @@ contains
 
       ! Tridiagonal workspace
       call init_tridiag(PE%trid, PE%PS%N)
+
+      ! Computing inner time-step size
+      call compute_phys_subcycles(PE%grid%dz, PE%params%vismax, dtm, PE%n_sub, PE%dt_sub, ierr, errmsg)  
   
       PE%is_init = .true.
     end subroutine init_physics 
@@ -166,6 +178,8 @@ contains
       real(rk), allocatable :: u_old(:), u_new(:), v_old(:), v_new(:)
 
       dtm = real(dt_main, kind=rk)
+      dt_sub = PE%dt_sub          ! Size of the inner timestep
+      n_sub  = PE%n_sub           ! Number of inner timesteps per main timestep
 
       N = PE%PS%N                          ! Number of layers in the vertical grid
       if (allocated(u_old)) deallocate(u_old, u_new, v_old, v_new)
@@ -177,38 +191,11 @@ contains
       
       ! Calculating wind stress from wind-speed and direction
       call wind_stress_from_speed_dir(FS%wind_spd, FS%wind_dir, PE%PS%tau_x, PE%PS%tau_y)
-      ! Initial calculation for surface friction velocity and roughness length
-      PE%PS%u_taus = (((PE%PS%tau_x/PE%PS%rho(N))**2 + (PE%PS%tau_y/PE%PS%rho(N))**2 ))**0.25_rk
-      PE%PS%z0s = max(PE%params%charnock * (PE%PS%u_taus*PE%PS%u_taus) / gravity, z0s_min)  ! Surface roughness length
-
-      ! Turbulence: once per main step     
-        ! Solves turbulence using the Canuto k-ε closure scheme and calculates Kz and Nz
-        call TURBULENCE_ke(N, dtm, PE%params, PE%grid%dz,                       &
-                          density = PE%PS%rho, velx = u_old, vely = v_old,         &
-                          u_taus = PE%PS%u_taus, u_taub = PE%PS%u_taub,            &
-                          z0s = PE%PS%z0s, z0b = PE%PS%z0b,                        &
-                          Kz = PE%PS%Kz, Nz = PE%PS%Nz, tke = PE%PS%tke,           &
-                          eps = PE%PS%eps, Lscale=PE%PS%Lscale,                    &
-                          cmue1=PE%PS%cmue1, trid=PE%trid, is_first_step=is_first_step)
-      
-
-      
-      ! Calculates the optimum size of the time-steps  for the inner loop
-      ! by obtaining the stability condition so that explicit vertical diffusion of momentum is stable
-      call compute_phys_subcycles(PE%grid%dz, PE%PS%Nz, PE%PS%Kz, PE%params%vismax, dtm, n_sub, dt_sub, ierr, errmsg)    
 
       ! Inner subcycle to maintain numeriacl stability
       do ti = 1, n_sub
-          t_sub = real(elapsed_time,rk) + (real(ti,rk) - 0.5_rk)*dt_sub   ! Elapsed time for each substep
-  
-          call SURFACE_HEAT(temp = PE%PS%temp, dz = PE%grid%dz, N = N, dt=dt_sub, &
-                           rsds=FS%short_rad, rlds_down=FS%long_rad, wind_speed=FS%wind_spd,     &
-                           airT=FS%air_temp, rh=FS%rel_hum, airP=FS%slp,                      &
-                           lw_skin_penetration=PE%params%lw_skin_penetration,      &
-                           lambda=PE%params%lambda)
+          t_sub = real(elapsed_time,rk) + (real(ti,rk) - 0.5_rk)*dt_sub   ! Elapsed time for each substep  
           
-          ! Update density
-          PE%PS%rho  = eos_density(PE%PS%temp, PE%PS%sal)   
   
           ! Calculate current profile from tidal currents
           call tide_pressure_slopes(PE%Tides, t_sub, Pxsum, Pysum)             ! Pressure-gradient slopes from tidal constituents at this time
@@ -243,11 +230,31 @@ contains
           ! Update the state of velocities
           PE%PS%velx = u_old
           PE%PS%vely = v_old
-  
+
+          call SURFACE_HEAT(temp = PE%PS%temp, dz = PE%grid%dz, N = N, dt=dt_sub, &
+                           rsds=FS%short_rad, rlds_down=FS%long_rad, wind_speed=FS%wind_spd,     &
+                           airT=FS%air_temp, rh=FS%rel_hum, airP=FS%slp,                      &
+                           lw_skin_penetration=PE%params%lw_skin_penetration,      &
+                           lambda=PE%params%lambda)
+          
+          ! Update density
+          PE%PS%rho  = eos_density(PE%PS%temp, PE%PS%sal)   
+
           ! Then mix the vertical thermal structure with semi-implicit scalar scheme      
           call scalar_diffusion(PE%PS%temp, N, dt_sub, PE%grid%dz, PE%PS%Kz, PE%params%cnpar, PE%trid, ierr)
           ! Recompute density after thermal mixing
           PE%PS%rho = eos_density(PE%PS%temp, PE%PS%sal)
+
+          ! Solves turbulence using the Canuto k-eps closure scheme and calculates Kz and Nz
+          call TURBULENCE_ke(N, dt_sub, PE%params, PE%grid%dz,                       &
+                            density = PE%PS%rho, velx = u_old, vely = v_old,         &
+                            u_taus = PE%PS%u_taus, u_taub = PE%PS%u_taub,            &
+                            z0s = PE%PS%z0s, z0b = PE%PS%z0b,                        &
+                            Kz = PE%PS%Kz, Nz = PE%PS%Nz, tke = PE%PS%tke,           &
+                            eps = PE%PS%eps, Lscale=PE%PS%Lscale,                    &
+                            cmue1=PE%PS%cmue1, trid=PE%trid, is_first_step=is_first_step)   
+  
+          
       end do        
 
 !write(*,*) 'T(S)=', PE%PS%temp(N), ' T(B)=', PE%PS%temp(1), ' dt_sub=', dt_sub      
