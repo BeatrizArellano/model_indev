@@ -33,16 +33,16 @@ contains
   subroutine solve_tridiag(N, fi, lt, coeff, value)
     integer,            intent(in)  :: N, fi, lt
     type(TridiagCoeff), intent(inout) :: coeff
-    real(rk),           intent(out) :: value(1:N)
+    real(rk),           intent(out) :: value(:)
 
     integer :: i
     real(rk) :: denom
     real(rk), parameter :: eps = 1.0e-30_rk
 
     ! Forward sweep
-    denom        = merge(coeff%bu(lt), sign(1.0_rk, coeff%bu(lt))*eps, abs(coeff%bu(lt))>eps) ! Ensure the diagonal s big enough
-    coeff%ru(lt) = coeff%au(lt) / denom
-    coeff%qu(lt) = coeff%du(lt) / denom
+    !denom = merge(coeff%bu(lt), sign(1.0_rk, coeff%bu(lt))*eps, abs(coeff%bu(lt))>eps) ! Ensure the diagonal s big enough
+    coeff%ru(lt) = coeff%au(lt) / coeff%bu(lt)
+    coeff%qu(lt) = coeff%du(lt) / coeff%bu(lt)
 
     do i = lt-1, fi+1, -1
        denom        = coeff%bu(i) - coeff%cu(i)*coeff%ru(i+1)

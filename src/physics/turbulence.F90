@@ -38,7 +38,7 @@ contains
         real(rk) :: sm(0:N), sh(0:N), cmue2(0:N)
         real(rk) :: x, LLk
         integer  :: i
-        real(rk) :: dz_imh, du, dv
+        real(rk) :: du, dv, dz_imh
 
         ! ---- Shear (SS), Buoyancy freq (NN), Production P, Buoyancy term B ----
         SS(0:N) = 1.0e-6_rk
@@ -46,17 +46,16 @@ contains
         P (0:N) = 0.0_rk
         B (0:N) = 0.0_rk
 
-        do i=1, N-1
-            dz_imh = 0.5_rk*(h(i)+h(i+1))   ! spacing across face i+1/2
-            ! centered shear from u,v 
+        do i=1, N-1            
+            ! centered shear from u,v
+            dz_imh = 0.5_rk*(h(i)+h(i+1))
             du = velx(i+1) - velx(i)
             dv = vely(i+1) - vely(i)
-            !SS(i) = (du/dz_imh)**2 + (dv/dz_imh)**2 !Shear at the layer interfaces
-            SS(i)= SS(i) + 0.5*((du*du)/(0.5*(h(i+1)+h(i)))/h(i)   + (du*du)/(0.5*(h(i+1)+h(i)))/h(i+1)) &
-                   + 0.5*((dv*dv)/(0.5*(h(i+1)+h(i)))/h(i) + (dv*dv)/(0.5*(h(i+1)+h(i)))/h(i+1))
             ! NOTE: Previously S2P3 had a super long line to compute SS using cnpar but the terms cancelled out, so it is reduced to this
+            !SS(i) = SS(i) + (du**2 + dv**2) / (h(i) * h(i+1))
+            SS(i)  = (du/dz_imh)**2 + (dv/dz_imh)**2
 
-            ! buoyancy frequency N^2 = -(g/rho0) * dρ/dz
+            ! buoyancy frequency N^2 = -(g/rho0) * drho/dz
             NN(i) = -(gravity/rho0) * (density(i+1) - density(i)) / dz_imh
 
             ! provisional production/buoyancy terms use previous Nz/Kz; 
@@ -71,7 +70,7 @@ contains
         ! boundaries
         SS(0) = SS(1);   NN(0) = NN(1);   P(0) = P(1);   B(0) = B(1)
         SS(N) = SS(N-1); NN(N) = 0.0_rk;  Ri(N)= 0.0_rk
-        P(N)=Nz(N)*SS(N); B(N)=-Kz(N)*NN(N)
+        P(N)=Nz(N)*SS(N); B(N)=-Kz(N)*NN(N)                            ! Check
 
         tkeold = tke  
 
@@ -98,15 +97,15 @@ contains
         call stability_funcs(N, an, as, cmue1, cmue2, sm, sh)
 
         ! ---- Eddy coefficients Nz, Kz  --------
-        do i=1,N
+        do i=0,N
             x    = sqrt(tke(i)) * Lscale(i)
             Nz(i)= cmue1(i) * x
             Kz(i)= cmue2(i) * x
         end do
 
-        ! Apply effect of friction and roughness:
-        Nz(0)=kappa*u_taub*z0b; Nz(N)=kappa*u_taus*z0s
-        Kz(0)=kappa*u_taub*z0b; Kz(N)=kappa*u_taus*z0s
+        ! Apply effect of friction and roughness. Removed as it is already handled in tke_calc and dissipation
+        !Nz(0)=kappa*u_taub*z0b; Nz(N)=kappa*u_taus*z0s
+        !Kz(0)=kappa*u_taub*z0b; Kz(N)=kappa*u_taus*z0s
 
         ! Background + molecular + limits
         do i=0,N
@@ -138,7 +137,7 @@ contains
       cde = cm0**3
 
       ! interface diffusivity for k
-      do i=2,N-1
+      do i=1,N-1
         avh(i) = 0.5_rk*(Nz(i-1) + Nz(i))
       end do
       avh(1)=0.0_rk; avh(N)=0.0_rk
@@ -167,7 +166,7 @@ contains
       end do
 
       ! Solve for i=1..N-1
-      call solve_tridiag(N, 1, N-1, tri, tke)
+      call solve_tridiag(N, 1, N-1, tri, tke(1:N-1))
 
       ! Boundary values 
       tke(0) = (u_taub*u_taub) / sqrt(cm0*cde)
@@ -182,16 +181,16 @@ contains
     subroutine dissipation(N, dt, h, Nz, tke, tkeold, NN, P, B, z0b, z0s, u_taus, u_taub, eps, cmue1, Lscale, tri)
       integer,            intent(in)    :: N
       real(rk),           intent(in)    :: dt
-      real(rk),           intent(in)    :: h(1:N), Nz(0:N), tke(0:N), tkeold(0:N), NN(0:N), P(0:N), B(0:N)
+      real(rk),           intent(in)    :: h(1:N), Nz(0:N), tke(0:N), tkeold(0:N), P(0:N), B(0:N)
       real(rk),           intent(in)    :: z0b, z0s, u_taus, u_taub
-      real(rk),           intent(inout) :: eps(0:N), cmue1(0:N)
+      real(rk),           intent(inout) :: eps(0:N), cmue1(0:N), NN(0:N)
       real(rk),           intent(out)   :: Lscale(0:N)
       type(TridiagCoeff), intent(inout) :: tri
 
       real(rk) :: ce1, ce2, galp, cde
       real(rk) :: sig_e(0:N), avh(0:N), flux(0:N)
       real(rk) :: pminus(0:N), pplus(0:N)
-      real(rk) :: prod, buoyan, diss, cee3, epslim, NN_lim
+      real(rk) :: prod, buoyan, diss, cee3, epslim
       real(rk), parameter :: eps_min = 5.0e-10_rk
       real(rk), parameter :: L_min   = 1.0e-2_rk
       real(rk), parameter :: NN_floor = 1.0e-6_rk
@@ -210,14 +209,14 @@ contains
       sig_e(0:N)= ((kappa**2)*cm0)/(ce2-ce1)/cde           !sig_e1 previously
 
 
-      ! harmonic-like average for ε diffusion coeff
+      ! harmonic-like average for eps diffusion coeff
       do i=1,N
          avh(i) = 0.5_rk*(Nz(i-1)/sig_e(i-1) + Nz(i)/sig_e(i))
       end do
 
       ! Flux boundary contributions (S2P3)
       flux(1:N-1) = 0.0_rk
-      flux(1)     = avh(1) * cde * tkeold(1)**1.5_rk / (kappa*(z0b + h(1))**2)      
+      flux(1)     = avh(1) * cde * (tkeold(1)**1.5_rk)/ (kappa*(z0b + h(1))**2)      
       ! Without surface wave impact on flux
       flux(N-1)   = cmue1(N-1)*sqrt(tkeold(N-1))*kappa*(h(N)+z0s)/sig_e(N-1)*cde*tkeold(N-1)**1.5/(kappa*(z0s+h(N))**2)                    
       avh(1)=0.0; avh(N)=0.0
@@ -252,11 +251,11 @@ contains
                      flux(i)*dt/(0.5_rk*(h(i)+h(i+1)))
       end do
 
-      call solve_tridiag(N, 1, N-1, tri, eps)
+      call solve_tridiag(N, 1, N-1, tri, eps(1:N-1))         ! Passing only the slice we're interested in solving as boundaries are managed later
 
       ! Boundaries
       eps(0) = cde * sqrt(tke(0)*tke(0)*tke(0))/kappa/z0b
-      eps(N) = cde * tke(N)**1.5_rk / kappa/z0s
+      eps(N) = cde * sqrt(tke(N)*tke(N)*tke(N))/kappa/z0s
 
       ! L scale with stratification cap and floors
       do i=0,N
@@ -266,10 +265,10 @@ contains
             epslim = eps_min
          end if
          if (eps(i) < epslim) eps(i) = epslim
-         Lscale(i) = cde * tke(i)**1.5_rk / max(eps(i), eps_min)
-         NN_lim = max(NN(i), NN_floor)
-         if (Lscale(i).gt.(0.267_rk*sqrt(2.0_rk*tke(i)/NN_lim))) then
-            Lscale(i) =  0.267_rk*sqrt(2.0_rk*tke(i)/abs(NN_lim)) 
+         Lscale(i) = cde * sqrt(tke(i)*tke(i)*tke(i))/ max(eps(i), eps_min)
+         NN(i) = max(NN(i), NN_floor)
+         if (Lscale(i).gt.(0.267_rk*sqrt(2.0_rk*tke(i)/NN(i)))) then
+            Lscale(i) =  0.267_rk*sqrt(2.0_rk*tke(i)/NN(i)) 
          end if
          if (Lscale(i) < L_min) Lscale(i) = L_min
       end do

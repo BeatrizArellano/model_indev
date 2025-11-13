@@ -4,7 +4,7 @@ module physics_main
   use precision_types,     only: rk, lk
   use read_config_yaml,    only: ConfigParams
   use geo_utils,           only: LocationInfo
-  use grid_builders,       only: VerticalGrid, reorder_grid_bottom_first
+  use grids,               only: VerticalGrid, reorder_grid_bottom_first
   use tidal_readers,       only: read_tidal_parameters
   use tidal,               only: TidalSet, create_tidal_set, tide_pressure_slopes
   use forcing_manager,     only: ForcingSnapshot
@@ -250,7 +250,7 @@ contains
           PE%PS%rho = eos_density(PE%PS%temp, PE%PS%sal)
       end do        
 
-!write(*,*) 'T(S)=', PE%PS%temp(N), ' T(B)=', PE%PS%temp(1), ' dt_sub=', dt_sub      
+!write(*,*) 'u_taub=', PE%PS%u_taub, ' Kz(B)=', PE%PS%Kz(0), ' dt_sub=', dt_sub
       deallocate(u_old, u_new, v_old, v_new)
     end subroutine solve_physics  
   

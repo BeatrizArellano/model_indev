@@ -6,7 +6,7 @@ module shelfseas
   use time_types,       only: DateTime, CFCalendar
   use validation_utils, only: validate_input_dates, validate_location_input, print_header
   use sim_clocks,       only: init_clock
-  use grid_builders,    only: VerticalGrid, build_water_grid, write_vertical_grid
+  use grids,            only: VerticalGrid, build_water_grid, write_vertical_grid
   use forcing_manager,  only: ForcingManager, ForcingSnapshot
   use physics_main,     only: init_physics, solve_physics, end_physics, PhysicsState, PhysicsEnv
   use output_manager,   only: OutputManager

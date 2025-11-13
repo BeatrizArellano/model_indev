@@ -6,7 +6,7 @@ module output_writer
   use netcdf_io,        only: NcFile, nc_create, nc_redef, nc_enddef, nc_close, nc_sync, &
                               nc_def_dim, nc_def_var_real, nc_def_var_double, &
                               nc_put_att_str, nc_put_att_real, nc_write_real
-  use grid_builders,    only: VerticalGrid
+  use grids,            only: VerticalGrid
   implicit none
   private
   public :: OutputWriter, outputwriter_open_file, outputwriter_append_record, outputwriter_close_file

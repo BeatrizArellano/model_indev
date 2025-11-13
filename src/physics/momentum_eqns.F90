@@ -29,11 +29,11 @@ contains
         
         alf  = f0 * timestep                      ! constants used for semi-implicit Coriolis
         alf1 = 1.0_rk / (1.0_rk + 0.25_rk*alf*alf)
-        alf2 = 1.0_rk - 0.25_rk*alf*alf             
+        alf2 = 1.0_rk - (0.25_rk*alf*alf)             
 
         u0 = u;  v0 = v                            ! keeps the old state for updating both u and v
-        u  = alf1 * ( alf2*u0 + alf*v0 )
-        v  = alf1 * (-alf*u0 + alf2*v0 )
+        u  = alf1 * ( alf2*u0 + alf*v0)
+        v  = alf1 * (-alf*u0 + alf2*v0)
     end subroutine EQN_CORIOLIS
 
 
@@ -47,7 +47,7 @@ contains
         u10  = -windspeed * sin(th)      ! East component
         v10  = -windspeed * cos(th)      ! north
         ! Smith & Banke (1975): Cd = (0.63 + 0.066*wind_speed)×1e-3 (In Simon and Sharples)
-        Cd = (0.63_rk + 0.066_rk*windspeed) * 1.0e-3_rk
+        Cd = (0.63_rk + 0.066_rk*windspeed) * 1e-3_rk 
           ! Stress τ = rho_air * Cd * |ws| * u (or v)
         fac   = rho_air * Cd * windspeed
         stressx = fac * u10
@@ -83,7 +83,7 @@ contains
         real(rk) :: dz_imh, dz_iph, flux_dn, flux_up, dv
         real(rk) :: zc, Uc, rb, ustar_b, z0r, z0sm, z0new, logarg
         real(rk) :: rho_surf   !rho_bed, 
-        real(rk) :: stresss
+        !real(rk) :: stresss
         integer  :: it
 
         N     = size(vel_comp_old); vel_comp_new = vel_comp_old
@@ -112,17 +112,21 @@ contains
         ! ---- Bottom friction: using law-of-the-wall to compute friction velocity
         !   NOTES:
         !   - S2P3 used a constant kb with a 1 m "bed" velocity (via bed_factor).
-        !   - That relates stress to a fized reference height and to a fixed layer thickness.
+        !   - That relates stress to a fixed reference height and to a fixed layer thickness.
         !   - Here we compute a height-consistent drag from the log-law at the actual sampling height
+        !   Law of the wall: U(z)=(ustar/kappa)*ln(z/z0)
+        !   where ustar is friction velocity (shear), z is depth, and z0 is roughness length. 
+        !   U(z) is the mean velocity at height z above the bed.
+        !   It assumes we are in the logarithmic region of the velocity profile, but at a height larger than z0. 
         !     zc = h1/2. The momentum sink still enters the bottom cell like in S2P3.
-        z0r = 0.03_rk*h0b           ! converts Nikuradse height (h0b) to roughness length (≈ k_s/33).
+        z0r = 0.03_rk*h0b           ! converts Nikuradse height (h0b) to roughness length (approx k_s/33).
         z0b = max(z0r, 1.0e-6_rk)   ! initial roughness (rough limit only to start)
 
-        ! iterate a few times because z0sm (smooth term) depends on ustar via rb*Uc
+        ! iterate a few times because z0sm (smooth term) depends on ustar via rb*Uc, both terms depend on each other
         do it=1,3
-            ! log-law factor at the actual sampling height zc = h(1)/2 (kept ≥ 10*z0b)
-            logarg = log(max(zc, 10.0_rk*z0b) / z0b)
-            rb     = kappa / logarg
+            ! log-law factor at the actual sampling height zc = h(1)/2 and keeping it out of the viscous sublayer (10*z0b)
+            logarg = log(max(zc, 10.0_rk*z0b) / z0b)           ! Log part
+            rb     = kappa / logarg                            ! rb = ustar/U(z) = kappa/ln(z/z0)
             ! Magnitude of speed at the centre of bottom layer
             Uc     = sqrt(vel_comp_old(1)*vel_comp_old(1) + vel_comp2_bottom*vel_comp2_bottom)            
             ustar_b= rb * Uc                                   ! shear velocity from log-law
@@ -133,7 +137,6 @@ contains
             end if
             ! updated roughness length 
             z0new = max(z0sm + z0r, 1.0e-6_rk)    
-            if (abs(z0new - z0b) <= 1.0e-9_rk) exit
             z0b = z0new
         end do
 
@@ -160,7 +163,8 @@ contains
         vel_comp_new(N) = vel_comp_old(N) + dv
         !	surface stress boundary conditions...
 
-        stresss = sqrt((tau_surf*tau_surf) + (tau_surf2*tau_surf2))
+        
+        !stresss = sqrt((tau_surf*tau_surf) + (tau_surf2*tau_surf2))
         u_taus = (((tau_surf/rho_surf)**2 + (tau_surf2/rho_surf)**2 ))**0.25_rk
         z0s = max(charnock * (u_taus*u_taus) / gravity, z0s_min)  ! air-side u_* for Charnock
     end subroutine EQN_FRICTION

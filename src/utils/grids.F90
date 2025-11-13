@@ -1,4 +1,4 @@
-module grid_builders
+module grids
   use precision_types,  only: rk
   use read_config_yaml, only: ConfigParams
   use geo_utils,        only: LocationInfo
@@ -99,7 +99,8 @@ contains
             end if
             end select
     end subroutine build_water_grid
-
+    
+    ! Some subroutines require the grids to be inverted
     subroutine reorder_grid_bottom_first(g)
         type(VerticalGrid), intent(inout) :: g
         integer :: N, i, lbz, ubz, lbdz, ubdz
@@ -109,28 +110,28 @@ contains
         N = g%nz
         if (N <= 0) return
 
-        ! ---- flip centers (1..N) ----
-        lbz = lbound(g%z,1);  ubz = ubound(g%z,1)
+        ! ---- Flip centers (1..N) ----
+        lbz = lbound(g%z,1);  ubz = ubound(g%z,1)    ! Lowest and upper indices found in the array
         if (ubz-lbz+1 /= N) stop 'reorder_grid_bottom_first: size(z) mismatch'
         allocate(z_new(1:N))
-        do i = 1, N
-            z_new(i) = g%z(lbz + (N - i))
-        end do
-
-        ! ---- flip thicknesses (1..N) ----
+        z_new  = g%z (ubz:lbz:-1)
+        !do i = 1, N 
+        !    z_new(i) = g%z(lbz + (N - i)) 
+        !end do
+        
+        ! ---- Flip layer thicknesses (1..N) ----
         lbdz = lbound(g%dz,1);  ubdz = ubound(g%dz,1)
-        if (ubdz-lbdz+1 /= N) stop 'reorder_grid_bottom_first: size(dz) mismatch'
         allocate(dz_new(1:N))
-        do i = 1, N
-            dz_new(i) = g%dz(lbdz + (N - i))
-            if (dz_new(i) <= 0.0_rk) stop 'reorder_grid_bottom_first: dz <= 0 after flip'
-        end do
+        dz_new = g%dz(ubdz:lbdz:-1)
+        !do i = 1, N 
+        !    dz_new(i) = g%dz(lbdz + (N - i)) 
+        !    if (dz_new(i) <= 0.0_rk) stop 'reorder_grid_bottom_first: dz <= 0 after flip' 
+        !end do
 
-        ! ---- rebuild faces (0..N) from dz (depth-from-surface; strictly decreasing) ----
+        ! ---- rebuild interfaces (0..N) from dz (depth-from-surface) ----
         allocate(zw_new(0:N))
-        depth_check = 0.0_rk
-        do i=1,N; depth_check = depth_check + dz_new(i); end do
-        zw_new(0) = depth_check                ! bed (largest depth value)
+        depth_check = sum(dz_new)
+        zw_new(0) = depth_check                ! seabed (depth value)
         do i = 1, N
             zw_new(i) = zw_new(i-1) - dz_new(i)  ! steps down to ~0 at surface
         end do
@@ -140,7 +141,6 @@ contains
         g%dz  = dz_new
         g%z_w = zw_new
         g%depth = depth_check                  ! keep depth consistent
-
     end subroutine reorder_grid_bottom_first
 
 
@@ -177,7 +177,7 @@ contains
 
     subroutine allocate_grid(g, nz)
         type(VerticalGrid), intent(inout) :: g
-        integer,         intent(in)    :: nz
+        integer,            intent(in)    :: nz
         g%nz = nz
         if (allocated(g%z))   deallocate(g%z)
         if (allocated(g%dz))  deallocate(g%dz)
@@ -207,16 +207,16 @@ contains
 
         g%z_w(1) = 0._rk
         do i = 1, g%nz
-        g%z_w(i+1) = g%z_w(i) + g%dz(i)
-        g%z(i)     = 0.5_rk * (g%z_w(i) + g%z_w(i+1))
+            g%z_w(i+1) = g%z_w(i) + g%dz(i)
+            g%z(i)     = 0.5_rk * (g%z_w(i) + g%z_w(i+1))
         end do
 
-        ! Close to exact depth (fix roundoff on last cell if needed)
+        ! Match the exact depth in water column
         total = g%z_w(g%nz+1)
         if (abs(total - g%depth) > max(1.0e-12_rk, 1.0e-9_rk * g%depth)) then
-        g%z_w(g%nz+1) = g%depth
-        g%dz(g%nz)    = g%z_w(g%nz+1) - g%z_w(g%nz)
-        g%z(g%nz)     = 0.5_rk * (g%z_w(g%nz) + g%z_w(g%nz+1))
+            g%z_w(g%nz+1) = g%depth
+            g%dz(g%nz)    = g%z_w(g%nz+1) - g%z_w(g%nz)
+            g%z(g%nz)     = 0.5_rk * (g%z_w(g%nz) + g%z_w(g%nz+1))
         end if
     end subroutine calculate_layer_depths
 
@@ -237,7 +237,7 @@ contains
         has_nz = .not. params%is_disabled('grid.water.nlayers')
 
         if (has_nz .and. has_dz) then
-            ! Prefer dz when both provided
+            ! Prefer dz when both are provided
             dz     = params%get_param_num('grid.water.dz', required=.true., positive=.true., &
                                         min=min_dz, finite=.true.)
             method = 'dz'
@@ -253,4 +253,4 @@ contains
         end if
     end subroutine read_wgrid_config
 
-end module grid_builders
+end module grids

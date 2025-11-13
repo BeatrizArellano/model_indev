@@ -2,8 +2,8 @@ module output_manager
   use precision_types,  only: rk, lk
   use read_config_yaml, only: ConfigParams
   use time_utils,       only: parse_interval_to_seconds, sec_per_hour, sec_per_day
-  use grid_builders,     only: VerticalGrid
-  use output_writer,     only: OutputWriter
+  use grids,            only: VerticalGrid
+  use output_writer,    only: OutputWriter
   implicit none
   private
   public :: OutputManager
