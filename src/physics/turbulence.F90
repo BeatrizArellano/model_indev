@@ -69,8 +69,7 @@ contains
 
         ! boundaries
         SS(0) = SS(1);   NN(0) = NN(1);   P(0) = P(1);   B(0) = B(1)
-        SS(N) = SS(N-1); NN(N) = 0.0_rk;  Ri(N)= 0.0_rk
-        P(N)=Nz(N)*SS(N); B(N)=-Kz(N)*NN(N)                            ! Check
+        SS(N) = SS(N-1); NN(N) = 0.0_rk;  Ri(N)= 0.0_rk; Ri(0) = NN(0) / SS(0)
 
         tkeold = tke  
 
@@ -103,7 +102,8 @@ contains
             Kz(i)= cmue2(i) * x
         end do
 
-        ! Apply effect of friction and roughness. Removed as it is already handled in tke_calc and dissipation
+        ! Apply effect of friction and roughness. 
+        ! Removed as it is already handled properly in tke_calc and dissipation
         !Nz(0)=kappa*u_taub*z0b; Nz(N)=kappa*u_taus*z0s
         !Kz(0)=kappa*u_taub*z0b; Kz(N)=kappa*u_taus*z0s
 
