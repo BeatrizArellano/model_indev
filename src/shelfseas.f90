@@ -8,7 +8,8 @@ module shelfseas
   use sim_clocks,       only: init_clock
   use grids,            only: VerticalGrid, build_water_grid, write_vertical_grid
   use forcing_manager,  only: ForcingManager, ForcingSnapshot
-  use physics_main,     only: init_physics, solve_physics, end_physics, PhysicsState, PhysicsEnv
+  use physics_types,    only: PhysicsState, PhysicsEnv
+  use physics_main,     only: init_physics, solve_physics, end_physics
   use output_manager,   only: OutputManager
 
   !Dev

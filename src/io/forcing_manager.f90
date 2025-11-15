@@ -75,8 +75,8 @@ contains
 
         call scan_and_init_forcing(params, calendar_cfg, location, start_datetime, end_datetime, self%Fstate, ok, errmsg)
         if (.not. ok) then
-        if (self%hard_fail) stop 1
-        return
+            call stop_fatal('scan_and_init_forcing', errmsg, self%hard_fail)
+            return
         end if
 
         call print_forcing_summary(self%Fstate)
@@ -103,7 +103,8 @@ contains
 
         ok = .false.; errmsg = ''
         if (.not. self%is_init) then
-            errmsg = 'ForcingManager not initialized'; if (self%hard_fail) stop 1; return
+            errmsg = 'ForcingManager not initialized'
+            call stop_fatal('prepare', errmsg, self%hard_fail)
         end if
 
         ! Pad interval (ensure >= dt_main)
@@ -120,16 +121,16 @@ contains
         ! Load current year
         k = year_to_simyear(self%y_active, self%Fstate%sim_y_start, self%Fstate%sim_y_end)
         if (k <= 0) then
-            errmsg = 'prepare: start year outside simulation range'
-            if (self%hard_fail) stop 1
+            errmsg = 'start year outside simulation range'
+            call stop_fatal('prepare: ', errmsg, self%hard_fail)
             return
         end if
 
         if (.not. allocated(self%Ydata_curr)) allocate(self%Ydata_curr)
         call load_year_data(self%Fstate, k, self%Ydata_curr, lok, lmsg)
         if (.not. lok) then
-            errmsg = 'load_year_data(Y='//trim(adjustl(inttostr(self%sim_start%year)))//') failed: '//trim(lmsg)
-            if (self%hard_fail) stop 1
+            errmsg = '(Y='//trim(adjustl(inttostr(self%sim_start%year)))//') failed: '//trim(lmsg)
+            call stop_fatal('load_year_data', errmsg, self%hard_fail)
             return
         end if
 
@@ -167,7 +168,7 @@ contains
                 if (.not. lok) then
                 if (present(ok))     ok = .false.
                 if (present(errmsg)) errmsg = 'Preload next year failed: '//trim(lmsg)
-                if (self%hard_fail) stop 1
+                call stop_fatal('tick', errmsg, self%hard_fail)
                 return
                 end if
                 self%have_next = .true.
@@ -191,7 +192,7 @@ contains
                     if (.not. lok) then
                         if (present(ok))     ok = .false.
                         if (present(errmsg)) errmsg = 'Just in time year data load failed: '//trim(lmsg)
-                        if (self%hard_fail) stop 1
+                        call stop_fatal('tick/just_in_time', errmsg, self%hard_fail)
                         return
                     end if
                 self%have_curr = .true.
@@ -219,7 +220,7 @@ contains
         if (.not. self%have_curr) then
             if (present(ok))     ok = .false.
             if (present(errmsg)) errmsg = 'Forcing data snapshot failed, data is not loaded'
-            if (self%hard_fail) stop 1
+            call stop_fatal('sample', errmsg, self%hard_fail)
             return
         end if
 
@@ -263,9 +264,9 @@ contains
     integer function get_sim_calendar(self) result(cal_kind)
         class(ForcingManager), intent(in) :: self
         if (.not. self%is_init) then
-        cal_kind = 0
+            cal_kind = 0
         else
-        cal_kind = self%Fstate%sim_cal%kind
+            cal_kind = self%Fstate%sim_cal%kind
         end if
     end function get_sim_calendar
 
@@ -279,5 +280,15 @@ contains
         dtb%hour   = 0; dtb%minute = 0; dtb%second = 0
         t_switch = seconds_between_datetimes(cal, dtb, start_datetime)
     end function compute_switch_time
+
+    subroutine stop_fatal(where, msg, hard_fail)
+        character(*), intent(in) :: where, msg
+        logical,      intent(in) :: hard_fail
+
+        if (.not. hard_fail) return
+
+        write(*,*) 'FATAL ForcingManager['//trim(where)//']: ', trim(msg)
+        stop 1
+    end subroutine stop_fatal
 
 end module forcing_manager

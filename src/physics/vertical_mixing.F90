@@ -1,6 +1,6 @@
 module vertical_mixing
   use precision_types, only: rk
-  use boundary_types,  only: Dirichlet, Neumann
+  use physics_types,   only: Dirichlet, Neumann
   use tridiagonal, only: TridiagCoeff, init_tridiag, solve_tridiag, reset_tridiag
   implicit none
   private
@@ -186,7 +186,7 @@ contains
         !---------------------------
         ! Solve tridiagonal system
         !---------------------------
-        call solve_tridiag(N,1,N,tricoef,Y)
+        call solve_tridiag(1,N,tricoef,Y)
 
     end subroutine scalar_diffusion
 

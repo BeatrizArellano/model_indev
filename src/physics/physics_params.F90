@@ -52,7 +52,6 @@ module physics_params
      ! Surface
      real(rk) :: charnock
      ! Seabed         
-     real(rk) :: kb                  ! drag_coeff [-]
      real(rk) :: h0b                 ! roughness height [m]
      ! Mixing         
      real(rk) :: vismax              ! [m2 s-1]
@@ -80,7 +79,6 @@ contains
         !------------------Surface ----------------
         phys%charnock = cfg_params%get_param_num('physics.surface.roughness.charnock', default=def_charnock, finite=.true., min=0._rk)
         ! ---------------- Seabed ----------------
-        phys%kb    = cfg_params%get_param_num('physics.seabed.drag_coeff', default=def_drag_coeff, finite=.true., min=0._rk)
         phys%h0b   = cfg_params%get_param_num('physics.seabed.roughness_height', default=def_h0b, finite=.true., min=0._rk)
         ! ---------------- Mixing ----------------
         phys%vismax = cfg_params%get_param_num('physics.mixing.vismax', default=def_vismax, finite=.true., min=0._rk)
@@ -100,7 +98,6 @@ contains
         type(PhysicsParams) :: p
         p%temp0      = def_temp0
         p%sal0       = def_sal0
-        p%kb         = def_drag_coeff
         p%h0b        = def_h0b
         p%vismax     = def_vismax
         p%Kz_bg      = def_Kz_bg

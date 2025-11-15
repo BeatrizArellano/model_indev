@@ -162,9 +162,10 @@ contains
         inquire (iolength=u) u
         open(newunit=u, file=trim(filename), status='replace', action='write', form='formatted')
 
-        write(u,'(A)') '# layer  depth_center_m  interface_top_m  interface_bottom_m'
+        write(u,'(A)') 'layer  depth_center_m  thickness_m  interface_top_m  interface_bottom_m'
         do i = 1, grid%nz
-            write(u,'(I6,1X,F12.6,1X,F12.6,1X,F12.6)') i, grid%z(i), grid%z_w(i), grid%z_w(i+1)
+            write(u,'(I6,1X,F12.6,1X,F12.6,1X,F12.6,1X,F12.6)') &
+            i, grid%z(i), grid%dz(i), grid%z_w(i), grid%z_w(i+1)
         end do
 
         close(u)

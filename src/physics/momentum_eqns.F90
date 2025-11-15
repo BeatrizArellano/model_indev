@@ -168,43 +168,5 @@ contains
         u_taus = (((tau_surf/rho_surf)**2 + (tau_surf2/rho_surf)**2 ))**0.25_rk
         z0s = max(charnock * (u_taus*u_taus) / gravity, z0s_min)  ! air-side u_* for Charnock
     end subroutine EQN_FRICTION
-
-
-    !---------------------Helper -------------------
-    ! Calculates a factor to correct currents above the seabed
-    pure real(rk) function calc_bed_factor(h1, h0b, z_target) result(bed_factor)
-        ! Return S2P3-style bed_factor = U(zc) / U(z_target)
-        ! h1      : bottom-layer thickness [m]
-        ! h0b     : Physical bottom roughness
-        ! z_target: height above bed [m] - 1 meter in S2P3
-        real(rk), intent(in)           :: h1, h0b   ! h0b = k_s (Nikuradse height)
-        real(rk), intent(in), optional :: z_target  ! [m]; default 1.0
-        real(rk) :: z0, zc, zt, zmin
-
-        z0   = max(h0b/30.0_rk, 1.0e-6_rk)   ! convert to roughness length
-        zc   = 0.5_rk*h1                      ! cell-centre height
-        zt   = 1.0_rk; if (present(z_target)) zt = z_target
-
-        zmin = 10.0_rk*z0                   ! To keep outside of the roughness sublayer
-        zc   = max(zc, zmin)
-        zt   = max(zt, zmin)                ! target height 
-
-        ! If zc and zt have the same value, the factor is 1.
-        if (abs(zc-zt) <= 1.0e-12_rk) then
-            bed_factor = 1.0_rk
-        else
-            ! Using law of the wall to estimate the bed factor. Kappa cancels out. 
-            bed_factor = log((zc+z0)/z0) / log((zt+z0)/z0)
-        end if                
-        ! Bed factor used in S2P3 - fixed at 1 m
-        ! bed_factor=-0.0016*(dz**2.0)+0.0328*dz+0.9357   
-    end function calc_bed_factor
-
-
-
-   
-
-
-
-
+    
 end module momentum_eqns

@@ -30,36 +30,36 @@ contains
   end subroutine reset_tridiag
 
   ! Thomas algorithm to solve a tridiagonal matrix
-  subroutine solve_tridiag(N, fi, lt, coeff, value)
-    integer,            intent(in)  :: N, fi, lt
-    type(TridiagCoeff), intent(inout) :: coeff
-    real(rk),           intent(out) :: value(:)
+  subroutine solve_tridiag(fi, lt, coeff, values)
+      integer,            intent(in)  :: fi, lt
+      type(TridiagCoeff), intent(inout) :: coeff
+      real(rk),           intent(out) :: values(:)
 
-    integer :: i
-    real(rk) :: denom
-    real(rk), parameter :: eps = 1.0e-30_rk
+      integer :: i
+      real(rk) :: denom
+      real(rk), parameter :: eps = 1.0e-30_rk
 
-    ! Forward sweep
-    !denom = merge(coeff%bu(lt), sign(1.0_rk, coeff%bu(lt))*eps, abs(coeff%bu(lt))>eps) ! Ensure the diagonal s big enough
-    coeff%ru(lt) = coeff%au(lt) / coeff%bu(lt)
-    coeff%qu(lt) = coeff%du(lt) / coeff%bu(lt)
+      ! Forward sweep
+      !denom = merge(coeff%bu(lt), sign(1.0_rk, coeff%bu(lt))*eps, abs(coeff%bu(lt))>eps) ! Ensure the diagonal s big enough
+      coeff%ru(lt) = coeff%au(lt) / coeff%bu(lt)
+      coeff%qu(lt) = coeff%du(lt) / coeff%bu(lt)
 
-    do i = lt-1, fi+1, -1
-       denom        = coeff%bu(i) - coeff%cu(i)*coeff%ru(i+1)
-       if (abs(denom) <= eps) denom = sign(eps, denom)  ! safeguard
-       coeff%ru(i) = coeff%au(i) / denom
-       coeff%qu(i) = (coeff%du(i) - coeff%cu(i)*coeff%qu(i+1)) / denom
-    end do
+      do i = lt-1, fi+1, -1
+        denom        = coeff%bu(i) - coeff%cu(i)*coeff%ru(i+1)
+        !if (abs(denom) <= eps) denom = sign(eps, denom)  ! safeguard
+        coeff%ru(i) = coeff%au(i) / denom
+        coeff%qu(i) = (coeff%du(i) - coeff%cu(i)*coeff%qu(i+1)) / denom
+      end do
 
-    denom      = coeff%bu(fi) - coeff%cu(fi)*coeff%ru(fi+1)
-    if (abs(denom) <= eps) denom = sign(eps, denom)
-    coeff%qu(fi) = (coeff%du(fi) - coeff%cu(fi)*coeff%qu(fi+1)) / denom
+      denom      = coeff%bu(fi) - coeff%cu(fi)*coeff%ru(fi+1)
+      if (abs(denom) <= eps) denom = sign(eps, denom)
+      coeff%qu(fi) = (coeff%du(fi) - coeff%cu(fi)*coeff%qu(fi+1)) / denom
 
-    ! Back substitution
-    value(fi) = coeff%qu(fi)
-    do i = fi+1, lt
-       value(i) = coeff%qu(i) - coeff%ru(i)*value(i-1)
-    end do
+      ! Back substitution
+      values(fi) = coeff%qu(fi)
+      do i = fi+1, lt
+        values(i) = coeff%qu(i) - coeff%ru(i)*values(i-1)
+      end do
   end subroutine solve_tridiag
 
 end module tridiagonal

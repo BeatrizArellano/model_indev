@@ -14,54 +14,17 @@ module physics_main
   use heat_fluxes,         only: SURFACE_HEAT
   use vertical_mixing,     only: scalar_diffusion
   use numerical_stability, only: compute_phys_subcycles
-  use tridiagonal,         only: TridiagCoeff, init_tridiag, reset_tridiag
-  use physics_params,      only: PhysicsParams, read_physics_parameters, &
-                                 gravity, z0s_min, kappa
+  use tridiagonal,         only: init_tridiag, reset_tridiag
+  use physics_params,      only: read_physics_parameters, &
+                                 gravity, z0s_min, kappa, mol_nu, mol_diff_T
+  use physics_types,       only: PhysicsState, PhysicsEnv
+  use nan_checks,          only: check_nan_physics
   
   implicit none
   private
 
   ! Public API
-  public :: init_physics, solve_physics, end_physics, PhysicsState, PhysicsEnv             ! set up grid, parameters, state
-
-  !======================
-  ! Internal state
-  !======================
-
-  type :: PhysicsState
-    integer              :: N                     ! Number of layers in the water column
-    ! --- Prognostic variables at layers' centres (1..N) ---
-    real(rk), allocatable :: temp(:), sal(:), rho(:)  ! temperature, salinity and density
-    real(rk), allocatable :: velx(:), vely(:)         ! Velocity components
-
-    ! --- Turbulence and mixing on layer interfaces (0..N) ---
-    real(rk), allocatable :: Kz(:)                    ! scalar diffusivity at interfaces [m2/s]
-    real(rk), allocatable :: Nz(:)                    ! momentum viscosity at faces [m2/s], 0..N
-    real(rk), allocatable :: tke(:)                   ! TKE at interfaces
-    real(rk), allocatable :: eps(:)                   ! epsilon
-    real(rk), allocatable :: Lscale(:)                ! Length scale
-    
-    ! --- Surface and bottom ---
-    real(rk) :: tau_x = 0.0_rk, tau_y = 0.0_rk        ! wind stress components [N m-2]
-    real(rk) :: u_taus = 0.0_rk, u_taub = 0.0_rk      ! friction velocities at surface and bottom [m s-1]
-    real(rk) :: z0s    = z0s_min, z0b  = 0.01_rk      ! surface and bottom roughness lengths [m]
-
-    ! --- Heat fluxes  ---
-    !real(rk) :: Q_sw_net = 0.0_rk, Q_lw_net = 0.0_rk, Q_lat = 0.0_rk, Q_sens = 0.0_rk, Q_net = 0.0_rk
-    ! -- Working arrays
-    real(rk), allocatable :: cmue1(:)                 ! Stability function (used outside to pass to dissipation)
-  end type PhysicsState
-
-  ! An envelope for the Physics Environment
-  type :: PhysicsEnv   
-    type(VerticalGrid)   :: grid       ! per-column grid (copy or pointer to external)
-    type(PhysicsState)   :: PS         ! prognostic + turbulence arrays
-    type(PhysicsParams)  :: params     ! per-column physics params (or shared elsewhere)
-    type(TidalSet)       :: Tides      ! site-specific tides
-    type(TridiagCoeff)   :: trid        ! workspace for implicit solves
-    logical              :: is_init = .false. ! Flag to indicate that the physics is initialised for this water column
-  end type PhysicsEnv
-
+  public :: init_physics, solve_physics, end_physics             ! set up grid, parameters, state
 
 contains
 
@@ -76,7 +39,7 @@ contains
       type(PhysicsEnv),   intent(inout) :: PE
 
       integer :: k
-      real(rk), allocatable :: Hface(:)
+      real(rk), allocatable :: height(:)
       real(rk) :: depth, zeta
 
   
@@ -115,30 +78,24 @@ contains
       ! --- A sensible initial length-scale (S2P3) ---
       depth = PE%grid%depth
       allocate(PE%PS%Lscale(0:PE%PS%N))
-      allocate(Hface(0:PE%PS%N))
-      ! Height above bed at faces from dz only
-      Hface(0) = 0.0_rk
+      allocate(height(0:PE%PS%N))
+      ! Height above bed at interfaces from dz only
+      height(0) = 0.0_rk
       do k = 1, PE%PS%N
-        Hface(k) = Hface(k-1) + PE%grid%dz(k)
-      end do
-      ! Clamp tiny roundoff
-      do k = 0, PE%PS%N
-        if (Hface(k) < 0.0_rk)        Hface(k) = 0.0_rk
-        if (Hface(k) > depth)         Hface(k) = depth
+        height(k) = height(k-1) + PE%grid%dz(k)
       end do
 
       ! Neutral mixing length 
       PE%PS%Lscale = 0.0_rk
       do k = 1, PE%PS%N-1
-        zeta = Hface(k)/max(depth, 1.0e-12_rk)
-        zeta = min(max(zeta, 0.0_rk), 1.0_rk)        ! keep [0,1]
-        PE%PS%Lscale(k) = kappa * Hface(k) * sqrt(1.0_rk - zeta)
+        zeta = height(k)/depth
+        PE%PS%Lscale(k) = kappa * height(k) * sqrt(1.0_rk - zeta)
       end do
-      ! Boundaries: copy neighbors
+      ! Boundaries: copy neighbours
       PE%PS%Lscale(0)       = PE%PS%Lscale(1)
       PE%PS%Lscale(PE%PS%N) = PE%PS%Lscale(PE%PS%N-1)
 
-      deallocate(Hface)
+      deallocate(height)
 
       ! Tridiagonal workspace
       call init_tridiag(PE%trid, PE%PS%N)
@@ -164,12 +121,15 @@ contains
       
       ! --- Local Arrays ---
       real(rk), allocatable :: u_old(:), u_new(:), v_old(:), v_new(:)
+      real(rk), allocatable :: Kz_T(:), Nz_tot(:)
 
       dtm = real(dt_main, kind=rk)
 
       N = PE%PS%N                          ! Number of layers in the vertical grid
       if (allocated(u_old)) deallocate(u_old, u_new, v_old, v_new)
       allocate(u_old(N), u_new(N), v_old(N), v_new(N))
+      if (allocated(Nz_tot)) deallocate(Nz_tot, Kz_T)   
+      allocate(Nz_tot(0:N), Kz_T(0:N))  ! Arrays for viscosity and diffusivity plus molecular values
 
       ! Initialising them with current state
       u_old = PE%PS%velx;  v_old = PE%PS%vely
@@ -190,12 +150,13 @@ contains
                           Kz = PE%PS%Kz, Nz = PE%PS%Nz, tke = PE%PS%tke,           &
                           eps = PE%PS%eps, Lscale=PE%PS%Lscale,                    &
                           cmue1=PE%PS%cmue1, trid=PE%trid, is_first_step=is_first_step)
-      
 
-      
+        Nz_tot = PE%PS%Nz + mol_nu
+        Kz_T   = PE%PS%Kz + mol_diff_T 
+
       ! Calculates the optimum size of the time-steps  for the inner loop
       ! by obtaining the stability condition so that explicit vertical diffusion of momentum is stable
-      call compute_phys_subcycles(PE%grid%dz, PE%PS%Nz, PE%PS%Kz, PE%params%vismax, dtm, n_sub, dt_sub, ierr, errmsg)    
+      call compute_phys_subcycles(PE%grid%dz, Nz_tot, Kz_T, PE%params%vismax, dtm, n_sub, dt_sub, ierr, errmsg)    
 
       ! Inner subcycle to maintain numeriacl stability
       do ti = 1, n_sub
@@ -208,7 +169,9 @@ contains
                            lambda=PE%params%lambda)
           
           ! Update density
-          PE%PS%rho  = eos_density(PE%PS%temp, PE%PS%sal)   
+          PE%PS%rho  = eos_density(PE%PS%temp, PE%PS%sal)
+          
+
   
           ! Calculate current profile from tidal currents
           call tide_pressure_slopes(PE%Tides, t_sub, Pxsum, Pysum)             ! Pressure-gradient slopes from tidal constituents at this time
@@ -216,10 +179,12 @@ contains
           ! Accelerate by pressure gradients (x and y components)
           call EQN_PRESSURE(dt_sub, Pxsum, u_old)  ! Already updates u_old inplace
           call EQN_PRESSURE(dt_sub, Pysum, v_old)
+
+
   
           ! Apply surface/bottom stresses and vertical viscosity (x component)
           call EQN_FRICTION( vel_comp_old = u_old, vel_comp_new = u_new,           &
-                             vel_comp2_bottom = v_old(1), Nz=PE%PS%Nz, h=PE%grid%dz,&
+                             vel_comp2_bottom = v_old(1), Nz=Nz_tot, h=PE%grid%dz,&
                              dt=dt_sub, h0b=PE%params%h0b, density=PE%PS%rho,      &
                              tau_surf=PE%PS%tau_x, tau_surf2=PE%PS%tau_y,          &
                              charnock=PE%params%charnock,                          &
@@ -228,7 +193,7 @@ contains
   
           ! Apply surface/bottom stresses and vertical viscosity (y component)
           call EQN_FRICTION( vel_comp_old = v_old, vel_comp_new = v_new,           &
-                             vel_comp2_bottom = u_old(1), Nz=PE%PS%Nz, h=PE%grid%dz,&
+                             vel_comp2_bottom = u_old(1), Nz=Nz_tot, h=PE%grid%dz,&
                              dt=dt_sub, h0b=PE%params%h0b, density=PE%PS%rho,      &
                              tau_surf=PE%PS%tau_y, tau_surf2=PE%PS%tau_x,          &
                              charnock=PE%params%charnock,                      &
@@ -245,11 +210,13 @@ contains
           PE%PS%vely = v_old
   
           ! Then mix the vertical thermal structure with semi-implicit scalar scheme      
-          call scalar_diffusion(PE%PS%temp, N, dt_sub, PE%grid%dz, PE%PS%Kz, PE%params%cnpar, PE%trid, ierr)
+          call scalar_diffusion(PE%PS%temp, N, dt_sub, PE%grid%dz, Kz_T, PE%params%cnpar, PE%trid, ierr)
           ! Recompute density after thermal mixing
           PE%PS%rho = eos_density(PE%PS%temp, PE%PS%sal)
-      end do        
 
+          call check_nan_physics(PE%PS)
+      end do
+      
 !write(*,*) 'u_taub=', PE%PS%u_taub, ' Kz(B)=', PE%PS%Kz(0), ' dt_sub=', dt_sub
       deallocate(u_old, u_new, v_old, v_new)
     end subroutine solve_physics  
