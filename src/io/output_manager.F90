@@ -12,6 +12,7 @@ module output_manager
   ! ---------- Parsed config ----------
   type :: OutputConfig
      character(:), allocatable :: file          ! base filename (no .nc)
+     logical                   :: overwrite     ! Whether to overwrite the file or not
      character(:), allocatable :: frequency     ! 'hourly'|'daily'|'custom'
      character(:), allocatable :: statistic     ! 'mean'|'instant'
      character(:), allocatable :: interval_txt  ! e.g. '12h' (only for custom)
@@ -69,12 +70,16 @@ contains
         type(OutputConfig), intent(out) :: cfg
 
         character(:), allocatable :: fname, frequency, statistic, interval
+        logical                   :: overwrite
         character(len=6) :: freq_choices(3) = ['hourly','daily ','custom']
         character(len=7) :: stat_choices(2) = ['mean   ','instant']
      
         integer(lk) :: interval_s
 
         fname = params%get_param_str('output.file', default='output')
+
+        overwrite = params%get_param_logical('output.overwrite', default=.false.)
+
         frequency  = params%get_param_str('output.frequency', default='daily', &
                                            choices=freq_choices, trim_value=.true., match_case=.false.)
 
@@ -95,6 +100,7 @@ contains
                 cfg%interval_txt = trim(interval)
         end select
         cfg%file         = fname
+        cfg%overwrite    = overwrite
         cfg%frequency    = trim(frequency)
         cfg%statistic    = trim(statistic)       
         cfg%interval_s   = interval_s
@@ -207,7 +213,32 @@ contains
     character(*),         intent(in)    :: calendar_name
     character(*),         intent(in), optional :: title
 
+    character(:), allocatable :: path
+    logical :: exists
+    integer :: ios
+
     call read_output_config(params, this%cfg)
+    ! Build full output path (base name + .nc)
+    path = trim(this%cfg%file)//'.nc'
+    ! Check if the file exists
+    inquire(file=trim(path), exist=exists)
+
+    if (exists) then
+       if (.not. this%cfg%overwrite) then
+          write(*,*) 'ERROR: output file ', trim(path), ' already exists and overwrite = no. '
+          stop 1 
+       else
+          write(*,*) 'Overwriting existing output file: ', trim(path)
+          call delete_file_if_exists(path, ios)
+          if (ios /= 0) then
+             write(*,*) 'ERROR: Failed to delete old output file: ', trim(path), ' iostat=', ios
+             stop 1
+          end if
+       end if
+    else
+       write(*,*) 'Creating new output file: ', trim(path)
+    end if
+
     this%N  = grid_phys%nz
     this%Ni = grid_phys%nz + 1
     this%is_mean = (this%cfg%statistic == 'mean')
@@ -215,7 +246,7 @@ contains
     call this%sched%init(dt_s, this%cfg%interval_s, t0_s=0_lk)
     call this%acc%init(N=this%N, Ni=this%Ni, statistic=this%cfg%statistic)
 
-    call this%writer%open_file(path=trim(this%cfg%file)//'.nc', grid_phys=grid_phys, &
+    call this%writer%open_file(path=path, grid_phys=grid_phys, &
                                interval_statistic=this%cfg%statistic, time_units=time_units, &
                                calendar_name=calendar_name, title=merge(title,'',present(title)))
     this%is_init = .true.
@@ -253,6 +284,32 @@ contains
     call this%writer%close_file(do_sync=merge(sync_now,.false.,present(sync_now)))
     this%is_init = .false.
   end subroutine om_close
+
+  subroutine delete_file_if_exists(path, iostat_out)
+    character(*), intent(in)  :: path
+    integer,      intent(out) :: iostat_out
+
+    logical :: exists
+    integer :: u, ios
+
+    iostat_out = 0
+    inquire(file=trim(path), exist=exists)
+    if (.not. exists) return
+
+    ! Open the file if it exists
+    open(newunit=u, file=trim(path), status='old', iostat=ios)
+    if (ios /= 0) then
+        iostat_out = ios
+        return
+    end if
+
+    ! Delete it in a portable way
+    close(u, status='delete', iostat=ios)
+    if (ios /= 0) then
+        iostat_out = ios
+    end if
+ end subroutine delete_file_if_exists
+
 
 
 
