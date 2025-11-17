@@ -169,7 +169,6 @@ contains
       ! Solve for i=1..N-1
       call solve_tridiag(1, N-1, tri, tke(1:N-1))
 
-
       ! Boundary values 
       tke(0) = u_taub*u_taub/sqrt(cm0*cde)
       tke(N) = u_taus*u_taus/sqrt(cm0*cde)
@@ -267,16 +266,16 @@ contains
          if (eps(i) < epslim) eps(i) = epslim
          Lscale(i) = cde * sqrt(tke(i)*tke(i)*tke(i))/eps(i)
 
-         if (NN(i) .eq. 0.0_rk) NN = 1.0e-6_rk !NN(i) = 1.0e-6_rk 
-         if (Lscale(i).gt.(0.267_rk*sqrt(2.0_rk*tke(i)/NN(i)))) then
-            Lscale(i) =  0.267_rk*sqrt(2.0_rk*tke(i)/NN(i)) 
-         end if
-         !if (NN(i) > 0.0_rk) then
-         ! ! Only for stable stratification apply an upper cap
-         ! if (Lscale(i) > 0.267_rk*sqrt(2.0_rk*tke(i)/max(NN(i), 1.0e-6_rk))) then
-         !     Lscale(i) = 0.267_rk*sqrt(2.0_rk*tke(i)/max(NN(i), 1.0e-6_rk))
-         ! end if
+         !if (NN(i) .eq. 0.0_rk) NN = 1.0e-6_rk !NN(i) = 1.0e-6_rk <- Error?
+         !if (Lscale(i).gt.(0.267_rk*sqrt(2.0_rk*tke(i)/NN(i)))) then
+         !   Lscale(i) =  0.267_rk*sqrt(2.0_rk*tke(i)/NN(i)) 
          !end if
+         if (NN(i) > 0.0_rk) then
+          ! Only for stable stratification apply an upper cap
+          if (Lscale(i) > 0.267_rk*sqrt(2.0_rk*tke(i)/max(NN(i), 1.0e-6_rk))) then
+              Lscale(i) = 0.267_rk*sqrt(2.0_rk*tke(i)/max(NN(i), 1.0e-6_rk))
+          end if
+         end if
          if (Lscale(i) < L_min) Lscale(i) = L_min
       end do
     end subroutine dissipation

@@ -217,7 +217,7 @@ contains
           call check_nan_physics(PE%PS)
       end do
       
-!write(*,*) 'u_taub=', PE%PS%u_taub, ' Kz(B)=', PE%PS%Kz(0), ' dt_sub=', dt_sub
+!write(*,*) 'u_taub=', PE%PS%u_taub, ' Kz(B)=', PE%PS%Kz(0), ' tke=', PE%PS%tke(0)
       deallocate(u_old, u_new, v_old, v_new)
     end subroutine solve_physics  
   

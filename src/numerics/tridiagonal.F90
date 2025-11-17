@@ -14,12 +14,12 @@ contains
   subroutine init_tridiag(coeff, N)
     type(TridiagCoeff), intent(inout) :: coeff
     integer,            intent(in)    :: N
-    if (.not. allocated(coeff%au)) allocate(coeff%au(0:N))
-    if (.not. allocated(coeff%bu)) allocate(coeff%bu(0:N))
-    if (.not. allocated(coeff%cu)) allocate(coeff%cu(0:N))
-    if (.not. allocated(coeff%du)) allocate(coeff%du(0:N))
-    if (.not. allocated(coeff%ru)) allocate(coeff%ru(0:N))
-    if (.not. allocated(coeff%qu)) allocate(coeff%qu(0:N))
+    if (.not. allocated(coeff%au)) allocate(coeff%au(N))
+    if (.not. allocated(coeff%bu)) allocate(coeff%bu(N))
+    if (.not. allocated(coeff%cu)) allocate(coeff%cu(N))
+    if (.not. allocated(coeff%du)) allocate(coeff%du(N))
+    if (.not. allocated(coeff%ru)) allocate(coeff%ru(N))
+    if (.not. allocated(coeff%qu)) allocate(coeff%qu(N))
     call reset_tridiag(coeff)
   end subroutine init_tridiag
 
@@ -60,6 +60,7 @@ contains
       do i = fi+1, lt
         values(i) = coeff%qu(i) - coeff%ru(i)*values(i-1)
       end do
+
   end subroutine solve_tridiag
 
 end module tridiagonal
