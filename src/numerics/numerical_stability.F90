@@ -2,7 +2,7 @@ module numerical_stability
   use precision_types, only: rk
   implicit none
   private
-  public :: compute_phys_subcycles
+  public :: compute_phys_subcycles, compute_transport_substeps
 
   real(rk), parameter :: SAFETY      = 0.49_rk      ! inside parabolic limit with momentum diffusion explicit and Nz fixed over the subcycle
   real(rk), parameter :: DT_MIN      = 0.1_rk       ! [s] Stop below this time-step
@@ -90,6 +90,54 @@ contains
       errmsg = 'compute_phys_subcycles: internal time-step < 0.1 s;  Increase layer thickness in the vertical grid.'
     end if
   end subroutine compute_phys_subcycles
+
+
+  !--------------------------------------------------------------------
+  ! Compute maximum vertical Courant number and numebr of substeps.
+  !
+  !  - w_face(0:N) : vertical velocity at interfaces [m s-1]
+  !  - dz(1:N)     : layer thickness [m]
+  !  - dt          : time step [s]
+  !
+  !  cfl_max = max_k |w_face(k)| * dt / h_eff(k),
+  !  with h_eff(k) = 0.5*(dz(k)+dz(k+1)) for k=1..N-1.
+  !
+  !  nsubsteps is chosen so each substep has CFL_sub <= 1 approximately:
+  !     nsubsteps = max(1, int(cfl_max) + 1)
+  !--------------------------------------------------------------------
+  pure subroutine compute_transport_substeps(w_face, dz, dt, cfl_max, nsubsteps)
+    real(rk), intent(in)  :: w_face(0:)
+    real(rk), intent(in)  :: dz(:)
+    real(rk), intent(in)  :: dt
+    real(rk), intent(out) :: cfl_max
+    integer,  intent(out) :: nsubsteps
+
+    integer  :: N, k
+    real(rk) :: h_eff, cfl_local
+
+    N = size(dz)
+
+    cfl_max = 0._rk
+
+    ! Computing the Courant stability condition for each layer
+    do k = 1, N-1
+      ! Effective thickness around each interface
+       h_eff = 0.5_rk * (dz(k) + dz(k+1))
+       if (h_eff > 0._rk) then
+          ! How many layers are crossed in one time-step
+          cfl_local = abs(w_face(k)) * dt / h_eff
+          if (cfl_local > cfl_max) cfl_max = cfl_local  ! Maximum Courant number over all layers
+       end if
+    end do
+
+    if (cfl_max <= 0._rk) then
+       nsubsteps = 1
+    else
+       nsubsteps = max(1, int(cfl_max) + 1)     ! Number of substeps needed to keep transport stable
+       if (nsubsteps < 1) nsubsteps = 1
+    end if
+
+  end subroutine compute_transport_substeps
 
  
 
