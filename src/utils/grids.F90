@@ -5,15 +5,16 @@ module grids
 
   implicit none
   private
-  public :: VerticalGrid, build_water_grid, write_vertical_grid, reorder_grid_bottom_first
+  public :: VerticalGrid, build_water_grid, write_vertical_grid
 
   type, public :: VerticalGrid
-     integer               :: nz = 0             ! number of layers (top=1 … bottom=nz)
-     real(rk)              :: depth  = 0.0_rk    ! local water depth [m], positive
-     real(rk), allocatable :: z(:)               ! layer centres [m], positive
-     real(rk), allocatable :: dz(:)              ! layer thickness [m], positive
-     real(rk), allocatable :: z_w(:)             ! layer interfaces [m], positive, size nz+1
+    integer               :: nz = 0             ! number of layers (bottom=1 … surface=nz)
+    real(rk)              :: depth  = 0.0_rk    ! local water depth [m], positive
+    real(rk), allocatable :: z(:)               ! layer centres [m], positive (1=bottom … nz=top)
+    real(rk), allocatable :: dz(:)              ! layer thickness [m], positive
+    real(rk), allocatable :: z_w(:)             ! layer interfaces [m], 0=bottom … nz=surface
   end type
+
 
   real(rk), parameter :: default_dz = 2.0
   real(rk), parameter :: min_dz     = 0.2
@@ -27,7 +28,7 @@ contains
     subroutine build_water_grid(params, depth, grid, ierr)
         type(ConfigParams), intent(in)  :: params
         real(rk),           intent(in)  :: depth         ! local depth [m], positive
-        type(VerticalGrid),    intent(out) :: grid
+        type(VerticalGrid), intent(out) :: grid
         integer,  optional, intent(out) :: ierr      ! 0 OK; 1 bad depth; 2 nz too thin; 3 dz too thin
 
         character(len=16) :: method
@@ -38,11 +39,11 @@ contains
 
         if (present(ierr)) ierr = 0
 
-
         ! Read YAML choices
         call read_wgrid_config(params, nz_cfg, dz_cfg, method)
 
         select case (trim(method))
+
         case ('nlayers')
 
             dz_u = depth / real(nz_cfg, rk)
@@ -54,8 +55,8 @@ contains
             end if
 
             call allocate_grid(grid, nz_cfg)
-            grid%depth  = depth
-            grid%dz = dz_u
+            grid%depth = depth
+            grid%dz    = dz_u          ! all layers same thickness; bottom→top is irrelevant here
             call calculate_layer_depths(grid)
 
         case ('dz')
@@ -72,104 +73,74 @@ contains
             end if
 
             if (rem >= min_dz) then
+                ! One remainder cell + nfull full cells
                 nz = nfull + 1
                 call allocate_grid(grid, nz)
                 grid%depth = depth
-                do i = 1, nfull
+
+                ! Bottom-first convention: put the remainder at the bottom (i=1)
+                grid%dz(1) = rem
+                do i = 2, nz
                     grid%dz(i) = dz_cfg
                 end do
-                grid%dz(nz) = rem
+
                 call calculate_layer_depths(grid)
+
             else
                 ! Merge small remainder into the last full cell
                 nz = nfull
                 call allocate_grid(grid, nz)
                 grid%depth = depth
-                do i = 1, nz-1
+
+                ! Bottom-first convention: make the bottom cell thicker
+                grid%dz(1) = dz_cfg + rem
+                do i = 2, nz
                     grid%dz(i) = dz_cfg
                 end do
-                grid%dz(nz) = dz_cfg + rem
+
                 call calculate_layer_depths(grid)
             end if
 
         case default
             call zero_grid(grid)
-            if (present(ierr)) then; ierr = 99; return
-            else; stop 'build_water_grid: unknown method'
+            if (present(ierr)) then
+                ierr = 99; return
+            else
+                stop 'build_water_grid: unknown method'
             end if
-            end select
+        end select
     end subroutine build_water_grid
-    
-    ! Some subroutines require the grids to be inverted
-    subroutine reorder_grid_bottom_first(g)
-        type(VerticalGrid), intent(inout) :: g
-        integer :: N, i, lbz, ubz, lbdz, ubdz
-        real(rk), allocatable :: z_new(:), dz_new(:), zw_new(:)
-        real(rk) :: depth_check
 
-        N = g%nz
-        if (N <= 0) return
-
-        ! ---- Flip centers (1..N) ----
-        lbz = lbound(g%z,1);  ubz = ubound(g%z,1)    ! Lowest and upper indices found in the array
-        if (ubz-lbz+1 /= N) stop 'reorder_grid_bottom_first: size(z) mismatch'
-        allocate(z_new(1:N))
-        z_new  = g%z (ubz:lbz:-1)
-        !do i = 1, N 
-        !    z_new(i) = g%z(lbz + (N - i)) 
-        !end do
-        
-        ! ---- Flip layer thicknesses (1..N) ----
-        lbdz = lbound(g%dz,1);  ubdz = ubound(g%dz,1)
-        allocate(dz_new(1:N))
-        dz_new = g%dz(ubdz:lbdz:-1)
-        !do i = 1, N 
-        !    dz_new(i) = g%dz(lbdz + (N - i)) 
-        !    if (dz_new(i) <= 0.0_rk) stop 'reorder_grid_bottom_first: dz <= 0 after flip' 
-        !end do
-
-        ! ---- rebuild interfaces (0..N) from dz (depth-from-surface) ----
-        allocate(zw_new(0:N))
-        depth_check = sum(dz_new)
-        zw_new(0) = depth_check                ! seabed (depth value)
-        do i = 1, N
-            zw_new(i) = zw_new(i-1) - dz_new(i)  ! steps down to ~0 at surface
-        end do
-
-        ! ---- commit ----
-        g%z   = z_new
-        g%dz  = dz_new
-        g%z_w = zw_new
-        g%depth = depth_check                  ! keep depth consistent
-    end subroutine reorder_grid_bottom_first
 
 
     subroutine write_vertical_grid(grid, filename, ierr)
         type(VerticalGrid), intent(in)  :: grid
-        character(*),    intent(in)  :: filename
-        integer, optional, intent(out) :: ierr
+        character(*),       intent(in)  :: filename
+        integer,  optional, intent(out) :: ierr
 
         integer :: u, i
         if (present(ierr)) ierr = 0
 
         if (grid%nz <= 0 .or. .not. allocated(grid%z) .or. .not. allocated(grid%z_w)) then
-            if (present(ierr)) then; ierr = 1; return
-            else; stop 'write_vertical_grid: grid not initialized'
+            if (present(ierr)) then
+                ierr = 1; return
+            else
+                stop 'write_vertical_grid: grid not initialized'
             end if
         end if
 
-        ! Get a free unit and open file (overwrite if exists)
         inquire (iolength=u) u
         open(newunit=u, file=trim(filename), status='replace', action='write', form='formatted')
 
         write(u,'(A)') 'layer  depth_center_m  thickness_m  interface_top_m  interface_bottom_m'
-        do i = 1, grid%nz
+        do i = grid%nz, 1,-1
             write(u,'(I6,1X,F12.6,1X,F12.6,1X,F12.6,1X,F12.6)') &
-            i, grid%z(i), grid%dz(i), grid%z_w(i), grid%z_w(i+1)
+                i, grid%z(i), grid%dz(i), grid%z_w(i), grid%z_w(i-1)
         end do
 
         close(u)
     end subroutine write_vertical_grid
+
 
 
     !------------------------------
@@ -185,8 +156,9 @@ contains
         if (allocated(g%z_w)) deallocate(g%z_w)
         allocate(g%z(nz))
         allocate(g%dz(nz))
-        allocate(g%z_w(nz+1))
+        allocate(g%z_w(0:nz))     ! 0..nz: 0=bottom, nz=surface
     end subroutine allocate_grid
+
 
     subroutine zero_grid(g)
         type(VerticalGrid), intent(inout) :: g
@@ -197,29 +169,38 @@ contains
         g%depth  = 0._rk
     end subroutine zero_grid
 
-    ! Depth convention:
-    !   z_w(1)=0 (surface), z_w increases downward to  the bottom
-    !   dz(i)  = z_w(i+1) - z_w(i) > 0
-    !   z(i)   = 0.5*(z_w(i) + z_w(i+1)) > 0
+    ! Depth convention (bottom-first indexing):
+    !   z_w(0)    = bottom interface depth (= depth > 0)
+    !   z_w(nz)   = surface (0)
+    !   dz(i)     = z_w(i-1) - z_w(i) > 0, layer i thickness, bottom→top
+    !   z(i)      = 0.5*(z_w(i-1) + z_w(i)), layer centres, 1=bottom … nz=top
     subroutine calculate_layer_depths(g)
         type(VerticalGrid), intent(inout) :: g
         integer :: i
-        real(rk) :: total
+        real(rk) :: tol
 
-        g%z_w(1) = 0._rk
+        if (g%nz <= 0) return
+
+        ! Set bottom interface exactly at depth
+        g%z_w(0) = g%depth
+
+        ! Depth for layer interfaces and centres from the bottom to the surface
         do i = 1, g%nz
-            g%z_w(i+1) = g%z_w(i) + g%dz(i)
-            g%z(i)     = 0.5_rk * (g%z_w(i) + g%z_w(i+1))
+            g%z_w(i) = g%z_w(i-1) - g%dz(i)              ! move up (shallower)
+            g%z(i)   = 0.5_rk * (g%z_w(i-1) + g%z_w(i))  ! centre depth
         end do
 
-        ! Match the exact depth in water column
-        total = g%z_w(g%nz+1)
-        if (abs(total - g%depth) > max(1.0e-12_rk, 1.0e-9_rk * g%depth)) then
-            g%z_w(g%nz+1) = g%depth
-            g%dz(g%nz)    = g%z_w(g%nz+1) - g%z_w(g%nz)
-            g%z(g%nz)     = 0.5_rk * (g%z_w(g%nz) + g%z_w(g%nz+1))
+        ! Tolerance for matching the surface at 0 m
+        tol = max(1.0e-12_rk, 1.0e-9_rk * g%depth)
+
+        ! Adjust the top cell so the surface is exactly at 0
+        if (abs(g%z_w(g%nz)) > tol) then
+            g%z_w(g%nz) = 0._rk
+            g%dz(g%nz)  = g%z_w(g%nz-1) - g%z_w(g%nz)
+            g%z(g%nz)   = 0.5_rk * (g%z_w(g%nz-1) + g%z_w(g%nz))
         end if
     end subroutine calculate_layer_depths
+
 
     subroutine read_wgrid_config(params, nz, dz, method)
         type(ConfigParams), intent(in)  :: params

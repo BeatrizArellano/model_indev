@@ -5,7 +5,7 @@ module physics_params
   implicit none
   private
 
-  public :: gravity, rho0, rho_air, cp_sw, cp_air, kappa, sigma_SB, Omega
+  public :: gravity, rho0, rho_air, cp_sw, cp_air, kappa, sigma_SB, Omega, p_atm_dbar
   public :: mol_vis, mol_diff_T, mol_diff_S, mol_nu, z0s_min
 
   ! ------------------ Constants ----------------------------------
@@ -18,6 +18,7 @@ module physics_params
   real(rk), parameter :: cp_air          = 1004.0_rk             ! air heat capacity [J kg-1 K-1]
   real(rk), parameter :: kappa           = 0.41_rk               ! von Kármán constant
   real(rk), parameter :: sigma_SB        = 5.670374419e-8_rk     ! Stephan-Boltzman 
+  real(rk), parameter :: p_atm_dbar      = 10.1325_rk            ! Atmospheric pressure at sea level 1 atm [dbar]
   !----- Specific constants for viscosity and diffusivity
   real(rk), parameter :: mol_vis         = 1.0e-6_rk             ! Molecular viscosity [m2 s-1]
   real(rk), parameter :: mol_diff_T      = 1.4e-7_rk             ! Thermal molecular diffusivity [m2 s-1]
@@ -41,7 +42,7 @@ module physics_params
   real(rk), parameter :: def_cnpar               = 0.5           ! Degree of Implicitness when solving diffusive mixing [0-1]
   !--------------------------------------------------------------------------------------------------------------------
 
-  public:: read_physics_parameters
+  public :: read_physics_parameters
   public :: PhysicsParams
 
   ! Container for all physics parameters

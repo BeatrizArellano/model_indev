@@ -11,6 +11,9 @@ module shelfseas
   use physics_types,    only: PhysicsState, PhysicsEnv
   use physics_main,     only: init_physics, solve_physics, end_physics
   use output_manager,   only: OutputManager
+  use bio_params,       only: is_bio_enabled
+  use bio_types,        only: BioEnv
+  use bio_main,         only: init_bio_fabm
 
   !Dev
   use time_utils, only:   datetime_to_str
@@ -25,6 +28,8 @@ module shelfseas
 
   
   character(len=20), public :: config_file = 'main.yaml'  
+  logical  :: bio_enabled         = .false.
+  logical  :: sediments_enabled   = .false.
   logical  :: is_main_initialized = .false.
   logical  :: stop_on_error = .true.                 ! Hard stop on error  -> useful in the future when running multiple columns
   logical  :: ok = .false.
@@ -41,6 +46,7 @@ module shelfseas
   type(ForcingManager)  :: ForcMan
   type(ForcingSnapshot) :: ForcSnp
   type(PhysicsEnv)      :: PE
+  type(BioEnv), target  :: BE
   type(OutputManager)   :: OM
   character(:), allocatable :: time_units, calname
   
@@ -63,6 +69,10 @@ contains
         call validate_input_dates(cfg_params, start_datetime, end_datetime, calendar)        
         ! Print header for simulation
         call print_header(location,start_datetime,end_datetime) 
+
+        call is_bio_enabled(cfg_params, bio_enabled, sediments_enabled)
+        write(*,*) "Bio=", bio_enabled, ' Sed=', sediments_enabled
+
         ! Builds vertical grid
         call build_water_grid(cfg_params, location%depth, wgrid)
         call write_vertical_grid(wgrid, 'Vertical_grid.dat')
@@ -83,12 +93,16 @@ contains
         if (.not. ok) stop 'prepare_forcing failed: '//trim(msg)
         ! Initialise physics
         call init_physics(cfg_params, location, wgrid, PE)
+
+        if (bio_enabled) then
+            call init_bio_fabm(location, wgrid, dt, PE%PS, ForcSnp, BE)
+            stop 1
+        end if
         !!!! In dev
         time_units = 'seconds since ' // trim(datetime_to_str(start_datetime))
         calname    = trim(calendar%name())
         call OM%init(cfg_params, PE%grid, dt_s=dt, time_units=time_units, calendar_name=calname, &
                      title='ShelfSeas output')
-
 
         is_main_initialized = .true.     
         

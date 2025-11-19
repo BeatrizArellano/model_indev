@@ -59,7 +59,7 @@ contains
     !       Equation of motion subroutine - friction term
     !**********************************************************
     pure subroutine EQN_FRICTION(vel_comp_old, vel_comp_new, vel_comp2_bottom, Nz, h, dt, h0b, density, &
-                                 tau_surf, tau_surf2, charnock, u_taub, z0b, u_taus, z0s)
+                                 tau_surf, tau_surf2, charnock, u_taub, z0b, stressb, u_taus, z0s)
         !  vel_comp_old,     [in ] real(:)  bottom-to-top component to update (u or v) at cell centres [m s-1]
         !  vel_comp_new,     [out] real(:)  updated component after diffusion + bottom drag + surface stress [m s-1]
         !  vel_comp2_bottom  [in ] real     other component at i=1 (bottom-cell centre) used to form |U| [m s-1]
@@ -77,19 +77,18 @@ contains
         ! Inputs
         real(rk), intent(in)  :: vel_comp_old(:), vel_comp2_bottom, Nz(:), h(:), density(:), dt, h0b, tau_surf, tau_surf2, charnock
         ! Outputs
-        real(rk), intent(out) :: vel_comp_new(size(vel_comp_old)), u_taub, z0b, u_taus, z0s
+        real(rk), intent(out) :: vel_comp_new(size(vel_comp_old)), u_taub, z0b, stressb, u_taus, z0s
 
         integer  :: i, N
         real(rk) :: dz_imh, dz_iph, flux_dn, flux_up, dv
         real(rk) :: zc, Uc, rb, ustar_b, z0r, z0sm, z0new, logarg
-        real(rk) :: rho_surf   !rho_bed, 
-        !real(rk) :: stresss
+        real(rk) :: rho_surf, rho_bed
         integer  :: it
 
         N     = size(vel_comp_old); vel_comp_new = vel_comp_old
         zc    = 0.5_rk*h(1)
 
-        !rho_bed  = density(1)
+        rho_bed  = density(1)
         rho_surf = density(N)
 
         ! ---- Interior diffusion of horizontal momentum
@@ -150,7 +149,7 @@ contains
         vel_comp_new(1) = vel_comp_old(1) + dt * (flux_up / h(1) - (rb*rb/h(1))*Uc*vel_comp_old(1))
 
         ! Bottom stress boundary conditiosn
-        !stressb    = rho_bed * ustar_b * ustar_b
+        stressb    = rho_bed * ustar_b * ustar_b
         u_taub     = ustar_b
 
         ! ---- Surface: wind stress

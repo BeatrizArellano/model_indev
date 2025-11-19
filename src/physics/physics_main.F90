@@ -4,7 +4,7 @@ module physics_main
   use precision_types,     only: rk, lk
   use read_config_yaml,    only: ConfigParams
   use geo_utils,           only: LocationInfo
-  use grids,               only: VerticalGrid, reorder_grid_bottom_first
+  use grids,               only: VerticalGrid
   use tidal_readers,       only: read_tidal_parameters
   use tidal,               only: TidalSet, create_tidal_set, tide_pressure_slopes
   use forcing_manager,     only: ForcingSnapshot
@@ -53,7 +53,6 @@ contains
       call create_tidal_set(PE%Tides,location%lat)
 
       PE%grid = grid
-      call reorder_grid_bottom_first(PE%grid) ! Invert the grid. Physics assigns arrays from the bottom to the top array(1) = bottom
 
       PE%PS%N = PE%grid%nz                    ! Number of layers in the water column, inside physics state    
       ! ---------- Allocating arrays and setting initial state --------------------------
@@ -183,21 +182,21 @@ contains
 
   
           ! Apply surface/bottom stresses and vertical viscosity (x component)
-          call EQN_FRICTION( vel_comp_old = u_old, vel_comp_new = u_new,           &
-                             vel_comp2_bottom = v_old(1), Nz=Nz_tot, h=PE%grid%dz,&
-                             dt=dt_sub, h0b=PE%params%h0b, density=PE%PS%rho,      &
-                             tau_surf=PE%PS%tau_x, tau_surf2=PE%PS%tau_y,          &
-                             charnock=PE%params%charnock,                          &
-                             u_taub=PE%PS%u_taub, z0b=PE%PS%z0b,                   &
+          call EQN_FRICTION( vel_comp_old = u_old, vel_comp_new = u_new,                &
+                             vel_comp2_bottom = v_old(1), Nz=Nz_tot, h=PE%grid%dz,      &
+                             dt=dt_sub, h0b=PE%params%h0b, density=PE%PS%rho,           &
+                             tau_surf=PE%PS%tau_x, tau_surf2=PE%PS%tau_y,               &
+                             charnock=PE%params%charnock,                               &
+                             u_taub=PE%PS%u_taub, z0b=PE%PS%z0b, stressb=PE%PS%stressb, &
                              u_taus=PE%PS%u_taus, z0s=PE%PS%z0s )
   
           ! Apply surface/bottom stresses and vertical viscosity (y component)
-          call EQN_FRICTION( vel_comp_old = v_old, vel_comp_new = v_new,           &
-                             vel_comp2_bottom = u_old(1), Nz=Nz_tot, h=PE%grid%dz,&
-                             dt=dt_sub, h0b=PE%params%h0b, density=PE%PS%rho,      &
-                             tau_surf=PE%PS%tau_y, tau_surf2=PE%PS%tau_x,          &
-                             charnock=PE%params%charnock,                      &
-                             u_taub=PE%PS%u_taub, z0b=PE%PS%z0b,                   &
+          call EQN_FRICTION( vel_comp_old = v_old, vel_comp_new = v_new,                &
+                             vel_comp2_bottom = u_old(1), Nz=Nz_tot, h=PE%grid%dz,      &
+                             dt=dt_sub, h0b=PE%params%h0b, density=PE%PS%rho,           &
+                             tau_surf=PE%PS%tau_y, tau_surf2=PE%PS%tau_x,               &
+                             charnock=PE%params%charnock,                               &
+                             u_taub=PE%PS%u_taub, z0b=PE%PS%z0b, stressb=PE%PS%stressb, &
                              u_taus=PE%PS%u_taus, z0s=PE%PS%z0s )
           ! Update olds for next substep
           u_old = u_new;  v_old = v_new
