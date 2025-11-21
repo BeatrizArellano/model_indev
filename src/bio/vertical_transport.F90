@@ -10,7 +10,7 @@ module vertical_transport
 contains
 
   !--------------------------------------------------------------------
-  ! Apply vertical transport due to residual movement (sinking or passive floating).
+  ! Apply vertical transport due to residual movement (sinking, floating, or swimming).
   !
   !  C(1:N)         : tracer at layer centres [units of C]
   !  grid%nz        : number of layers (1=bottom … N=surface)
@@ -30,6 +30,9 @@ contains
   ! The advection equation is integrated using a First-order upwind scheme.
   ! Concentrations are updated using Forward Euler
   ! 
+  ! Numerical stability is guaranteed by calculating the CFL condition
+  ! and the number of subcycles so that each tracer never moves more 
+  ! than one layer each substep
   !
   ! On exit, C is updated in place.
   !--------------------------------------------------------------------
