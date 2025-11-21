@@ -1,7 +1,7 @@
 module vertical_mixing
   use precision_types, only: rk
   use physics_types,   only: Dirichlet, Neumann
-  use tridiagonal, only: TridiagCoeff, init_tridiag, solve_tridiag, reset_tridiag
+  use tridiagonal, only: TridiagCoeff, solve_tridiag, reset_tridiag
   implicit none
   private
 
@@ -41,13 +41,13 @@ contains
     ! bc_*_value meaning:
     !   Neumann: flux into the boundary cell [Y·m s^-1].
     !   Dirichlet: prescribed value of Y at the boundary cell center.
-    subroutine scalar_diffusion(Y, N, dt, h, Kz, cnpar,  &
+    subroutine scalar_diffusion(Var, N, dt, h, Kz, cnpar,  &
                                 tricoef, ierr, enforce_nonneg, &
                                  bc_top_type, bc_top_value,     &
                                  bc_bot_type, bc_bot_value,     &
                                  Yobs, Taur, LinTerm, Q)
         
-        real(rk),           intent(inout) :: Y(1:N)
+        real(rk),           intent(inout) :: Var(1:N)
         integer,            intent(in)    :: N
         real(rk),           intent(in)    :: dt, cnpar
         real(rk),           intent(in)    :: h(1:N)            ! layer thicknesses
@@ -90,7 +90,7 @@ contains
 
 
 
-        call init_tridiag(tricoef, N)      
+        call reset_tridiag(tricoef)      
         
 
         !---------------------------
@@ -106,7 +106,7 @@ contains
             l = 0.0_rk; if (hasL) l = dt*LinTerm(i)
             tricoef%bu(i) = 1.0_rk - (tricoef%au(i) + tricoef%cu(i)) - l
 
-            tricoef%du(i) = Y(i) + (1.0_rk-cnpar) * ( a*Y(i-1) - (a+c)*Y(i) + c*Y(i+1) )
+            tricoef%du(i) = Var(i) + (1.0_rk-cnpar) * ( a*Var(i-1) - (a+c)*Var(i) + c*Var(i+1) )
             if (hasQ) tricoef%du(i) = tricoef%du(i) + dt*Q(i)
         end do
 
@@ -119,11 +119,11 @@ contains
                 tricoef%au(N) = -cnpar * a
                 ! Patankar tweak if flux leaves the column and non-negativity enforced
                 if (do_nonneg .and. top_val < 0.0_rk) then
-                    tricoef%bu(N) = 1.0_rk - tricoef%au(N) - dt*top_val / (max(Y(N),tinyY)*h(N))
-                    tricoef%du(N) = Y(N) + (1.0_rk-cnpar)*a*(Y(N-1)-Y(N))
+                    tricoef%bu(N) = 1.0_rk - tricoef%au(N) - dt*top_val / (max(Var(N),tinyY)*h(N))
+                    tricoef%du(N) = Var(N) + (1.0_rk-cnpar)*a*(Var(N-1)-Var(N))
                 else
                     tricoef%bu(N) = 1.0_rk - tricoef%au(N)
-                    tricoef%du(N) = Y(N) + (1.0_rk-cnpar)*a*(Y(N-1)-Y(N)) + dt*top_val/h(N)
+                    tricoef%du(N) = Var(N) + (1.0_rk-cnpar)*a*(Var(N-1)-Var(N)) + dt*top_val/h(N)
                 end if
                 if (hasL) then
                     tricoef%bu(N) = tricoef%bu(N) - dt*LinTerm(N)    ! implicit linear source
@@ -149,11 +149,11 @@ contains
                 c = 2.0_rk*dt*Kz(1)/(h(1)+h(2))/h(1)
                 tricoef%cu(1) = -cnpar * c
                 if (do_nonneg .and. bot_val < 0.0_rk) then
-                    tricoef%bu(1) = 1.0_rk - tricoef%cu(1) - dt*bot_val / (max(Y(1),tinyY)*h(1))
-                    tricoef%du(1) = Y(1) + (1.0_rk-cnpar)*c*(Y(2)-Y(1))
+                    tricoef%bu(1) = 1.0_rk - tricoef%cu(1) - dt*bot_val / (max(Var(1),tinyY)*h(1))
+                    tricoef%du(1) = Var(1) + (1.0_rk-cnpar)*c*(Var(2)-Var(1))
                 else
                     tricoef%bu(1) = 1.0_rk - tricoef%cu(1)
-                    tricoef%du(1) = Y(1) + (1.0_rk-cnpar)*c*(Y(2)-Y(1)) + dt*bot_val/h(1)
+                    tricoef%du(1) = Var(1) + (1.0_rk-cnpar)*c*(Var(2)-Var(1)) + dt*bot_val/h(1)
                 end if
                 if (hasL) then
                     tricoef%bu(1) = tricoef%bu(1) - dt*LinTerm(1)
@@ -186,7 +186,7 @@ contains
         !---------------------------
         ! Solve tridiagonal system
         !---------------------------
-        call solve_tridiag(1,N,tricoef,Y)
+        call solve_tridiag(1,N,tricoef,Var)
 
     end subroutine scalar_diffusion
 
