@@ -14,7 +14,7 @@ module physics_main
   use heat_fluxes,         only: SURFACE_HEAT
   use vertical_mixing,     only: scalar_diffusion
   use numerical_stability, only: compute_phys_subcycles
-  use tridiagonal,         only: init_tridiag, reset_tridiag
+  use tridiagonal,         only: init_tridiag, clear_tridiag
   use physics_params,      only: read_physics_parameters, &
                                  gravity, z0s_min, kappa, mol_nu, mol_diff_T
   use physics_types,       only: PhysicsState, PhysicsEnv
@@ -234,7 +234,7 @@ contains
       PE%PS%N = 0
       ! reset tides (deallocates allocatable components via intrinsic assignment)
       PE%Tides = TidalSet()
-      call reset_tridiag(PE%trid)    
+      call clear_tridiag(PE%trid)    
 
       PE%is_init = .false.        
    end subroutine end_physics
