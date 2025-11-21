@@ -2,7 +2,7 @@ module tridiagonal
   use precision_types, only: rk
   implicit none
   private
-  public :: TridiagCoeff, init_tridiag, reset_tridiag, solve_tridiag
+  public :: TridiagCoeff, init_tridiag, reset_tridiag, solve_tridiag, clear_tridiag
 
   type :: TridiagCoeff
      real(rk), allocatable :: au(:), bu(:), cu(:), du(:)  ! coefficients
@@ -62,5 +62,18 @@ contains
       end do
 
   end subroutine solve_tridiag
+
+  ! Clears space in memory by deallocating arrays
+  subroutine clear_tridiag(coeff)
+      type(TridiagCoeff), intent(inout) :: coeff
+
+      if (allocated(coeff%au)) deallocate(coeff%au)
+      if (allocated(coeff%bu)) deallocate(coeff%bu)
+      if (allocated(coeff%cu)) deallocate(coeff%cu)
+      if (allocated(coeff%du)) deallocate(coeff%du)
+      if (allocated(coeff%ru)) deallocate(coeff%ru)
+      if (allocated(coeff%qu)) deallocate(coeff%qu)
+  end subroutine clear_tridiag
+
 
 end module tridiagonal
