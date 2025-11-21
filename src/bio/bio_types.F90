@@ -1,9 +1,10 @@
 module bio_types
-    use precision_types,     only: rk, lk
-    use grids,               only: VerticalGrid
-    use fabm,                only: type_fabm_model, type_fabm_interior_variable_id, &
+    use precision_types, only: rk, lk
+    use grids,           only: VerticalGrid
+    use fabm,            only: type_fabm_model, type_fabm_interior_variable_id, &
                                    type_fabm_horizontal_variable_id, type_fabm_scalar_variable_id
-    use tridiagonal,         only: TridiagCoeff
+    use tridiagonal,     only: TridiagCoeff
+    use bio_params,      only: BioParams
     
 
   implicit none
@@ -31,6 +32,7 @@ module bio_types
     real(rk), allocatable :: temp(:), sal(:), rho(:)         ! temperature, salinity and density (From surface to bottom)
     real(rk), allocatable :: pres(:)                         ! pressure [dbar]       (optional)
     real(rk), allocatable :: swr(:),  par(:)                 ! PAR profile [W/m2]  (optional)
+    real(rk), allocatable :: vert_diff(:)                    ! vertical diffusivity
     ! Surface variables
     real(rk) :: short_rad  = 0._rk
     real(rk) :: par_sfc    = 0._rk                          ! surface PAR [W/m2] (optional)
@@ -50,8 +52,8 @@ module bio_types
     type(VerticalGrid)     :: wat_grid                             ! water column grid 
     type(VerticalGrid)     :: sed_grid                             ! sediments grid 
     type(BioState)         :: BS                               ! State of tracers
-    !type(BioParams)       :: params     ! per-column biogeochemical params (or shared elsewhere)
-    type(TridiagCoeff)     :: trid                             ! workspace for implicit solves in scalar diffusion
+    type(BioParams)        :: params                           ! per-column biogeochemical params (or shared elsewhere)
+    ! FABM environment variable ids
     type (type_fabm_interior_variable_id)   :: id_temp, id_salt, id_rho, id_swr, id_par, id_pres
     type (type_fabm_horizontal_variable_id) :: id_windspd, id_par_sfc, id_slp, id_cloud, id_stressb, id_swr_sfc, id_co2
     type (type_fabm_scalar_variable_id)     :: id_yearday
@@ -69,7 +71,21 @@ module bio_types
     logical :: need_cloud   = .false.
     logical :: need_stressb = .false.
     logical :: need_co2     = .false.
-    logical :: is_init = .false.                ! has biogeochemistry been initialised?
+    logical :: is_init = .false.                               ! has biogeochemistry been initialised?
+    ! Working space
+    type(TridiagCoeff)     :: trid                             ! workspace for implicit solves in scalar diffusion
+    ! Working arrays
+    real(rk), allocatable :: velocity(:,:)                     ! Vertical velocity due to residual movement (nz, n_interior)
+    real(rk), allocatable :: tendency_int(:,:)                 ! Tendencies (source terms) for interior tracers
+    real(rk), allocatable :: tendency_sf(:), tendency_bt(:)    ! source terms at the surface and bottom. They store the tendencies (or derivatives dC/dt) for the tracers
+    real(rk), allocatable :: flux_sf(:), flux_bt(:)            ! Fluxes of interior variables at the surface and bottom
+    ! Counters for how many times the state was repaired
+    integer :: nrepair_int = 0
+    integer :: nrepair_sfc = 0
+    integer :: nrepair_btm = 0
+    logical :: valid_int = .true.
+    logical :: valid_sfc = .true.
+    logical :: valid_btm = .true.
   end type BioEnv
 
 

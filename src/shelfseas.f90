@@ -13,7 +13,7 @@ module shelfseas
   use output_manager,   only: OutputManager
   use bio_params,       only: is_bio_enabled
   use bio_types,        only: BioEnv
-  use bio_main,         only: init_bio_fabm
+  use bio_main,         only: init_bio_fabm, integrate_bio_fabm, end_bio_fabm
 
   !Dev
   use time_utils, only:   datetime_to_str
@@ -95,8 +95,7 @@ contains
         call init_physics(cfg_params, location, wgrid, PE)
 
         if (bio_enabled) then
-            call init_bio_fabm(location, wgrid, dt, PE%PS, ForcSnp, BE)
-            stop 1
+            call init_bio_fabm(cfg_params, location, wgrid, dt, PE%PS, ForcSnp, BE)
         end if
         !!!! In dev
         time_units = 'seconds since ' // trim(datetime_to_str(start_datetime))
@@ -113,7 +112,7 @@ contains
     subroutine run_shelfseas()
         implicit none
 
-        integer(lk)         :: i, elapsed_time
+        integer(lk)        :: istep, elapsed_time
         integer            :: ierr
         character(len=512) :: errmsg
         logical            :: is_first_step = .true.  
@@ -121,9 +120,9 @@ contains
         if (.not. is_main_initialized) error stop 'run_shelfseas: shelfseas not initialised.'
 
         ! Main simulation loop
-        do i = 1_lk, n_steps
-            if (i > 1_lk) is_first_step = .false.
-            elapsed_time = (i - 1_lk) * dt
+        do istep = 1_lk, n_steps
+            if (istep > 1_lk) is_first_step = .false.
+            elapsed_time = (istep - 1_lk) * dt
             call ForcMan%tick(elapsed_time)                                   ! Time-manager to load yearly forcing data on time
             call ForcMan%sample(elapsed_time, ForcSnp)                        ! get forcing snapshot for the current model time
             call solve_physics(PE, ForcSnp, dt, elapsed_time, is_first_step, ierr, errmsg)
@@ -131,15 +130,20 @@ contains
                 write(*,*) 'solve_physics failed: ', trim(errmsg)
                 return
             end if
+            if (bio_enabled) then
+                call integrate_bio_fabm(BE, PE%PS, ForcSnp, dt, istep)
+            end if
             call OM%step(PE%PS%temp, PE%PS%Kz) 
         end do
-
     end subroutine run_shelfseas
 
     subroutine end_shelfseas()
         if (.not. is_main_initialized) return
-        call end_physics(PE)
         call OM%close(sync_now=.true.)
+        call end_physics(PE)
+        if (bio_enabled) then
+            call end_bio_fabm(BE)
+        end if
         call cfg_params%clear()
     end subroutine end_shelfseas 
 
