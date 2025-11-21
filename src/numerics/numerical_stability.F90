@@ -1,8 +1,9 @@
 module numerical_stability
   use precision_types, only: rk
+
   implicit none
   private
-  public :: compute_phys_subcycles, compute_transport_substeps
+  public :: compute_phys_subcycles, compute_transport_substeps, compute_bio_substeps
 
   real(rk), parameter :: SAFETY      = 0.49_rk      ! inside parabolic limit with momentum diffusion explicit and Nz fixed over the subcycle
   real(rk), parameter :: DT_MIN      = 0.1_rk       ! [s] Stop below this time-step
@@ -139,6 +140,86 @@ contains
 
   end subroutine compute_transport_substeps
 
- 
+  !--------------------------------------------------------------------
+  ! Compute number of bio substeps for explicit Euler integration
+  ! based on a maximum change allowed per time-step.
+  ! The idea is to keep integration using Forward Euler stable. 
+  !
+  !  - tendency_int(k,ivar): Tendencies for interor tracers [dC/dt]
+  !  - tendency_sf(ivar):    tendencies for surface-only tracers [dc/dt]
+  !  - tendency_bt(ivar):    tendencies for bottom-only tracers [dC/dt]
+  !
+  !  We estimate, for each variable:
+  !      r = |dt_main * sms| / max(|C|, C_min)
+  !  and choose nsub so that per substep r/nsub <= frac_max.
+  !--------------------------------------------------------------------
+  subroutine compute_bio_substeps(BE, tendency_int, tendency_sf, tendency_bt, dt_main,          &
+                                  frac_max, nsub, dt_sub)
+      use bio_types,       only: BioEnv
+
+      type(BioEnv), intent(in)  :: BE
+      real(rk),     intent(in)  :: tendency_int(:,:), tendency_sf(:), tendency_bt(:)
+      real(rk),     intent(in)  :: dt_main
+      real(rk),     intent(in)  :: frac_max      ! e.g. 0.25_rk
+      integer,      intent(out) :: nsub
+      real(rk),     intent(out) :: dt_sub
+
+      integer, parameter :: nsub_max = 100
+      real(rk), parameter :: C_min   = 1.0e-12_rk   ! Just to avoid dividing by zero
+
+      integer  :: nz, nint, nsfc, nbtm
+      integer  :: k, ivar
+      real(rk) :: C0, dC, r, r_max
+
+      nz   = BE%grid%nz
+      nint = BE%BS%n_interior
+      nsfc = BE%BS%n_surface
+      nbtm = BE%BS%n_bottom
+
+      r_max = 0.0_rk
+
+      ! Interuor variables
+      if (nint>0) then
+        do ivar = 1, nint
+          do k = 1, nz
+              C0   = BE%BS%interior_state(k,ivar)   ! Initial state
+              dC   = dt_main * tendency_int(k,ivar) ! Change in the variable over the main time-step
+              r    = abs(dC) / max(abs(C0), C_min)  ! How much the reported tendency is changing the state of the variable
+              if (r > r_max) r_max = r              ! Maximum fractional change found for interior variables
+          end do
+        end do
+      end if
+
+      ! Surface-only variables
+      if (nsfc>0) then
+        do ivar = 1, nsfc
+          C0   = BE%BS%surface_state(ivar)
+          dC   = dt_main * tendency_sf(ivar)
+          r    = abs(dC) / max(abs(C0), C_min)
+          if (r > r_max) r_max = r
+        end do
+      end if
+
+      ! Bottom-only tracers
+      if (nbtm>0) then
+        do ivar = 1, nbtm
+          C0   = BE%BS%bottom_state(ivar)
+          dC   = dt_main * tendency_bt(ivar)
+          r    = abs(dC) / max(abs(C0), C_min)
+          if (r > r_max) r_max = r
+        end do
+      end if
+
+      ! Calculate nsub and dt_sub
+      if (r_max <= frac_max .or. r_max <= 0._rk) then
+        nsub = 1
+      else
+        nsub = ceiling(r_max / frac_max)
+        if (nsub > nsub_max) nsub = nsub_max
+      end if
+
+      dt_sub = dt_main / real(nsub, rk)
+
+  end subroutine compute_bio_substeps 
 
 end module numerical_stability
