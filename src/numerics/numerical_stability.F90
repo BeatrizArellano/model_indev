@@ -1,14 +1,12 @@
 module numerical_stability
   use precision_types, only: rk
+  use, intrinsic :: ieee_arithmetic, only: ieee_is_nan
 
   implicit none
   private
-  public :: compute_phys_subcycles, compute_transport_substeps, compute_bio_substeps
+  public :: compute_phys_subcycles, compute_bio_substeps
 
-  real(rk), parameter :: SAFETY      = 0.49_rk      ! inside parabolic limit with momentum diffusion explicit and Nz fixed over the subcycle
-  real(rk), parameter :: DT_MIN      = 0.1_rk       ! [s] Stop below this time-step
-  real(rk), parameter :: D_MIN       = 1.0e-12_rk   ! Minimum value for eddy coefficients so we don't divide by zero
-  real(rk), parameter :: BOOST = 15._rk, FRAC_vismax = 0.7_rk
+
 
 contains
 
@@ -39,6 +37,11 @@ contains
     real(rk), intent(out) :: dt_sub
     integer,  intent(out) :: ierr
     character(len=*), intent(out) :: errmsg
+
+    real(rk), parameter :: SAFETY      = 0.49_rk      ! inside parabolic limit with momentum diffusion explicit and Nz fixed over the subcycle
+    real(rk), parameter :: DT_MIN      = 0.1_rk       ! [s] Stop below this time-step (Physics)
+    real(rk), parameter :: D_MIN       = 1.0e-12_rk   ! Minimum value for eddy coefficients so we don't divide by zero
+    real(rk), parameter :: BOOST = 15._rk, FRAC_vismax = 0.7_rk
 
     integer  :: N, i
     real(rk) :: dz, nz_sens, kz_sens
@@ -93,8 +96,82 @@ contains
   end subroutine compute_phys_subcycles
 
 
+  ! Computes the number of subcycles required while updating biogeochemistry, considering potential limiting factors for all processes. 
+  subroutine compute_bio_substeps(w_face, dz, Kz, cnpar, BE,                       &
+                                  dt_main, frac_max, dt_min,                       &
+                                  nsub_adv, nsub_diff, nsub_bio, nsub, dt_sub)
+      use bio_types,       only: BioEnv
+      implicit none
+
+      !--- Inputs ---
+      real(rk),           intent(in)  :: w_face(0:,:)     ! (0:N, ntr)
+      real(rk),           intent(in)  :: dz(:)            ! (1:N)
+      real(rk),           intent(in)  :: Kz(0:)           ! (0:N)
+      real(rk),           intent(in)  :: cnpar
+      type(BioEnv),       intent(in)  :: BE
+      real(rk),           intent(in)  :: dt_main
+      real(rk),           intent(in)  :: frac_max         ! e.g. 0.25_rk for bio
+      real(rk),           intent(in)  :: dt_min           ! minimum allowed substep [s]
+
+      !--- Outputs ---
+      integer,            intent(out) :: nsub_adv, nsub_diff, nsub_bio
+      integer,            intent(out) :: nsub
+      real(rk),           intent(out) :: dt_sub
+
+      !Locals
+      real(rk) :: cfl_adv
+      real(rk) :: dt_dummy_diff, dt_dummy_bio
+      real(rk) :: nsub_real_limit
+      integer  :: nsub_limit
+
+      !-----------------------------
+      ! Substeps from vertical transport (sinking or rising)
+      !-----------------------------
+      call compute_transport_substeps(w_face, dz, dt_main, cfl_adv, nsub_adv)
+
+      !-----------------------------
+      ! Substeps from diffusion
+      !-----------------------------
+      call compute_diffusion_substeps(Kz, dz, dt_main, cnpar, nsub_diff, dt_dummy_diff)
+
+      !-----------------------------
+      ! Substeps from integrating biogeochemistry
+      !-----------------------------
+      call compute_bioint_substeps(BE, BE%tendency_int, BE%tendency_sf, BE%tendency_bt,    &
+                                   dt_main, frac_max, nsub_bio, dt_dummy_bio)
+
+      !-----------------------------
+      ! Global number of substeps 
+      !-----------------------------
+      nsub = max(nsub_adv, max(nsub_diff, nsub_bio))
+      if (nsub < 1) nsub = 1
+
+      dt_sub = dt_main / real(nsub, rk)
+
+      !-----------------------------
+      ! dt_sub >= dt_min
+      !-----------------------------
+      if (dt_min > 0._rk .and. dt_sub < dt_min) then
+          ! maximum substeps allowed such that dt_sub >= dt_min
+          nsub_real_limit = dt_main / dt_min
+          nsub_limit      = int(nsub_real_limit)   ! floor
+
+          if (nsub_limit < 1) then
+              nsub   = 1
+              dt_sub = dt_main
+          else
+              if (nsub > nsub_limit) nsub = nsub_limit
+              if (nsub < 1) nsub = 1
+              dt_sub = dt_main / real(nsub, rk)
+          end if
+      end if
+
+  end subroutine compute_bio_substeps
+
+
   !--------------------------------------------------------------------
   ! Compute maximum vertical Courant number and numebr of substeps.
+  ! This guarantees that each tracer never moves more than one layer each substep
   !
   !  - w_face(0:N) : vertical velocity at interfaces [m s-1]
   !  - dz(1:N)     : layer thickness [m]
@@ -107,38 +184,85 @@ contains
   !     nsubsteps = max(1, int(cfl_max) + 1)
   !--------------------------------------------------------------------
   pure subroutine compute_transport_substeps(w_face, dz, dt, cfl_max, nsubsteps)
-    real(rk), intent(in)  :: w_face(0:)
-    real(rk), intent(in)  :: dz(:)
-    real(rk), intent(in)  :: dt
-    real(rk), intent(out) :: cfl_max
-    integer,  intent(out) :: nsubsteps
+      real(rk), intent(in)  :: w_face(0:,:)   ! (0:N, ntr)
+      real(rk), intent(in)  :: dz(:)          ! (1:N)
+      real(rk), intent(in)  :: dt
+      real(rk), intent(out) :: cfl_max
+      integer,  intent(out) :: nsubsteps
+
+      real(rk), parameter :: cfl_target = 0.9_rk   ! target CFL per substep
+
+      integer  :: N, ntr, k, ivar
+      real(rk) :: h_eff, cfl_local, nsub_real
+
+      N   = size(dz)
+      ntr = size(w_face, 2)
+
+      cfl_max = 0._rk
+      nsubsteps = 1
+
+      if (dt <= 0._rk .or. N <= 1 .or. ntr < 1) return
+
+      ! Computing the Courant stability condition for each layer and tracer
+      do k = 1, N-1
+         h_eff = 0.5_rk * (dz(k) + dz(k+1))
+         if (h_eff > 0._rk) then
+            do ivar = 1, ntr
+               cfl_local = abs(w_face(k, ivar)) * dt / h_eff
+               if (cfl_local > cfl_max) cfl_max = cfl_local
+            end do
+         end if
+      end do
+
+      if (cfl_max <= 0._rk) then
+        nsubsteps = 1
+      else
+        nsub_real = cfl_max / cfl_target   ! desired CFL_sub ~ cfl_target
+
+        if (nsub_real <= 1._rk) then
+            ! CFL already below target 
+            nsubsteps = 1
+        else
+            nsubsteps = int(nsub_real) + 1
+            if (nsubsteps < 1) nsubsteps = 1
+        end if
+      end if
+   end subroutine compute_transport_substeps
+
+  ! Compute the number of substeps needed for vertical mixing depending on the cnpar value
+  pure subroutine compute_diffusion_substeps(Kz, dz, dt, cnpar, nsub, dt_sub)
+    real(rk), intent(in)  :: Kz(0:), dz(:), dt, cnpar
+    integer,  intent(out) :: nsub
+    real(rk), intent(out) :: dt_sub
 
     integer  :: N, k
-    real(rk) :: h_eff, cfl_local
+    real(rk) :: h_eff, Kloc, cflD, cflD_max
 
     N = size(dz)
+    cflD_max = 0._rk
 
-    cfl_max = 0._rk
-
-    ! Computing the Courant stability condition for each layer
     do k = 1, N-1
-      ! Effective thickness around each interface
-       h_eff = 0.5_rk * (dz(k) + dz(k+1))
-       if (h_eff > 0._rk) then
-          ! How many layers are crossed in one time-step
-          cfl_local = abs(w_face(k)) * dt / h_eff
-          if (cfl_local > cfl_max) cfl_max = cfl_local  ! Maximum Courant number over all layers
-       end if
+        h_eff = 0.5_rk*(dz(k) + dz(k+1))
+        Kloc  = max(Kz(k), 0._rk)
+
+        if (h_eff > 0._rk .and. Kloc > 0._rk) then
+            ! Diffusion CFL = (explicit fraction)*(dt)*(2K / h_eff^2)
+            cflD = (1._rk - cnpar)*dt * 2._rk*Kloc / (h_eff*h_eff)
+            if (cflD > cflD_max) cflD_max = cflD
+        end if
     end do
 
-    if (cfl_max <= 0._rk) then
-       nsubsteps = 1
+    if (cflD_max <= 1._rk) then
+        nsub = 1
+        dt_sub = dt
     else
-       nsubsteps = max(1, int(cfl_max) + 1)     ! Number of substeps needed to keep transport stable
-       if (nsubsteps < 1) nsubsteps = 1
+        ! We want cflD_sub = cflD_max / nsub ≤ 1, so nsub ≥ cflD_max
+        nsub = int(cflD_max) + 1
+        if (nsub < 1) nsub = 1
+        dt_sub = dt / real(nsub, rk)
     end if
+  end subroutine compute_diffusion_substeps
 
-  end subroutine compute_transport_substeps
 
   !--------------------------------------------------------------------
   ! Compute number of bio substeps for explicit Euler integration
@@ -153,7 +277,7 @@ contains
   !      r = |dt_main * sms| / max(|C|, C_min)
   !  and choose nsub so that per substep r/nsub <= frac_max.
   !--------------------------------------------------------------------
-  subroutine compute_bio_substeps(BE, tendency_int, tendency_sf, tendency_bt, dt_main,          &
+  subroutine compute_bioint_substeps(BE, tendency_int, tendency_sf, tendency_bt, dt_main,          &
                                   frac_max, nsub, dt_sub)
       use bio_types,       only: BioEnv
 
@@ -164,12 +288,11 @@ contains
       integer,      intent(out) :: nsub
       real(rk),     intent(out) :: dt_sub
 
-      integer, parameter :: nsub_max = 100
-      real(rk), parameter :: C_min   = 1.0e-12_rk   ! Just to avoid dividing by zero
+      real(rk), parameter :: C_min   = 1.0e-30_rk   ! Just to avoid dividing by zero
 
       integer  :: nz, nint, nsfc, nbtm
       integer  :: k, ivar
-      real(rk) :: C0, dC, r, r_max
+      real(rk) :: C0, dC, r, r_max, nsub_real
 
       nz   = BE%grid%nz
       nint = BE%BS%n_interior
@@ -214,12 +337,13 @@ contains
       if (r_max <= frac_max .or. r_max <= 0._rk) then
         nsub = 1
       else
-        nsub = ceiling(r_max / frac_max)
-        if (nsub > nsub_max) nsub = nsub_max
+        nsub_real = r_max / frac_max
+        nsub = ceiling(nsub_real)
+        if (nsub < 1) nsub = 1
       end if
 
       dt_sub = dt_main / real(nsub, rk)
 
-  end subroutine compute_bio_substeps 
+  end subroutine compute_bioint_substeps 
 
 end module numerical_stability

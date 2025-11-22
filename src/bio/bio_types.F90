@@ -76,6 +76,7 @@ module bio_types
     type(TridiagCoeff)     :: trid                             ! workspace for implicit solves in scalar diffusion
     ! Working arrays
     real(rk), allocatable :: velocity(:,:)                     ! Vertical velocity due to residual movement (nz, n_interior)
+    real(rk), allocatable :: vel_faces(:,:)                    ! Vertical velocity due to residual movement at interfaces (0:nz, n_interior)
     real(rk), allocatable :: tendency_int(:,:)                 ! Tendencies (source terms) for interior tracers
     real(rk), allocatable :: tendency_sf(:), tendency_bt(:)    ! source terms at the surface and bottom. They store the tendencies (or derivatives dC/dt) for the tracers
     real(rk), allocatable :: flux_sf(:), flux_bt(:)            ! Fluxes of interior variables at the surface and bottom

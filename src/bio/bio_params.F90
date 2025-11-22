@@ -11,7 +11,8 @@ module bio_params
   real(rk), parameter :: mol_diff   = 1.0e-6_rk             ! Molecular diffusivity in the water column [m2 s-1]
 
   ! ----------------- Default values for parameters ----------------------------------------------------------
-  real(rk), parameter :: def_frac_max    = 0.1_rk      ! Initial temperature
+  real(rk), parameter :: def_frac_max    = 0.1_rk      ! Maximum fractional change allowed per main timestep per tracer
+  real(rk), parameter :: def_min_dt      = 10.0_rk     ! Minimum time-step in the inner loop
   real(rk), parameter :: def_cnpar       = 0.5         ! Degree of Implicitness when solving diffusive mixing [0-1]
   logical,  parameter :: def_repair      = .false.     ! Indicates FABM whether to repair the state of the variables
   logical,  parameter :: def_sed_enabled = .false.     ! Sediments enabled
@@ -23,6 +24,7 @@ type, public :: BioParams
     logical  :: repair = .false.
     real(rk) :: frac_max 
     real(rk) :: cnpar 
+    real(rk) :: min_dt
 end type BioParams
 
 
@@ -41,6 +43,7 @@ contains
         bio%cnpar = cfg_params%get_param_num('biogeochemistry.vertical_mixing.cnpar', default=def_cnpar, finite=.true., min=0._rk, max=1._rk)
         ! ---------------- Numerics ----------------
         bio%frac_max = cfg_params%get_param_num('biogeochemistry.numerics.max_change', default=def_frac_max, finite=.true., positive=.true.)
+        bio%min_dt   = cfg_params%get_param_num('biogeochemistry.numerics.min_timestep', default=def_min_dt, finite=.true., positive=.true.)
     end subroutine read_bio_parameters
 
 
@@ -51,6 +54,7 @@ contains
         p%repair            = def_repair
         p%frac_max          = def_frac_max    
         p%cnpar             = def_cnpar
+        p%min_dt            = def_min_dt
     end function default_bio_params
     
     subroutine is_bio_enabled(cfg_params, bio_enabled, sediments_enabled)

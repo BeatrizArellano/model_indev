@@ -12,7 +12,7 @@ module bio_main
     use precision_types,     only: rk, lk
     use read_config_yaml,    only: ConfigParams
     use tridiagonal,         only: init_tridiag, clear_tridiag
-    use vertical_transport,  only: apply_vertical_transport
+    use vertical_transport,  only: apply_vertical_transport, velocity_at_interfaces
     use vertical_mixing,     only: scalar_diffusion
 
 
@@ -72,6 +72,7 @@ contains
         ! Allocating working arrays        
         allocate(BE%tendency_int(nz,nint))                        ! Sources (dC/dt) 
         allocate(BE%velocity(nz,nint))                            ! Velocities
+        allocate(BE%vel_faces(0:nz,nint))                         ! Velocities at interfaces
         allocate(BE%flux_sf(nint));    allocate(BE%flux_bt(nint)) ! Fluxes at the surface and bottom of interior variables 
 
 
@@ -196,6 +197,10 @@ contains
 
         ! Tridiagonal workspace
         call init_tridiag(BE%trid, nz)
+
+        ! Initialising counters
+        BE%nrepair_int = 0; BE%nrepair_btm=0; BE%nrepair_sfc=0;
+        BE%valid_int = .true.; BE%valid_btm=.true.; BE%valid_sfc=.true.
         
         BE%is_init = .true.
         write(*,'("✓ Biogeochemistry initialised successfully with ",I0," variables:")') BE%BS%n_total
@@ -218,7 +223,7 @@ contains
 
         integer  :: nz, ivar, k, nint, nsfc, nbtm
         real(rk) :: istep_rk, dt_main, dt_sub
-        integer  :: nsub, isub
+        integer  :: nsub, isub, nsub_adv, nsub_diff, nsub_bio
         integer :: ierr          
 
         if (.not. BE%is_init) then
@@ -244,7 +249,8 @@ contains
         !--------------------------------------------------------------------
         ! Prepare all fields FABM needs to compute source terms (e.g., light)
         !---------------------------------------------------------------------
-        call BE%model%prepare_inputs(istep_rk) !Providing the main time-step number as set_domain received dt_main (t, year, month, day, seconds)
+        call BE%model%prepare_inputs(istep_rk) !Providing the main time-step number as set_domain received dt_main 
+! (t, year, month, day, seconds)
 
         !-------------------------------------------------------------
         ! Obtaining tendencies (dC/dt) and surface and bottom fluxes
@@ -276,46 +282,47 @@ contains
         ! Let FABM compute any remaining outputs (diagnostics) 
         !------------------------------------------------
         call BE%model%finalize_outputs()
-       
-        !------------------------------------------------------------
-        ! Apply vertical residual movement due to sinking or floating 
-        !------------------------------------------------------------
-        if (nint>0) then
-            BE%velocity = 0.0_rk
-            call BE%model%get_vertical_movement(1,nz, BE%velocity)   ! Obtain vertical velocities from FABM
-            do ivar=1, nint
-                call apply_vertical_transport(BE%BS%interior_state(:,ivar), BE%grid,&
-                                              vel_center=BE%velocity(:,ivar), dt=dt_main)
-            end do
-        end if
-        
-        !-------------------------------------------------------------------------
-        ! Mix internal tracers vertically due to turbulent diffusion.
-        !--------------------------------------------------------------------------
-        if (nint>0) then
-            do ivar=1, nint
-                ! Only internal mixing is applied: no diffusive flux enters or leaves through surface or bottom
-                call scalar_diffusion(Var=BE%BS%interior_state(:,ivar), N=nz, dt=dt_main, h=BE%grid%dz, &
-                                      Kz=BE%BS%vert_diff, cnpar=BE%params%cnpar, tricoef=BE%trid, ierr=ierr)
-            end do
-        end if
 
-        !-----------------------------------------------------------------------------
-        ! Repir state for interior tracers after vertical redistribution of tracers
-        !----------------------------------------------------------------------------
-        call check_and_repair_state(BE)
-    
+        BE%velocity = 0.0_rk
+        call BE%model%get_vertical_movement(1,nz, BE%velocity)   ! Obtain vertical velocities from FABM
+        call velocity_at_interfaces(BE%velocity, BE%grid, BE%vel_faces)  ! Caluclate velocities at layer interfaces
 
-        ! ----------------------------------------------------------------------------
-        ! Compute number of substeps to guarantee numerical stability for intergation of tendencies
-        !-----------------------------------------------------------------------------
-        call compute_bio_substeps(BE, BE%tendency_int, BE%tendency_sf, BE%tendency_bt, dt_main, BE%params%frac_max, nsub, dt_sub)
+        call compute_bio_substeps(BE%vel_faces, BE%grid%dz, Kz=BE%BS%vert_diff,         &
+                                  cnpar=BE%params%cnpar, BE=BE, dt_main=dt_main,        &
+                                  frac_max=BE%params%frac_max, dt_min=BE%params%min_dt, &
+                                  nsub_adv=nsub_adv, nsub_diff=nsub_diff,               &
+                                  nsub_bio=nsub_bio, nsub=nsub, dt_sub=dt_sub)
 
-        !-----------------------------------------------------------------------------
-        ! Integrate tracers using exflicit Forward Euler
-        !-----------------------------------------------------------------------------    
-        do isub = 1, nsub
-        ! Subcycle to achieve stability (Euler can be stiff)
+        ! Inner loop to maintain numerical stabilty
+        do isub=1, nsub
+            !------------------------------------------------------------
+            ! Apply vertical residual movement and mix tracers vertically
+            !------------------------------------------------------------
+            if (nint>0) then
+                
+                do ivar=1, nint
+                    ! Apply vertical residual movement due to sinking or floating 
+                    call apply_vertical_transport(BE%BS%interior_state(:,ivar), BE%grid,&
+                                                  w_face=BE%vel_faces(:,ivar), dt=dt_sub)
+                    ! Mix internal tracers vertically due to turbulent diffusion.
+                    call scalar_diffusion(Var=BE%BS%interior_state(:,ivar), N=nz, dt=dt_sub, h=BE%grid%dz, &
+                                        Kz=BE%BS%vert_diff, cnpar=BE%params%cnpar, tricoef=BE%trid, ierr=ierr)
+                end do
+            end if    
+
+            !-----------------------------------------------------------------------------
+            ! Repir state for interior tracers after vertical redistribution of tracers
+            !----------------------------------------------------------------------------
+            call check_and_repair_state(BE)
+            if (.not. BE%valid_int) then
+                write(*,*) "After transport"
+                stop 1
+            end if
+
+
+            !-----------------------------------------------------------------------------
+            ! Integrate tracers using exflicit Forward Euler
+            !-----------------------------------------------------------------------------    
             ! Interior
             if (nint>0) then
                 do ivar = 1, nint
@@ -338,30 +345,29 @@ contains
                     BE%BS%bottom_state(ivar)  = BE%BS%bottom_state(ivar)  + dt_sub * BE%tendency_bt(ivar)
                 end do
             end if
-        end do      
-
-        ! Repair state, if needed, to let FABM restore all state variables within their registered bounds.
-        call check_and_repair_state(BE)      
+            ! Repair state, if needed, to let FABM restore all state variables within their registered bounds.
+            call check_and_repair_state(BE)      
+        end do            
 
 !!!
     write(*,*) 'nsub=', nsub, ' dt_sub=', dt_sub, ' valid_int=', BE%valid_int
     write(*,'(/,A,I0)') '--- Bio profile at main step = ', istep_main
     write(*,'(A)') '    Depth(m)   Tracers (one column per variable)'
 
-    ! Optional: print tracer names (truncated to 10 chars)
+
     write(*,'(A)', advance='no') '    z[m]     '
     do ivar = 1, nint
         write(*,'(1X,A10)', advance='no') trim(BE%BS%intvar_names(ivar)(1:min(10,len_trim(BE%BS%intvar_names(ivar)))))
     end do
     write(*,*)
-    write(*,'(F9.3,1X,1P,100E12.3)') BE%grid%z(nz), (BE%flux_sf(ivar), ivar=1,nint)
-    write(*,'(F9.3,1X,1P,100E12.3)') BE%grid%z(1), (BE%flux_bt(ivar), ivar=1,nint)
-    write(*,'(F9.3,1X,1P,100E12.3)') BE%grid%z(1), (BE%velocity(1,ivar), ivar=1,nint)
+    !write(*,'(F9.3,1X,1P,100E12.3)') BE%grid%z(nz), (BE%flux_sf(ivar), ivar=1,nint)
+    !write(*,'(F9.3,1X,1P,100E12.3)') BE%grid%z(1), (BE%flux_bt(ivar), ivar=1,nint)
+    !write(*,'(F9.3,1X,1P,100E12.3)') BE%grid%z(1), (BE%velocity(1,ivar), ivar=1,nint)
 
     ! Values: one row per depth
-    !do k = 1, nz
-    !    write(*,'(F9.3,1X,1P,100E12.3)') BE%grid%z(k), (BE%BS%interior_state(k,ivar), ivar=1,nint)
-    !end do
+    do k = 1, nz
+        write(*,'(F9.3,1X,1P,100E12.3)') BE%grid%z(k), (BE%BS%interior_state(k,ivar), ivar=1,nint)
+    end do
 !!!
     end subroutine integrate_bio_fabm
 
@@ -374,6 +380,10 @@ contains
 
         ! Report number of times that variables where repaired
         if (BE%params%repair) then
+            if (BE%nrepair_int>0 .or. BE%nrepair_sfc>0 .or. BE%nrepair_btm>0) then
+                write(*,*) 'Warning: FABM repaired some state variables;'
+                write(*,*) '         reducing the time step may prevent this.'
+            end if
             if (BE%BS%n_interior > 0) write(*,'(A,I0,A)') 'FABM repaired the interior variables ', BE%nrepair_int, ' time(s).'
             if (BE%BS%n_surface > 0)  write(*,'(A,I0,A)') 'FABM repaired the surface variables ', BE%nrepair_sfc, ' time(s).'
             if (BE%BS%n_bottom > 0)   write(*,'(A,I0,A)') 'FABM repaired the bottom variables ', BE%nrepair_btm, ' time(s).'
@@ -514,9 +524,11 @@ contains
             if (.not. BE%valid_btm .and. repair) BE%nrepair_btm = BE%nrepair_btm + 1 ! Update counters
         end if 
 
-        if (.not. (BE%valid_int .and. BE%valid_sfc .and. BE%valid_btm)) then
-            if (.not. repair) stop 'integrate_bio_fabm: invalid state found in a biogeochemistry variable. '
-        end if    
+        if (.not. (BE%valid_int .and. BE%valid_sfc .and. BE%valid_btm) .and. .not. repair) then            
+            write(*,*) 'ERROR in integrate_bio_fabm: invalid biogeochemical state detected.'
+            write(*,*) '      Try reducing the main time-step and/or the minimum substep (min_timestep).'
+            stop 1
+        end if  
     end subroutine check_and_repair_state
 
 end module bio_main
