@@ -27,6 +27,11 @@ module output_writer
      integer(lk) :: Ni = 0_lk   ! interfaces (= N+1)
      integer(lk) :: time_index = 0_lk
 
+     ! Biogeochem tracers
+     integer                   :: n_bio = 0
+     character(:), allocatable :: bio_names(:)
+     real(rk), allocatable :: bio_row(:,:)      ! (N, n_bio)
+
      ! working row buffers in file order (surface→bottom), allocated once
      real(rk), allocatable :: temp_row(:)   ! size N
      real(rk), allocatable :: kz_row(:)     ! size N+1
@@ -41,7 +46,7 @@ contains
   !========================
   ! Open & define the file (write coords & attrs)
   !========================
-  subroutine outputwriter_open_file(this, path, grid_phys, interval_statistic, time_units, calendar_name, title)
+  subroutine outputwriter_open_file(this, path, grid_phys, interval_statistic, time_units, calendar_name, title,n_bio, bio_names)
     class(OutputWriter), intent(inout) :: this
     character(*),        intent(in)    :: path
     type(VerticalGrid),  intent(in)    :: grid_phys        ! bottom→surface order internally
@@ -49,23 +54,40 @@ contains
     character(*),        intent(in)    :: time_units       ! "seconds since ..."
     character(*),        intent(in)    :: calendar_name
     character(*),        intent(in), optional :: title
+    integer,             intent(in), optional :: n_bio
+    character(*),        intent(in), optional :: bio_names(:)
 
+    integer(lk) :: nb
     integer :: dim_t, dim_z, dim_zw
-    integer :: var_time, var_z, var_zw, var_temp, var_kz
+    integer :: var_time, var_z, var_zw, var_temp, var_kz, var_bio 
+    integer :: j
     character(len=:), allocatable :: cm
     real(rk), allocatable :: z_out(:), zw_out(:)
 
     ! sizes
     this%N  = grid_phys%nz
     this%Ni = grid_phys%nz + 1
+
+    this%n_bio = 0_lk
+    if (present(n_bio)) this%n_bio = n_bio
+
+    if (present(bio_names)) then
+        if (this%n_bio > 0_lk .and. this%n_bio /= size(bio_names, kind=lk)) then
+            error stop 'outputwriter_open_file: n_bio does not match size(bio_names).'
+        end if
+        allocate(this%bio_names, source=bio_names)   ! ✔ length + shape taken from dummy
+        this%n_bio = size(bio_names, kind=lk)        ! in case n_bio was not passed
+    end if
+
+    allocate(this%temp_row(this%N), this%kz_row(this%Ni))
+    if (this%n_bio > 0_lk) allocate(this%bio_row(this%N, this%n_bio))
+
     this%filename           = trim(path)
     this%interval_statistic = trim(interval_statistic)
     this%time_units         = trim(time_units)
     this%calendar_name      = trim(calendar_name)
     this%time_index         = 0_lk
 
-    ! working buffers (file order)
-    allocate(this%temp_row(this%N), this%kz_row(this%Ni))
 
     ! Create & define structure
     call nc_create(this%db, this%filename, overwrite=.true.)
@@ -81,6 +103,14 @@ contains
 
     var_temp = nc_def_var_real(this%db, 'temp', [dim_t, dim_z])
     var_kz   = nc_def_var_real(this%db, 'Kz',   [dim_t, dim_zw])
+
+    ! Biogeochemical state variables: one var per tracer
+    if (this%n_bio > 0_lk) then
+       do j = 1, int(this%n_bio, kind=4)
+          var_bio = nc_def_var_real(this%db, trim(this%bio_names(j)), [dim_t, dim_z])
+          ! For now, no units/long_name; you’ll add them later.
+       end do
+    end if
 
     ! --- Attributes (still in define mode)
     if (present(title)) call nc_put_att_str(this%db, '', 'title', trim(title), global=.true.)
@@ -121,41 +151,62 @@ contains
   !========================
   ! Append one record per closed window
   !========================
-  subroutine outputwriter_append_record(this, t_window_start_s, window_len_s, temp_phys, kz_phys, is_mean)
+  subroutine outputwriter_append_record(this, t_window_start_s, window_len_s, temp_phys, kz_phys, is_mean, bio_phys)
     class(OutputWriter), intent(inout) :: this
     integer(lk),         intent(in)    :: t_window_start_s   ! seconds since sim start (window start)
     integer(lk),         intent(in)    :: window_len_s       ! seconds (window length)
     real(rk),            intent(in)    :: temp_phys(:)       ! N, bottom→surface
     real(rk),            intent(in)    :: kz_phys(:)         ! N+1, bottom→surface (lb 0 or 1)
     logical,             intent(in)    :: is_mean            ! .true. if statistic='mean'
+    real(rk),            intent(in), optional :: bio_phys(:,:)   ! (N, n_bio), bottom to surface
 
-    integer :: tidx
+    integer :: tidx, j
     real(rk) :: t_coord
 
     if (size(temp_phys) /= this%N)  error stop 'append_record: temp size mismatch'
     if (size(kz_phys)   /= this%Ni) error stop 'append_record: Kz size mismatch'
 
+    if (present(bio_phys) .and. this%n_bio > 0_lk) then
+       if (size(bio_phys,1) /= this%N .or. size(bio_phys,2) /= this%n_bio) then
+          error stop 'append_record: bio_phys size mismatch'
+       end if
+    end if
+
     ! 1) Flip rows into file order (surface→bottom)
     call flip_centers_b2s_to_s2b(temp_phys, this%temp_row)
     call flip_interfaces_b2s_to_s2b(kz_phys, this%kz_row)
 
-    ! 2) Time stamp (seconds since start): mean→center, instant→end
+    if (present(bio_phys) .and. this%n_bio > 0_lk) then
+       do j = 1, int(this%n_bio, kind=4)
+          call flip_centers_b2s_to_s2b(bio_phys(:, j), this%bio_row(:, j))
+       end do
+    end if
+
+    ! 2) Time stamp...
     if (is_mean) then
-      t_coord = real(t_window_start_s + window_len_s/2_lk, rk)
+       t_coord = real(t_window_start_s + window_len_s/2_lk, rk)
     else
-      t_coord = real(t_window_start_s + window_len_s, rk)
+       t_coord = real(t_window_start_s + window_len_s, rk)
     end if
 
     ! 3) Write one slice at next time index
     this%time_index = this%time_index + 1_lk
     tidx = int(this%time_index, kind=4)
 
-    call nc_write_real(this%db, 'time', start=[tidx],   count=[1], data_array=[t_coord])
-    call nc_write_real(this%db, 'temp', start=[tidx,1], count=[1, int(this%N,kind=4)],   data_array=reshape(this%temp_row, [1, int(this%N,kind=4)]))
-    call nc_write_real(this%db, 'Kz',   start=[tidx,1], count=[1, int(this%Ni,kind=4)],  data_array=reshape(this%kz_row,   [1, int(this%Ni,kind=4)]))
+    call nc_write_real(this%db, 'time', start=[tidx],   count=[1], &
+                       data_array=[t_coord])
+    call nc_write_real(this%db, 'temp', start=[tidx,1], count=[1, int(this%N,kind=4)], &
+                       data_array=reshape(this%temp_row, [1, int(this%N,kind=4)]))
+    call nc_write_real(this%db, 'Kz',   start=[tidx,1], count=[1, int(this%Ni,kind=4)], &
+                       data_array=reshape(this%kz_row,   [1, int(this%Ni,kind=4)]))
 
-    ! Optional: sync here or every K records later
-    ! call nc_sync(this%db)
+    if (this%n_bio > 0_lk .and. present(bio_phys)) then
+       do j = 1, int(this%n_bio, kind=4)
+          call nc_write_real(this%db, trim(this%bio_names(j)), &
+                             start=[tidx,1], count=[1, int(this%N,kind=4)], &
+                             data_array=reshape(this%bio_row(:,j), [1, int(this%N,kind=4)]))
+       end do
+    end if
   end subroutine outputwriter_append_record
 
   !========================

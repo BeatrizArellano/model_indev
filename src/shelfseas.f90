@@ -100,8 +100,13 @@ contains
         !!!! In dev
         time_units = 'seconds since ' // trim(datetime_to_str(start_datetime))
         calname    = trim(calendar%name())
-        call OM%init(cfg_params, PE%grid, dt_s=dt, time_units=time_units, calendar_name=calname, &
-                     title='ShelfSeas output')
+        if (bio_enabled) then
+            call OM%init(cfg_params, PE%grid, dt_s=dt, time_units=time_units, calendar_name=calname, title='ShelfSeas output', &
+                        n_bio = BE%BS%n_interior, &
+                        bio_names = BE%BS%intvar_names)
+        else
+            call OM%init(cfg_params, PE%grid, dt_s=dt, time_units=time_units, calendar_name=calname, title='ShelfSeas output')
+        end if
 
         is_main_initialized = .true.     
         
@@ -132,8 +137,10 @@ contains
             end if
             if (bio_enabled) then
                 call integrate_bio_fabm(BE, PE%PS, ForcSnp, dt, istep)
-            end if
-            call OM%step(PE%PS%temp, PE%PS%Kz) 
+                call OM%step(PE%PS%temp, PE%PS%Kz, BE%BS%interior_state)
+            else 
+                call OM%step(PE%PS%temp, PE%PS%Kz) 
+            end if 
         end do
     end subroutine run_shelfseas
 

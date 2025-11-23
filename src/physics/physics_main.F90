@@ -138,7 +138,7 @@ contains
       call wind_stress_from_speed_dir(FS%wind_spd, FS%wind_dir, PE%PS%tau_x, PE%PS%tau_y)
       ! Initial calculation for surface friction velocity and roughness length
       PE%PS%u_taus = (((PE%PS%tau_x/PE%PS%rho(N))**2 + (PE%PS%tau_y/PE%PS%rho(N))**2 ))**0.25_rk
-      PE%PS%z0s = max(PE%params%charnock * (PE%PS%u_taus*PE%PS%u_taus) / gravity, z0s_min)  ! Surface roughness length
+      PE%PS%z0s = max(PE%params%charnock * (PE%PS%u_taus*PE%PS%u_taus) / gravity, z0s_min)  ! Surface roughness length ()
 
       ! Turbulence: once per main step     
         ! Solves turbulence using the Canuto k-ε closure scheme and calculates Kz and Nz
@@ -178,8 +178,6 @@ contains
           ! Accelerate by pressure gradients (x and y components)
           call EQN_PRESSURE(dt_sub, Pxsum, u_old)  ! Already updates u_old inplace
           call EQN_PRESSURE(dt_sub, Pysum, v_old)
-
-
   
           ! Apply surface/bottom stresses and vertical viscosity (x component)
           call EQN_FRICTION( vel_comp_old = u_old, vel_comp_new = u_new,                &
@@ -189,6 +187,7 @@ contains
                              charnock=PE%params%charnock,                               &
                              u_taub=PE%PS%u_taub, z0b=PE%PS%z0b, stressb=PE%PS%stressb, &
                              u_taus=PE%PS%u_taus, z0s=PE%PS%z0s )
+
   
           ! Apply surface/bottom stresses and vertical viscosity (y component)
           call EQN_FRICTION( vel_comp_old = v_old, vel_comp_new = v_new,                &
@@ -198,6 +197,8 @@ contains
                              charnock=PE%params%charnock,                               &
                              u_taub=PE%PS%u_taub, z0b=PE%PS%z0b, stressb=PE%PS%stressb, &
                              u_taus=PE%PS%u_taus, z0s=PE%PS%z0s )
+
+
           ! Update olds for next substep
           u_old = u_new;  v_old = v_new
   
@@ -215,7 +216,7 @@ contains
 
           call check_nan_physics(PE%PS)
       end do
-      
+
 !write(*,*) 'u_taub=', PE%PS%u_taub, ' Kz(B)=', PE%PS%Kz(0), ' tke=', PE%PS%tke(0)
       deallocate(u_old, u_new, v_old, v_new)
     end subroutine solve_physics  

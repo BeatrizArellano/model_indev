@@ -38,8 +38,12 @@ module output_manager
   type :: OutputData
      character(:), allocatable :: statistic          ! 'mean'|'instant'
      integer(lk)               :: steps = 0_lk
+     integer(lk)               :: n_bio   = 0_lk
      real(rk), allocatable     :: temp_sum(:), kz_sum(:)
      real(rk), allocatable     :: temp_last(:), kz_last(:)
+     ! Biogeochemical tracers (interior_state): shape (N, n_bio)
+    real(rk), allocatable     :: bio_sum(:,:)   ! (N, n_bio)
+    real(rk), allocatable     :: bio_last(:,:)  ! (N, n_bio)
   contains
      procedure :: init      => outdata_init
      procedure :: update    => outdata_update
@@ -56,6 +60,7 @@ module output_manager
      type(OutputWriter)   :: writer
      integer(lk)          :: N  = 0_lk
      integer(lk)          :: Ni = 0_lk
+     integer              :: n_bio = 0_lk  
      logical              :: is_mean = .true.
   contains
      procedure :: init   => om_init      ! reads config, sets scheduler+acc, opens NetCDF
@@ -151,26 +156,57 @@ contains
   end function sched_window_len_s
 
   !================ ACCUMULATOR ================
-  subroutine outdata_init(this, N, Ni, statistic)
+  subroutine outdata_init(this, N, Ni, statistic, n_bio)
     class(OutputData), intent(inout) :: this
-    integer(lk), intent(in) :: N, Ni
-    character(*), intent(in):: statistic
+    integer(lk),       intent(in) :: N, Ni
+    character(*),      intent(in):: statistic
+    integer,       intent(in), optional :: n_bio
+
+
+    integer(lk) :: nb
+
     this%statistic = trim(statistic)
-    this%steps = 0_lk
+    this%steps     = 0_lk
+
+    nb = 0_lk
+    if (present(n_bio)) nb = n_bio
+    this%n_bio = nb
+
+    ! Existing temp/Kz allocation
     allocate(this%temp_last(N), this%kz_last(Ni))
-    this%temp_last = 0.0_rk; this%kz_last = 0.0_rk
+    this%temp_last = 0.0_rk
+    this%kz_last   = 0.0_rk
+
     if (this%statistic == 'mean') then
-      allocate(this%temp_sum(N), this%kz_sum(Ni))
-      this%temp_sum = 0.0_rk;   this%kz_sum = 0.0_rk
+       allocate(this%temp_sum(N), this%kz_sum(Ni))
+       this%temp_sum = 0.0_rk
+       this%kz_sum   = 0.0_rk
     else
-      if (allocated(this%temp_sum)) deallocate(this%temp_sum)
-      if (allocated(this%kz_sum))   deallocate(this%kz_sum)
+       if (allocated(this%temp_sum)) deallocate(this%temp_sum)
+       if (allocated(this%kz_sum))   deallocate(this%kz_sum)
+    end if
+
+    ! Biogeochem fields
+    if (nb > 0_lk) then
+       if (allocated(this%bio_last)) deallocate(this%bio_last)
+       if (allocated(this%bio_sum))  deallocate(this%bio_sum)
+       allocate(this%bio_last(N, nb))
+       this%bio_last = 0.0_rk
+       if (this%statistic == 'mean') then
+          allocate(this%bio_sum(N, nb))
+          this%bio_sum = 0.0_rk
+       end if
+    else
+       if (allocated(this%bio_last)) deallocate(this%bio_last)
+       if (allocated(this%bio_sum))  deallocate(this%bio_sum)
     end if
   end subroutine outdata_init
 
-  subroutine outdata_update(this, temp, kz)
+
+  subroutine outdata_update(this, temp, kz, bio)
     class(OutputData), intent(inout) :: this
     real(rk), intent(in) :: temp(:), kz(:)
+    real(rk),          intent(in), optional :: bio(:,:)
     if (allocated(this%temp_sum)) then
       this%temp_sum = this%temp_sum + temp
       this%kz_sum   = this%kz_sum   + kz
@@ -178,33 +214,57 @@ contains
       this%temp_last = temp
       this%kz_last   = kz
     end if
+    ! Biogeochem
+    if (present(bio) .and. this%n_bio > 0_lk) then
+       if (allocated(this%bio_sum)) then
+          this%bio_sum = this%bio_sum + bio
+       else
+          this%bio_last = bio
+       end if
+    end if
     this%steps = this%steps + 1_lk
   end subroutine outdata_update
 
-  subroutine outdata_finalize(this, temp_out, kz_out)
+  subroutine outdata_finalize(this, temp_out, kz_out, bio_out)
     class(OutputData), intent(in)  :: this
     real(rk), intent(out) :: temp_out(:), kz_out(:)
+    real(rk),    intent(out), optional :: bio_out(:,:)
+
     if (this%steps <= 0_lk) error stop 'OutputData: finalize empty window'
+
     if (allocated(this%temp_sum)) then
-      temp_out = this%temp_sum / real(max(1_lk,this%steps), rk)
-      kz_out   = this%kz_sum   / real(max(1_lk,this%steps), rk)
+       temp_out = this%temp_sum / real(max(1_lk, this%steps), rk)
+       kz_out   = this%kz_sum   / real(max(1_lk, this%steps), rk)
     else
-      temp_out = this%temp_last
-      kz_out   = this%kz_last
+       temp_out = this%temp_last
+       kz_out   = this%kz_last
+    end if
+
+    if (present(bio_out) .and. this%n_bio > 0_lk) then
+       if (allocated(this%bio_sum)) then
+          bio_out = this%bio_sum / real(max(1_lk, this%steps), rk)
+       else
+          bio_out = this%bio_last
+       end if
     end if
   end subroutine outdata_finalize
+
 
   subroutine outdata_reset(this)
     class(OutputData), intent(inout) :: this
     this%steps = 0_lk
     if (allocated(this%temp_sum)) then
-      this%temp_sum = 0.0_rk
-      this%kz_sum   = 0.0_rk
+       this%temp_sum = 0.0_rk
+       this%kz_sum   = 0.0_rk
+    end if
+    if (allocated(this%bio_sum)) then
+       this%bio_sum = 0.0_rk
     end if
   end subroutine outdata_reset
 
+
   !================ OUTPUT MANAGER ================
-  subroutine om_init(this, params, grid_phys, dt_s, time_units, calendar_name, title)
+  subroutine om_init(this, params, grid_phys, dt_s, time_units, calendar_name, title, n_bio, bio_names)
     class(OutputManager), intent(inout) :: this
     type(ConfigParams),   intent(in)    :: params
     type(VerticalGrid),   intent(in)    :: grid_phys
@@ -212,6 +272,8 @@ contains
     character(*),         intent(in)    :: time_units      ! "seconds since ..."
     character(*),         intent(in)    :: calendar_name
     character(*),         intent(in), optional :: title
+    integer,              intent(in), optional :: n_bio
+    character(*),         intent(in), optional :: bio_names(:)
 
     character(:), allocatable :: path
     logical :: exists
@@ -243,34 +305,60 @@ contains
     this%Ni = grid_phys%nz + 1
     this%is_mean = (this%cfg%statistic == 'mean')
 
-    call this%sched%init(dt_s, this%cfg%interval_s, t0_s=0_lk)
-    call this%acc%init(N=this%N, Ni=this%Ni, statistic=this%cfg%statistic)
+    this%n_bio = 0_lk
+    if (present(n_bio)) this%n_bio = n_bio
 
-    call this%writer%open_file(path=path, grid_phys=grid_phys, &
-                               interval_statistic=this%cfg%statistic, time_units=time_units, &
-                               calendar_name=calendar_name, title=merge(title,'',present(title)))
+    call this%sched%init(dt_s, this%cfg%interval_s, t0_s=0_lk)
+    call this%acc%init(N=this%N, Ni=this%Ni, statistic=this%cfg%statistic, n_bio=this%n_bio)
+
+    call this%writer%open_file(path           = path,            &
+                               grid_phys      = grid_phys,       &
+                               interval_statistic = this%cfg%statistic, &
+                               time_units     = time_units,      &
+                               calendar_name  = calendar_name,   &
+                               title          = merge(title,'',present(title)), &
+                               n_bio          = this%n_bio,      &
+                               bio_names      = bio_names)
     this%is_init = .true.
   end subroutine om_init
 
-  subroutine om_step(this, temp_phys, kz_phys)
+  subroutine om_step(this, temp_phys, kz_phys, bio_interior)
     class(OutputManager), intent(inout) :: this
     real(rk), intent(in) :: temp_phys(:), kz_phys(:)  ! bottom→surface (N), (N+1)
+    real(rk), intent(in), optional :: bio_interior(:,:)
     real(rk), allocatable :: temp_rec(:), kz_rec(:)
+    real(rk), allocatable :: bio_rec(:,:)
     logical :: emit
     if (.not. this%is_init) error stop 'OutputManager: step called before init'
 
-    call this%acc%update(temp_phys, kz_phys)
+    if (present(bio_interior) .and. this%n_bio > 0_lk) then
+       call this%acc%update(temp_phys, kz_phys, bio_interior)
+    else
+       call this%acc%update(temp_phys, kz_phys)
+    end if
+
     emit = this%sched%advance(this%sched%dt_s)
 
     if (emit) then
-       allocate(temp_rec(this%N), kz_rec(this%Ni))
-       call this%acc%finalize(temp_rec, kz_rec)
+       allocate(temp_rec(this%N),   kz_rec(this%Ni))
+       if (this%n_bio > 0_lk) allocate(bio_rec(this%N, this%n_bio))
 
-       call this%writer%append_record( t_window_start_s = this%sched%t0_s,          &
-                                       window_len_s     = this%sched%window_len_s(),&
-                                       temp_phys        = temp_rec,                 &
-                                       kz_phys          = kz_rec,                   &
-                                       is_mean          = this%is_mean )
+       if (this%n_bio > 0_lk) then
+          call this%acc%finalize(temp_rec, kz_rec, bio_rec)
+          call this%writer%append_record( t_window_start_s = this%sched%t0_s,           &
+                                          window_len_s     = this%sched%window_len_s(),&
+                                          temp_phys        = temp_rec,                  &
+                                          kz_phys          = kz_rec,                    &
+                                          is_mean          = this%is_mean,              &
+                                          bio_phys         = bio_rec )
+       else
+          call this%acc%finalize(temp_rec, kz_rec)
+          call this%writer%append_record( t_window_start_s = this%sched%t0_s,           &
+                                          window_len_s     = this%sched%window_len_s(),&
+                                          temp_phys        = temp_rec,                  &
+                                          kz_phys          = kz_rec,                    &
+                                          is_mean          = this%is_mean )
+       end if
 
        call this%acc%reset()
        call this%sched%reset_window()
@@ -309,8 +397,6 @@ contains
         iostat_out = ios
     end if
  end subroutine delete_file_if_exists
-
-
 
 
 end module output_manager

@@ -81,7 +81,7 @@ contains
 
         integer  :: i, N
         real(rk) :: dz_imh, dz_iph, flux_dn, flux_up, dv
-        real(rk) :: zc, Uc, rb, ustar_b, z0r, z0sm, z0new, logarg
+        real(rk) :: zc, Uc, rb, ustar_b, z0r, z0sm, z0new, tau_mag, logarg
         real(rk) :: rho_surf, rho_bed
         integer  :: it
 
@@ -160,11 +160,14 @@ contains
         end if
         dv = dt * (-flux_dn / h(N) + tau_surf/(rho0*h(N)))
         vel_comp_new(N) = vel_comp_old(N) + dv
-        !	surface stress boundary conditions...
 
-        
+        !	surface stress boundary conditions...        
         !stresss = sqrt((tau_surf*tau_surf) + (tau_surf2*tau_surf2))
-        u_taus = (((tau_surf/rho_surf)**2 + (tau_surf2/rho_surf)**2 ))**0.25_rk
+        tau_mag = sqrt(tau_surf**2 + tau_surf2**2) 
+        !u_taus: water-side friction velocity or shear velocity
+        u_taus = sqrt(tau_mag / rho_surf)
+        !u_taus = (((tau_surf/rho_surf)**2 + (tau_surf2/rho_surf)**2 ))**0.25_rk
+        ! water-side roughness length -> Formulations from NEMO have found a charnock value of 1400 is appropriate (e.g. Alari et al., 2016)
         z0s = max(charnock * (u_taus*u_taus) / gravity, z0s_min)  ! air-side u_* for Charnock
     end subroutine EQN_FRICTION
     

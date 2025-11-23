@@ -74,7 +74,7 @@ contains
         allocate(BE%velocity(nz,nint))                            ! Velocities
         allocate(BE%vel_faces(0:nz,nint))                         ! Velocities at interfaces
         allocate(BE%flux_sf(nint));    allocate(BE%flux_bt(nint)) ! Fluxes at the surface and bottom of interior variables 
-
+        allocate(BE%BS%vert_diff(0:nz))                           ! Vertical diffusivities
 
         ! --- Bottom-only state variables ---
         nbtm = size(BE%model%bottom_state_variables)
@@ -306,9 +306,11 @@ contains
                                                   w_face=BE%vel_faces(:,ivar), dt=dt_sub)
                     ! Mix internal tracers vertically due to turbulent diffusion.
                     call scalar_diffusion(Var=BE%BS%interior_state(:,ivar), N=nz, dt=dt_sub, h=BE%grid%dz, &
-                                        Kz=BE%BS%vert_diff, cnpar=BE%params%cnpar, tricoef=BE%trid, ierr=ierr)
+                                          Kz=BE%BS%vert_diff, cnpar=BE%params%cnpar, tricoef=BE%trid, ierr=ierr)
                 end do
-            end if    
+            end if   
+            
+            call BE%model%link_all_interior_state_data(BE%BS%interior_state)
 
             !-----------------------------------------------------------------------------
             ! Repir state for interior tracers after vertical redistribution of tracers
@@ -318,8 +320,7 @@ contains
                 write(*,*) "After transport"
                 stop 1
             end if
-
-
+            
             !-----------------------------------------------------------------------------
             ! Integrate tracers using exflicit Forward Euler
             !-----------------------------------------------------------------------------    
@@ -346,29 +347,10 @@ contains
                 end do
             end if
             ! Repair state, if needed, to let FABM restore all state variables within their registered bounds.
-            call check_and_repair_state(BE)      
-        end do            
+            call check_and_repair_state(BE) 
+            
+        end do     
 
-!!!
-    write(*,*) 'nsub=', nsub, ' dt_sub=', dt_sub, ' valid_int=', BE%valid_int
-    write(*,'(/,A,I0)') '--- Bio profile at main step = ', istep_main
-    write(*,'(A)') '    Depth(m)   Tracers (one column per variable)'
-
-
-    write(*,'(A)', advance='no') '    z[m]     '
-    do ivar = 1, nint
-        write(*,'(1X,A10)', advance='no') trim(BE%BS%intvar_names(ivar)(1:min(10,len_trim(BE%BS%intvar_names(ivar)))))
-    end do
-    write(*,*)
-    !write(*,'(F9.3,1X,1P,100E12.3)') BE%grid%z(nz), (BE%flux_sf(ivar), ivar=1,nint)
-    !write(*,'(F9.3,1X,1P,100E12.3)') BE%grid%z(1), (BE%flux_bt(ivar), ivar=1,nint)
-    !write(*,'(F9.3,1X,1P,100E12.3)') BE%grid%z(1), (BE%velocity(1,ivar), ivar=1,nint)
-
-    ! Values: one row per depth
-    do k = 1, nz
-        write(*,'(F9.3,1X,1P,100E12.3)') BE%grid%z(k), (BE%BS%interior_state(k,ivar), ivar=1,nint)
-    end do
-!!!
     end subroutine integrate_bio_fabm
 
     !==============================================================
@@ -468,7 +450,7 @@ contains
         BE%BS%temp = PS%temp  !Later decide what to do with the sediment layers
         BE%BS%sal  = PS%sal
         BE%BS%rho  = PS%rho
-        Be%BS%vert_diff = PS%Kz + mol_diff  ! Adding molecular diffusivity
+        BE%BS%vert_diff = PS%Kz * 0.05_rk !+ mol_diff  ! Adding molecular diffusivity
         BE%BS%short_rad = FS%short_rad
         BE%BS%wind_spd  = FS%wind_spd
         BE%BS%slp       = FS%slp * 100.0_rk ! Converting from hPa to Pa
