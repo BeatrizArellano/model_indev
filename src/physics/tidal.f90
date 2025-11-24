@@ -95,7 +95,7 @@ contains
     subroutine tide_pressure_slopes(S, time, Pxsum, Pysum)
       !! Sum barotropic pressure-gradient accelerations from all tidal constituents.
       type(TidalSet),       intent(in)  :: S
-      real(rk),             intent(in)  :: time       ! model time [s] UTC-referenced
+      real(rk),             intent(in)  :: time       ! model time since simulation start [s] 
       real(rk),             intent(out) :: Pxsum      ! x and y sea surface slopes for tides in the equation of motion
       real(rk),             intent(out) :: Pysum      ! 
       integer :: i, n

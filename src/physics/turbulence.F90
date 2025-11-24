@@ -6,10 +6,10 @@ module turbulence
   private
   public :: TURBULENCE_ke, tke_min
 
-  real(rk), parameter :: tke_min = 3.0e-6_rk !6.0e-6_rk ! Minimum turbulent kinetic energy [m2/s2]
-  real(rk), parameter :: eps_min = 5.0e-10_rk !1.0e-8_rk ! Minimum dissipation rate for turbulent kinetic energy
+  real(rk), parameter :: tke_min = 3.0e-6_rk   ! Minimum turbulent kinetic energy [m2/s2]
+  real(rk), parameter :: eps_min = 5.0e-10_rk  ! Minimum dissipation rate for turbulent kinetic energy
   real(rk), parameter :: L_min   = 0.01_rk
-  real(rk), parameter :: cm0     = 0.527_rk  ! neutral-limit constant of the Canuto k–ε closure scheme
+  real(rk), parameter :: cm0     = 0.527_rk    ! neutral-limit constant of the Canuto k–ε closure scheme
 
 
 contains
@@ -196,7 +196,7 @@ contains
 
       ce1  = 1.44_rk
       ce2  = 1.92_rk
-      galp = 0.53_rk
+      galp = 0.27_rk !0.53_rk
       cde  = cm0**3
 
       !craig_m = sqrt(1.5_rk*cm_craig*cm_craig/(kappa*kappa))
@@ -265,7 +265,7 @@ contains
          end if
          if (eps(i) < epslim) eps(i) = epslim
          Lscale(i) = cde * sqrt(tke(i)*tke(i)*tke(i))/eps(i)
-
+!
          !if (NN(i) .eq. 0.0_rk) NN = 1.0e-6_rk !NN(i) = 1.0e-6_rk <- Error?
          !if (Lscale(i).gt.(0.267_rk*sqrt(2.0_rk*tke(i)/NN(i)))) then
          !   Lscale(i) =  0.267_rk*sqrt(2.0_rk*tke(i)/NN(i)) 
