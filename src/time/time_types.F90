@@ -32,7 +32,7 @@ module time_types
 
   type, public :: CFUnits
     ! Holds the CF units since the reference point in time (date)
-     real(rk) :: timeunit_to_seconds = 0.0_rk    !conversion factor from the declared CF time unit to seconds (e.g. 86400 for "days since")
+     real(rk) :: timeunit_to_seconds = 0.0_rk               !conversion factor from the declared CF time unit to seconds (e.g. 86400 for "days since")
      integer  :: reference_year = 1990, reference_month = 1, reference_day = 1
      integer  :: reference_hour = 0,    reference_min = 0, reference_sec = 0
      logical  :: has_time = .false.

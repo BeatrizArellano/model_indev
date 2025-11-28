@@ -553,7 +553,7 @@ contains
          end select
       end do
 
-      if (any_file)   write(*,'(A)') '  ✓ Forcing files scanned — all checks passed'
+      if (any_file)   write(*,'(A)') '  ✓ Forcing files scanned - all checks passed'
       if (any_file)   write(output_unit,'(2X,"Variables from file: ",A)')     trim(list_file)
       if (any_const)  write(output_unit,'(2X,"Constant variables: ",A)') trim(list_const) 
       write(*,'(2X,A,A)') 'Calendar: ', trim(state%sim_cal%name())
