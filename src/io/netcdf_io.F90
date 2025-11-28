@@ -48,15 +48,15 @@ module netcdf_io
     end interface
 
     interface nc_write_real
-    !> Interface for writing real-valued variables into a NetCDF file.
-    !   (Using interfaces to keep compiler-friendly as select rank may fail with some compilres)
+    ! Interface for writing real variables into a NetCDF file.
+    !   (Using interfaces to keep compiler-friendly)
         module procedure nc_write_real_aux_1d
         module procedure nc_write_real_aux_2d
         module procedure nc_write_real_aux_3d
     end interface
 
     interface nc_write_int
-    !> Interface for writing integer-valued variables into a NetCDF file.
+    !> Interface for writing integer variables into a NetCDF file.
         module procedure nc_write_int_aux_1d
         module procedure nc_write_int_aux_2d
         module procedure nc_write_int_aux_3d

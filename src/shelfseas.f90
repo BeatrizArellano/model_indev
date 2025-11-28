@@ -5,7 +5,7 @@ module shelfseas
   use geo_utils,        only: LocationInfo
   use time_types,       only: DateTime, CFCalendar
   use validation_utils, only: validate_input_dates, validate_location_input, print_header
-  use sim_clocks,       only: init_clock
+  use sim_clocks,       only: init_clock, print_progress, simtime_to_datetime
   use grids,            only: VerticalGrid, build_water_grid, write_vertical_grid
   use forcing_manager,  only: ForcingManager, ForcingSnapshot
   use physics_types,    only: PhysicsState, PhysicsEnv
@@ -14,6 +14,7 @@ module shelfseas
   use bio_params,       only: is_bio_enabled
   use bio_types,        only: BioEnv
   use bio_main,         only: init_bio_fabm, integrate_bio_fabm, end_bio_fabm
+  use variable_registry, only: VarMetadata
 
   !Dev
   use time_utils, only:   datetime_to_str
@@ -40,7 +41,7 @@ module shelfseas
 
   type(ConfigParams)    :: cfg_params
   type(LocationInfo)    :: location
-  type(DateTime)        :: start_datetime, end_datetime
+  type(DateTime)        :: start_datetime, end_datetime, current_datetime
   type(CFCalendar)      :: calendar
   type(VerticalGrid)    :: wgrid
   type(ForcingManager)  :: ForcMan
@@ -48,6 +49,7 @@ module shelfseas
   type(PhysicsEnv)      :: PE
   type(BioEnv), target  :: BE
   type(OutputManager)   :: OM
+  type(VarMetadata), allocatable :: all_vars(:)
   character(:), allocatable :: time_units, calname
   
 
@@ -71,7 +73,6 @@ contains
         call print_header(location,start_datetime,end_datetime) 
 
         call is_bio_enabled(cfg_params, bio_enabled, sediments_enabled)
-        write(*,*) "Bio=", bio_enabled, ' Sed=', sediments_enabled
 
         ! Builds vertical grid
         call build_water_grid(cfg_params, location%depth, wgrid)
@@ -88,60 +89,97 @@ contains
         ! Reference date is the start datetime for the simulation
         dt = cfg_params%get_param_int('time.dt', default=300, positive=.true.)        
         call init_clock(calendar,start_datetime, end_datetime, dt, sim_length_sec, n_steps, last_dt_length)
-        write(*,*) 'n_steps=', n_steps, 'last=', last_dt_length
+
         call ForcMan%prepare(dt, preload_pad_sec=3600_lk, ok=ok, errmsg=msg)
         if (.not. ok) stop 'prepare_forcing failed: '//trim(msg)
+
         ! Initialise physics
         call init_physics(cfg_params, location, wgrid, PE)
 
         if (bio_enabled) then
             call init_bio_fabm(cfg_params, location, wgrid, dt, PE%PS, ForcSnp, BE)
-        end if
-        !!!! In dev
-        time_units = 'seconds since ' // trim(datetime_to_str(start_datetime))
-        calname    = trim(calendar%name())
-        if (bio_enabled) then
-            call OM%init(cfg_params, PE%grid, dt_s=dt, time_units=time_units, calendar_name=calname, title='ShelfSeas output', &
-                        n_bio = BE%BS%n_interior, &
-                        bio_names = BE%BS%intvar_names)
-        else
-            call OM%init(cfg_params, PE%grid, dt_s=dt, time_units=time_units, calendar_name=calname, title='ShelfSeas output')
+        else 
+             write(*,'(A)') 'Preparing a physics-only simulation (biogeochemistry is turned off).'
         end if
 
+
+        if (bio_enabled) then
+            ! Ensure optional arrays are at least allocated with size 0
+            if (.not. allocated(BE%int_vars))  allocate(BE%int_vars(0))
+            if (.not. allocated(BE%diag_hz_vars))  allocate(BE%diag_hz_vars(0))
+            if (.not. allocated(BE%diag_int_vars)) allocate(BE%diag_int_vars(0))
+            if (.not. allocated(BE%sfc_vars))      allocate(BE%sfc_vars(0))
+            if (.not. allocated(BE%btm_vars))      allocate(BE%btm_vars(0))
+            all_vars = [PE%phys_vars, BE%int_vars,BE%btm_vars, BE%sfc_vars, BE%diag_hz_vars, BE%diag_int_vars]            
+        else
+            all_vars = [PE%phys_vars]
+        end if
+        ! Data needed for the output manager
+        time_units = 'seconds since ' // trim(datetime_to_str(start_datetime)) ! Time units (CF-metadata convention)
+        calname    = trim(calendar%name())
+
+        call OM%init(cfg_params, PE%grid, dt_s=dt, time_units=time_units, calendar_name=calname, &
+                          vars = all_vars, loc=location)
         is_main_initialized = .true.     
         
     end subroutine init_shelfseas
 
-    ! Main subroutine to run ShelfSeas. 
-    ! Main time loop is here. 
+    ! Main subroutine 
+    ! The main loop over time is here. 
     subroutine run_shelfseas()
         implicit none
 
-        integer(lk)        :: istep, elapsed_time
+        integer(lk)        :: istep, model_time, dt_now
+        integer            :: doy
+        real(rk)           :: sec_of_day
         integer            :: ierr
         character(len=512) :: errmsg
         logical            :: is_first_step = .true.  
 
         if (.not. is_main_initialized) error stop 'run_shelfseas: shelfseas not initialised.'
 
+        model_time = 0_lk   ! Seconds since the start datetime of the simulation
+
+        write(*,'(/,A,I0,A)') 'Starting simulation (', n_steps, ' steps)...'
+
         ! Main simulation loop
         do istep = 1_lk, n_steps
             if (istep > 1_lk) is_first_step = .false.
-            elapsed_time = (istep - 1_lk) * dt
-            call ForcMan%tick(elapsed_time)                                   ! Time-manager to load yearly forcing data on time
-            call ForcMan%sample(elapsed_time, ForcSnp)                        ! get forcing snapshot for the current model time
-            call solve_physics(PE, ForcSnp, dt, elapsed_time, is_first_step, ierr, errmsg)
+            ! Choose step length: dt for all but last step
+            if (istep < n_steps) then
+                dt_now = dt  ! Current time-step length, always the same except for the last step
+            else
+                dt_now = last_dt_length
+            end if
+
+
+            ! Get current calendar time for FABM
+            call simtime_to_datetime(calendar, start_datetime, model_time, current_datetime, doy)
+
+            call ForcMan%tick(model_time)                                   ! Time-manager to load yearly forcing data on time
+            call ForcMan%sample(model_time, ForcSnp)                        ! get forcing snapshot for the current model time
+
+            call solve_physics(PE, ForcSnp, dt_now, model_time, is_first_step, ierr, errmsg)
+
             if (ierr /= 0) then
                 write(*,*) 'solve_physics failed: ', trim(errmsg)
                 return
             end if
+
             if (bio_enabled) then
-                call integrate_bio_fabm(BE, PE%PS, ForcSnp, dt, istep)
-                call OM%step(PE%PS%temp, PE%PS%Kz, BE%BS%interior_state)
-            else 
-                call OM%step(PE%PS%temp, PE%PS%Kz) 
+                sec_of_day = real( current_datetime%hour*3600 + current_datetime%minute*60 + current_datetime%second, rk )
+                call integrate_bio_fabm(BE, PE%PS, ForcSnp, dt_now, istep, current_datetime, sec_of_day)
             end if 
+            ! Sample state for output
+            call OM%step(dt_now)
+
+            ! Progress bar
+            call print_progress(istep, n_steps, model_time, sim_length_sec,  &
+                                current_datetime, doy, start_datetime, end_datetime)
+            ! Model time in seconds since start date
+            model_time = model_time + dt_now
         end do
+        write(*,'(A,/)') 'Simulation completed.'
     end subroutine run_shelfseas
 
     subroutine end_shelfseas()

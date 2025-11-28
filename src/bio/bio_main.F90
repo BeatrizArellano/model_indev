@@ -11,9 +11,11 @@ module bio_main
     use pressure,            only: compute_pressure 
     use precision_types,     only: rk, lk
     use read_config_yaml,    only: ConfigParams
+    use time_types,          only: DateTime
     use tridiagonal,         only: init_tridiag, clear_tridiag
     use vertical_transport,  only: apply_vertical_transport, velocity_at_interfaces
     use vertical_mixing,     only: scalar_diffusion
+    use variable_registry,   only: register_variable,output_all_variables
 
 
   implicit none
@@ -33,7 +35,9 @@ contains
         type(ForcingSnapshot),    intent(in) :: FS
         type(BioEnv),          intent(inout) :: BE
 
-        integer  :: maxlen, ivar, nz, nint, nsfc, nbtm
+        integer  :: ivar, nz, nint, nsfc, nbtm
+        integer :: n_total_int_diag, n_save_int, j
+        integer :: n_total_hz_diag, n_save_hz
         real(rk) :: dt_main
 
         write(*,'(A)') 'Initialising biogeochemistry via FABM...'
@@ -59,15 +63,20 @@ contains
         if (nint > 0) then
             ! Allocate the array for interior tracers concentrations
             if(allocated(BE%BS%interior_state)) deallocate(BE%BS%interior_state)
-            allocate(BE%BS%interior_state(nz, nint))
-            ! Allocate array for variable names
-            maxlen = maxval(len_trim(BE%model%interior_state_variables%name))
-            allocate(character(len=maxlen) :: BE%BS%intvar_names(nint))
-            ! Point FABM to the current concentration state for biogeochemical tracers
+            allocate(BE%BS%interior_state(nz, nint))            
             do ivar = 1, nint
-                BE%BS%intvar_names(ivar) = trim(BE%model%interior_state_variables(ivar)%name) ! Retrieve names of tracers
+                ! Point FABM to the current concentration state for biogeochemical tracers
                 call BE%model%link_interior_state_data(ivar, BE%BS%interior_state(:,ivar))
-            end do  
+                ! Register metadata for variables
+                call register_variable(BE%int_vars, name=trim(BE%model%interior_state_variables(ivar)%name),  &
+                                       long_name=trim(BE%model%interior_state_variables(ivar)%long_name),        &
+                                       units=trim(BE%model%interior_state_variables(ivar)%units),               &
+                                       minimum=BE%model%interior_state_variables(ivar)%minimum,                 &
+                                       maximum=BE%model%interior_state_variables(ivar)%maximum,                 &
+                                       missing_value=BE%model%interior_state_variables(ivar)%missing_value,     &
+                                       vert_coord='centre', n_space_dims=1, data_1d=BE%BS%interior_state(:,ivar))   
+            end do
+            if (allocated(BE%int_vars)) call output_all_variables(BE%int_vars)
         end if
         ! Allocating working arrays        
         allocate(BE%tendency_int(nz,nint))                        ! Sources (dC/dt) 
@@ -81,15 +90,19 @@ contains
         BE%BS%n_bottom = nbtm
         if (nbtm > 0) then
             if (allocated(BE%BS%bottom_state)) deallocate(BE%BS%bottom_state)
-            allocate(BE%BS%bottom_state(nbtm))
-            ! Allocate array for variable names
-            maxlen = maxval(len_trim(BE%model%bottom_state_variables%name))
-            allocate(character(len=maxlen) :: BE%BS%btmvar_names(nbtm))
+            allocate(BE%BS%bottom_state(nbtm))            
             ! Link FABM to the bottom state vector
             call BE%model%link_all_bottom_state_data(BE%BS%bottom_state)
             do ivar=1, nbtm
-                BE%BS%btmvar_names(ivar) = trim(BE%model%bottom_state_variables(ivar)%name) ! Retrieve names of tracers
+                call register_variable(BE%btm_vars, name=trim(BE%model%bottom_state_variables(ivar)%name),  &
+                                       long_name=trim(BE%model%bottom_state_variables(ivar)%long_name),        &
+                                       units=trim(BE%model%bottom_state_variables(ivar)%units),               &
+                                       minimum=BE%model%bottom_state_variables(ivar)%minimum,                 &
+                                       maximum=BE%model%bottom_state_variables(ivar)%maximum,                 &
+                                       missing_value=BE%model%bottom_state_variables(ivar)%missing_value,     &
+                                       vert_coord='bottom', n_space_dims=0, data_0d=BE%BS%bottom_state(ivar)) 
             end do
+            if (allocated(BE%btm_vars)) call output_all_variables(BE%btm_vars)
         end if
         ! Allocate working array for sources (dC/dt) at the bottom
         allocate(BE%tendency_bt(nbtm))
@@ -99,23 +112,99 @@ contains
         BE%BS%n_surface = nsfc
         if (nsfc > 0) then
             if (allocated(BE%BS%surface_state)) deallocate(BE%BS%surface_state)
-            allocate(BE%BS%surface_state(nsfc))
-            ! Allocate array for variable names
-            maxlen = maxval(len_trim(BE%model%surface_state_variables%name))
-            allocate(character(len=maxlen) :: BE%BS%sfcvar_names(nsfc))
+            allocate(BE%BS%surface_state(nsfc))         
             ! Link FABM to the surface state vector
             call BE%model%link_all_surface_state_data(BE%BS%surface_state)
             do ivar=1, nsfc
-                BE%BS%sfcvar_names(ivar) = trim(BE%model%surface_state_variables(ivar)%name) ! Retrieve names of tracers
+                call register_variable(BE%sfc_vars, name=trim(BE%model%surface_state_variables(ivar)%name),  &
+                                       long_name=trim(BE%model%surface_state_variables(ivar)%long_name),        &
+                                       units=trim(BE%model%surface_state_variables(ivar)%units),               &
+                                       minimum=BE%model%surface_state_variables(ivar)%minimum,                 &
+                                       maximum=BE%model%surface_state_variables(ivar)%maximum,                 &
+                                       missing_value=BE%model%surface_state_variables(ivar)%missing_value,     &
+                                       vert_coord='surface', n_space_dims=0, data_0d=BE%BS%surface_state(ivar)) 
             end do
+            if (allocated(BE%sfc_vars)) call output_all_variables(BE%sfc_vars)
         end if
         ! Allocate working array for sources (dC/dt) at the surface
-        allocate(BE%tendency_sf(nsfc));
+        allocate(BE%tendency_sf(nsfc));                
 
-                   
-             
         
-        BE%BS%n_total = nint + nsfc + nbtm  ! Total number of variables
+        BE%BS%n_total = nint + nsfc + nbtm  ! Total number of state variables
+
+        !---- Interior diagnostic variables -----------
+        n_total_int_diag = size(BE%model%interior_diagnostic_variables)
+        n_save_int       = 0
+        ! Count diagnostics that bio models marked as save=true
+        do ivar = 1, n_total_int_diag
+            if (BE%model%interior_diagnostic_variables(ivar)%save) n_save_int = n_save_int + 1
+        end do
+        BE%n_diag_int = n_save_int
+
+        if (n_save_int > 0) then
+            if (allocated(BE%diag_int))       deallocate(BE%diag_int)
+            if (allocated(BE%diag_int_index)) deallocate(BE%diag_int_index)
+            if (allocated(BE%diag_int_vars))  deallocate(BE%diag_int_vars)
+
+            allocate(BE%diag_int(nz, n_save_int))
+            allocate(BE%diag_int_index(n_save_int))
+
+            j = 0
+            do ivar = 1, n_total_int_diag
+                if (.not. BE%model%interior_diagnostic_variables(ivar)%save) cycle
+                j = j + 1
+                BE%diag_int_index(j) = ivar   ! map our j-th diagnostic to FABM index i
+
+                call register_variable( BE%diag_int_vars,                                    &
+                                        name        = trim(BE%model%interior_diagnostic_variables(ivar)%name),      &
+                                        long_name   = trim(BE%model%interior_diagnostic_variables(ivar)%long_name), &
+                                        units       = trim(BE%model%interior_diagnostic_variables(ivar)%units),     &
+                                        minimum=BE%model%interior_diagnostic_variables(ivar)%minimum,                 &
+                                        maximum=BE%model%interior_diagnostic_variables(ivar)%maximum,                 &
+                                        missing_value=BE%model%interior_diagnostic_variables(ivar)%missing_value,     &
+                                        vert_coord  = 'centre',                                                 &
+                                        n_space_dims= 1,                                                        &
+                                        data_1d     = BE%diag_int(:, j) )
+            end do
+            if (allocated(BE%diag_int_vars)) call output_all_variables(BE%diag_int_vars)
+        end if
+
+        ! Horizontal diagnostics with save=true
+        n_total_hz_diag = size(BE%model%horizontal_diagnostic_variables)
+        n_save_hz       = 0
+
+        do ivar = 1, n_total_hz_diag
+            if (BE%model%horizontal_diagnostic_variables(ivar)%save) n_save_hz = n_save_hz + 1
+        end do
+        BE%n_diag_hz = n_save_hz
+
+        if (n_save_hz > 0) then
+            if (allocated(BE%diag_hz))       deallocate(BE%diag_hz)
+            if (allocated(BE%diag_hz_index)) deallocate(BE%diag_hz_index)
+            if (allocated(BE%diag_hz_vars))  deallocate(BE%diag_hz_vars)
+
+            allocate(BE%diag_hz(n_save_hz))
+            allocate(BE%diag_hz_index(n_save_hz))
+
+            j = 0
+            do ivar = 1, n_total_hz_diag
+                if (.not. BE%model%horizontal_diagnostic_variables(ivar)%save) cycle
+                j = j + 1
+                BE%diag_hz_index(j) = ivar   ! map our j-th diagnostic to FABM index
+
+                call register_variable( BE%diag_hz_vars,                                         &
+                                        name        = trim(BE%model%horizontal_diagnostic_variables(ivar)%name),        &
+                                        long_name   = trim(BE%model%horizontal_diagnostic_variables(ivar)%long_name),   &
+                                        units       = trim(BE%model%horizontal_diagnostic_variables(ivar)%units),       &
+                                        minimum=BE%model%horizontal_diagnostic_variables(ivar)%minimum,                 &
+                                        maximum=BE%model%horizontal_diagnostic_variables(ivar)%maximum,                 &
+                                        missing_value=BE%model%horizontal_diagnostic_variables(ivar)%missing_value,     &
+                                        vert_coord  = 'none',                                                        &
+                                        n_space_dims= 0,                                                             &
+                                        data_0d     = BE%diag_hz(j))
+            end do
+            if (allocated(BE%diag_hz_vars)) call output_all_variables(BE%diag_hz_vars)
+        end if
 
         ! Provide location info to FABM
         call BE%model%link_interior_data(fabm_standard_variables%depth,BE%grid%z)                ! layer depths at centres
@@ -175,7 +264,7 @@ contains
         ! Check other potential variables needed -> Implement a way to provide those variables. 
         ! Loop over a section within biogeochemistry in the yaml file to load those variables. 
 
-    !!! Change when sediments are implemented   
+    !!! Change when sediments are integrated   
         ! Point FABM to environmental data    
         call link_environment_data(PS, FS, BE)      
 
@@ -214,12 +303,14 @@ contains
     !   - Applies vertical mixing and moves tracers according to reported velocities.
     !   - Integrates tracer tendencies (sources: dC/dt) subcycling if needed for stability.
     !=====================================================================================
-    subroutine integrate_bio_fabm(BE, PS, FS, timestep, istep_main)
+    subroutine integrate_bio_fabm(BE, PS, FS, timestep, istep_main, date, sec_of_day)
         type(BioEnv),          intent(inout) :: BE
         type(PhysicsState),    intent(in)    :: PS
         type(ForcingSnapshot), intent(in)    :: FS
         integer(lk),           intent(in)    :: timestep
         integer(lk),           intent(in)    :: istep_main
+        type(DateTime),        intent(in)    :: date
+        real(rk)                             :: sec_of_day
 
         integer  :: nz, ivar, k, nint, nsfc, nbtm
         real(rk) :: istep_rk, dt_main, dt_sub
@@ -249,8 +340,7 @@ contains
         !--------------------------------------------------------------------
         ! Prepare all fields FABM needs to compute source terms (e.g., light)
         !---------------------------------------------------------------------
-        call BE%model%prepare_inputs(istep_rk) !Providing the main time-step number as set_domain received dt_main 
-! (t, year, month, day, seconds)
+        call BE%model%prepare_inputs(istep_rk, date%year, date%month, date%day, sec_of_day) !Providing the main time-step number as set_domain received dt_main 
 
         !-------------------------------------------------------------
         ! Obtaining tendencies (dC/dt) and surface and bottom fluxes
@@ -283,10 +373,13 @@ contains
         !------------------------------------------------
         call BE%model%finalize_outputs()
 
+        call update_bio_diagnostics(BE)
+
         BE%velocity = 0.0_rk
         call BE%model%get_vertical_movement(1,nz, BE%velocity)   ! Obtain vertical velocities from FABM
         call velocity_at_interfaces(BE%velocity, BE%grid, BE%vel_faces)  ! Caluclate velocities at layer interfaces
 
+        ! Compute number of subcycles needed for numerical stabiluty
         call compute_bio_substeps(BE%vel_faces, BE%grid%dz, Kz=BE%BS%vert_diff,         &
                                   cnpar=BE%params%cnpar, BE=BE, dt_main=dt_main,        &
                                   frac_max=BE%params%frac_max, dt_min=BE%params%min_dt, &
@@ -301,7 +394,7 @@ contains
             if (nint>0) then
                 
                 do ivar=1, nint
-                    ! Apply vertical residual movement due to sinking or floating 
+                    ! Move tracers due to sinking or floating 
                     call apply_vertical_transport(BE%BS%interior_state(:,ivar), BE%grid,&
                                                   w_face=BE%vel_faces(:,ivar), dt=dt_sub)
                     ! Mix internal tracers vertically due to turbulent diffusion.
@@ -354,11 +447,12 @@ contains
     end subroutine integrate_bio_fabm
 
     !==============================================================
-    ! Clears memory associated with this module
+    ! Clears memory associated with bio_main
     !==============================================================
     subroutine end_bio_fabm(BE)
         type(BioEnv), intent(inout) :: BE
 
+        integer :: i
 
         ! Report number of times that variables where repaired
         if (BE%params%repair) then
@@ -371,17 +465,13 @@ contains
             if (BE%BS%n_bottom > 0)   write(*,'(A,I0,A)') 'FABM repaired the bottom variables ', BE%nrepair_btm, ' time(s).'
         end if
 
-        !-------------------------------------------------
         ! Clear FABM model instance 
-        !-------------------------------------------------
         if (associated(BE%model)) then
             call BE%model%finalize()
             nullify(BE%model)
         end if
 
-        !-------------------------------------------------
         ! Deallocate BioState arrays
-        !-------------------------------------------------
         if (allocated(BE%BS%interior_state)) deallocate(BE%BS%interior_state)
         if (allocated(BE%BS%bottom_state))   deallocate(BE%BS%bottom_state)
         if (allocated(BE%BS%surface_state))  deallocate(BE%BS%surface_state)
@@ -394,14 +484,61 @@ contains
         if (allocated(BE%BS%par))       deallocate(BE%BS%par)
         if (allocated(BE%BS%vert_diff)) deallocate(BE%BS%vert_diff)
 
-        ! Variable-name arrays
-        if (allocated(BE%BS%intvar_names)) deallocate(BE%BS%intvar_names)
-        if (allocated(BE%BS%sfcvar_names)) deallocate(BE%BS%sfcvar_names)
-        if (allocated(BE%BS%btmvar_names)) deallocate(BE%BS%btmvar_names)
+        !Clean variable Metadata
+        ! Interior bio variables
+        if (allocated(BE%int_vars)) then
+            do i = 1, size(BE%int_vars)
+                nullify(BE%int_vars(i)%data_0d)
+                nullify(BE%int_vars(i)%data_1d)
+            end do
+            deallocate(BE%int_vars)
+        end if
 
-        !-------------------------------------------------
+        ! Surface bio variables
+        if (allocated(BE%sfc_vars)) then
+            do i = 1, size(BE%sfc_vars)
+                nullify(BE%sfc_vars(i)%data_0d)
+                nullify(BE%sfc_vars(i)%data_1d)
+            end do
+            deallocate(BE%sfc_vars)
+        end if
+
+        ! Bottom bio variables
+        if (allocated(BE%btm_vars)) then
+            do i = 1, size(BE%btm_vars)
+                nullify(BE%btm_vars(i)%data_0d)
+                nullify(BE%btm_vars(i)%data_1d)
+            end do
+            deallocate(BE%btm_vars)
+        end if      
+        
+        ! Diagnostics interior and horizontal
+        if (allocated(BE%diag_int))       deallocate(BE%diag_int)
+        if (allocated(BE%diag_int_index)) deallocate(BE%diag_int_index)
+        if (allocated(BE%diag_hz))        deallocate(BE%diag_hz)
+        if (allocated(BE%diag_hz_index))  deallocate(BE%diag_hz_index)
+        ! Clearing metadata for interior diagnostics
+        if (allocated(BE%diag_int_vars)) then
+            do i = 1, size(BE%diag_int_vars)
+                nullify(BE%diag_int_vars(i)%data_0d)
+                nullify(BE%diag_int_vars(i)%data_1d)
+            end do
+            deallocate(BE%diag_int_vars)
+        end if
+        ! Clearing metadata for horizontale diagnostics
+        if (allocated(BE%diag_hz_vars)) then
+            do i = 1, size(BE%diag_hz_vars)
+                nullify(BE%diag_hz_vars(i)%data_0d)
+                nullify(BE%diag_hz_vars(i)%data_1d)
+            end do
+            deallocate(BE%diag_hz_vars)
+        end if
+
+        BE%n_diag_int = 0
+        BE%n_diag_hz  = 0
+
+
         ! Deallocate BioEnv working arrays
-        !-------------------------------------------------
         if (allocated(BE%velocity))     deallocate(BE%velocity)
         if (allocated(BE%tendency_int)) deallocate(BE%tendency_int)
         if (allocated(BE%tendency_sf))  deallocate(BE%tendency_sf)
@@ -412,9 +549,7 @@ contains
         ! Clear Tridiagonal workspace 
         call clear_tridiag(BE%trid)
 
-        !-------------------------------------------------
         ! Reset counters and flags
-        !-------------------------------------------------
         BE%BS%n_interior = 0
         BE%BS%n_surface  = 0
         BE%BS%n_bottom   = 0
@@ -513,4 +648,25 @@ contains
         end if  
     end subroutine check_and_repair_state
 
+    subroutine update_bio_diagnostics(BE)
+        type(BioEnv), intent(inout) :: BE
+
+        integer :: j, idx
+
+        ! Interior diagnostics 
+        if (BE%n_diag_int > 0) then
+            do j = 1, BE%n_diag_int
+                idx   = BE%diag_int_index(j)    ! FABM index
+                BE%diag_int(:, j) = BE%model%get_interior_diagnostic_data(idx)
+            end do
+        end if
+
+        ! Horizontal diagnostics 
+        if (BE%n_diag_hz > 0) then
+            do j = 1, BE%n_diag_hz
+                idx   = BE%diag_hz_index(j)
+                BE%diag_hz(j) = BE%model%get_horizontal_diagnostic_data(idx)
+            end do
+        end if
+    end subroutine update_bio_diagnostics
 end module bio_main

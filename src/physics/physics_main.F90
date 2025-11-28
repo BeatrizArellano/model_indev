@@ -17,6 +17,7 @@ module physics_main
   use tridiagonal,         only: init_tridiag, clear_tridiag
   use physics_params,      only: read_physics_parameters, &
                                  gravity, z0s_min, kappa, mol_nu, mol_diff_T
+  use phys_var_registry,   only: register_physics_variables
   use physics_types,       only: PhysicsState, PhysicsEnv
   use nan_checks,          only: check_nan_physics
   
@@ -42,7 +43,6 @@ contains
       real(rk), allocatable :: height(:)
       real(rk) :: depth, zeta
 
-  
       if (PE%is_init) return
       
       !---- Read Physics parameters and initial values
@@ -67,8 +67,9 @@ contains
   
       ! --- Arrays for turbulence/mixing (N+1) ---
       allocate(PE%PS%Kz(0:PE%PS%N), PE%PS%Nz(0:PE%PS%N), PE%PS%tke(0:PE%PS%N), PE%PS%eps(0:PE%PS%N))
+      allocate(PE%PS%NN(0:PE%PS%N), PE%PS%SS(0:PE%PS%N), PE%PS%Ri(0:PE%PS%N))
       allocate(PE%PS%cmue1(0:PE%PS%N))
-      PE%PS%Kz  = 0.5_rk * PE%params%vismax     ! S2P3 style start
+      PE%PS%Kz  = 0.5_rk * PE%params%vismax     ! Initial values like in S2P3
       PE%PS%Nz  = 0.5_rk * PE%params%vismax
       PE%PS%tke = tke_min
       PE%PS%eps = 5.0e-10_rk
@@ -96,8 +97,11 @@ contains
 
       deallocate(height)
 
-      ! Tridiagonal workspace
+      ! Allocate arrays for the tridiagonal solver
       call init_tridiag(PE%trid, PE%PS%N)
+
+      ! Register variables and define the ones to include in the output
+      call register_physics_variables(cfg_params, PE)
   
       PE%is_init = .true.
     end subroutine init_physics 
@@ -141,20 +145,21 @@ contains
       PE%PS%z0s = max(PE%params%charnock * (PE%PS%u_taus*PE%PS%u_taus) / gravity, z0s_min)  ! Surface roughness length ()
 
       ! Turbulence: once per main step     
-        ! Solves turbulence using the Canuto k-ε closure scheme and calculates Kz and Nz
+        ! Solves turbulence using the Canuto k-eps closure scheme and calculates Kz and Nz
         call TURBULENCE_ke(N, dtm, PE%params, PE%grid%dz,                       &
                           density = PE%PS%rho, velx = u_old, vely = v_old,         &
                           u_taus = PE%PS%u_taus, u_taub = PE%PS%u_taub,            &
                           z0s = PE%PS%z0s, z0b = PE%PS%z0b,                        &
                           Kz = PE%PS%Kz, Nz = PE%PS%Nz, tke = PE%PS%tke,           &
                           eps = PE%PS%eps, Lscale=PE%PS%Lscale,                    &
+                          NN=PE%PS%NN, SS=PE%PS%SS, Ri=PE%PS%Ri,                   &
                           cmue1=PE%PS%cmue1, trid=PE%trid, is_first_step=is_first_step)
 
         Nz_tot = PE%PS%Nz + mol_nu
         Kz_T   = PE%PS%Kz + mol_diff_T 
 
       ! Calculates the optimum size of the time-steps  for the inner loop
-      ! by obtaining the stability condition so that explicit vertical diffusion of momentum is stable
+      ! by obtaining the stability condition so that vertical diffusion of momentum is stable
       call compute_phys_subcycles(PE%grid%dz, Nz_tot, Kz_T, PE%params%vismax, dtm, n_sub, dt_sub, ierr, errmsg)    
 
       ! Inner subcycle to maintain numeriacl stability
@@ -227,13 +232,21 @@ contains
     subroutine end_physics(PE)    
       type(PhysicsEnv),   intent(inout) :: PE
 
+      integer :: i
       if (allocated(PE%PS%temp))   deallocate(PE%PS%temp, PE%PS%sal, PE%PS%rho)
       if (allocated(PE%PS%velx))   deallocate(PE%PS%velx, PE%PS%vely)
       if (allocated(PE%PS%Kz))     deallocate(PE%PS%Kz, PE%PS%Nz, PE%PS%tke, PE%PS%eps)
       if (allocated(PE%PS%Lscale)) deallocate(PE%PS%Lscale)
       if (allocated(PE%PS%cmue1))  deallocate(PE%PS%cmue1)
       PE%PS%N = 0
-      ! reset tides (deallocates allocatable components via intrinsic assignment)
+      if (allocated(PE%phys_vars)) then
+        do i = 1, size(PE%phys_vars)
+          nullify(PE%phys_vars(i)%data_0d)
+          nullify(PE%phys_vars(i)%data_1d)
+        end do
+        deallocate(PE%phys_vars)
+      end if
+      ! reset tides 
       PE%Tides = TidalSet()
       call clear_tridiag(PE%trid)    
 

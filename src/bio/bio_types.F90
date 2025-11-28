@@ -1,10 +1,11 @@
 module bio_types
-    use precision_types, only: rk, lk
-    use grids,           only: VerticalGrid
-    use fabm,            only: type_fabm_model, type_fabm_interior_variable_id, &
+    use precision_types,   only: rk, lk
+    use grids,             only: VerticalGrid
+    use fabm,              only: type_fabm_model, type_fabm_interior_variable_id, &
                                    type_fabm_horizontal_variable_id, type_fabm_scalar_variable_id
-    use tridiagonal,     only: TridiagCoeff
-    use bio_params,      only: BioParams
+    use tridiagonal,       only: TridiagCoeff
+    use bio_params,        only: BioParams
+    use variable_registry, only: VarMetadata
     
 
   implicit none
@@ -21,9 +22,6 @@ module bio_types
     integer :: n_bottom   = 0                                ! Number of bottom only variables
     integer :: n_total    = 0                                ! Total number of variables
 
-    character(len=:), allocatable :: intvar_names(:)         ! Names for interior biogeochemical variables
-    character(len=:), allocatable :: sfcvar_names(:)         ! Names for surface biogeochemical variables
-    character(len=:), allocatable :: btmvar_names(:)         ! Names for bottom biogeochemical variables
     ! State arrays
     real(rk),         allocatable :: interior_state(:,:)     ! State of interior variables (nz,n_interior)
     real(rk),         allocatable :: bottom_state(:)         ! State of bottom variables
@@ -73,7 +71,20 @@ module bio_types
     logical :: need_co2     = .false.
     logical :: is_init = .false.                               ! has biogeochemistry been initialised?
     ! Working space
-    type(TridiagCoeff)     :: trid                             ! workspace for implicit solves in scalar diffusion
+    type(TridiagCoeff)     :: trid                             ! workspace for solving scalar diffusion
+    ! Interior diagnostics 
+    integer :: n_diag_int = 0
+    integer,   allocatable :: diag_int_index(:)                ! FABM indices of interior diagnostics
+    real(rk),  allocatable :: diag_int(:,:)                    ! Array for interior diagnostics(nz, n_diag_int)
+    type(VarMetadata), allocatable :: diag_int_vars(:)         ! Metadata for interior diagnostic variables
+    ! Horizontal diagnostics 
+    integer :: n_diag_hz  = 0
+    integer,   allocatable :: diag_hz_index(:)                 ! FABM indices of horizontal diagnostics
+    real(rk),  allocatable :: diag_hz(:)                       ! Array for horizontal diagnostics (n_hdiag)
+    type(VarMetadata), allocatable :: diag_hz_vars(:)          ! Metadata for horizontal diagnostic variables
+    type(VarMetadata), allocatable :: int_vars(:)              ! Metadata for Biogeochemical interior variables
+    type(VarMetadata), allocatable :: sfc_vars(:)              ! Metadata for surfcace variables
+    type(VarMetadata), allocatable :: btm_vars(:)              ! Metadata for bottom variables
     ! Working arrays
     real(rk), allocatable :: velocity(:,:)                     ! Vertical velocity due to residual movement (nz, n_interior)
     real(rk), allocatable :: vel_faces(:,:)                    ! Vertical velocity due to residual movement at interfaces (0:nz, n_interior)

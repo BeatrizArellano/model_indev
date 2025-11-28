@@ -4,6 +4,7 @@ module physics_types
     use tidal,               only: TidalSet
     use tridiagonal,         only: TridiagCoeff
     use physics_params,      only: PhysicsParams, z0s_min
+    use variable_registry,   only: VarMetadata
 
   implicit none
 
@@ -15,25 +16,28 @@ module physics_types
 
   type :: PhysicsState
     integer              :: N                     ! Number of layers in the water column
-    ! --- Prognostic variables at layers' centres (1..N) ---
+    ! --- Prognostic variables at layers' centres (1..N) 
     real(rk), allocatable :: temp(:), sal(:), rho(:)  ! temperature, salinity and density
     real(rk), allocatable :: velx(:), vely(:)         ! Velocity components
 
-    ! --- Turbulence and mixing on layer interfaces (0..N) ---
+    ! --- Turbulence and mixing on layer interfaces (0..N) 
     real(rk), allocatable :: Kz(:)                    ! scalar diffusivity at layter interfaces [m2/s]
     real(rk), allocatable :: Nz(:)                    ! momentum viscosity at layer interfaces [m2/s], 0..N
     real(rk), allocatable :: tke(:)                   ! TKE at interfaces
     real(rk), allocatable :: eps(:)                   ! epsilon
+    real(rk), allocatable :: NN(:)                    ! Buoyancy frequency squared
+    real(rk), allocatable :: SS(:)                    ! Buoyancy frequency squared
+    real(rk), allocatable :: Ri(:)                    ! Richardson number
     real(rk), allocatable :: Lscale(:)                ! Length scale
     real(rk), allocatable :: cmue1(:)                 ! Stability function 1 (used outside to pass to dissipation)
 
-    ! --- Surface and bottom ---
+    ! --- Surface and bottom 
     real(rk) :: tau_x = 0.0_rk, tau_y = 0.0_rk        ! wind stress components [N m-2]
     real(rk) :: u_taus = 0.0_rk, u_taub = 0.0_rk      ! friction velocities at surface and bottom [m s-1]
     real(rk) :: z0s    = z0s_min, z0b  = 0.01_rk      ! surface and bottom roughness lengths [m]
     real(rk) :: stressb = 0.0_rk                      ! Bottom stress [Pa]
 
-    ! --- Heat fluxes  ---
+    ! --- Heat fluxes 
     !real(rk) :: Q_sw_net = 0.0_rk, Q_lw_net = 0.0_rk, Q_lat = 0.0_rk, Q_sens = 0.0_rk, Q_net = 0.0_rk
   end type PhysicsState
 
@@ -44,6 +48,7 @@ module physics_types
     type(PhysicsParams)  :: params     ! per-column physics params (or shared elsewhere)
     type(TidalSet)       :: Tides      ! site-specific tides
     type(TridiagCoeff)   :: trid        ! workspace for implicit solves
+    type(VarMetadata), allocatable :: phys_vars(:)   ! Metadata for Physics variables
     logical              :: is_init = .false. ! Flag to indicate that the physics is initialised for this water column
   end type PhysicsEnv
 

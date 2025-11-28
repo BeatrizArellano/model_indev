@@ -15,11 +15,11 @@ module turbulence
 contains
 
     !---------------------------------------------------------------------------
-    ! Canuto k-ε closure turbulence scheme: builds SS, NN, P, B; solves k and ε;
+    ! Canuto k-epsilon closure turbulence scheme: builds SS, NN, P, B; solves k and ε;
     ! updates cmue1, cmue2, and finally Nz, Kz. Uses layer interface values at 0..N.
     subroutine TURBULENCE_ke(N, dt, params, h, density, velx, vely, &
                              u_taus, u_taub, z0s, z0b,           &
-                             Kz, Nz, tke, eps, Lscale,           &
+                             Kz, Nz, tke, eps, Lscale, NN, SS, Ri,          &
                              cmue1, trid, is_first_step)
 
         integer,               intent(in)    :: N
@@ -30,19 +30,20 @@ contains
         real(rk),              intent(in)    :: velx(1:N), vely(1:N)
         real(rk),              intent(in)    :: u_taus, u_taub, z0s, z0b
         real(rk),              intent(inout) :: Kz(0:N), Nz(0:N), Lscale(0:N)  
-        real(rk),              intent(inout) :: tke(0:N), eps(0:N), cmue1(0:N)         
+        real(rk),              intent(inout) :: tke(0:N), eps(0:N), cmue1(0:N)
+        real(rk),              intent(inout) :: NN(0:N), SS(0:N), Ri(0:N)          
         type(TridiagCoeff),    intent(inout) :: trid
         logical,               intent(in)    :: is_first_step
 
         ! Local variables
-        real(rk) :: SS(0:N), NN(0:N), P(0:N), B(0:N), Ri(0:N), tkeold(0:N)
+        real(rk) :: P(0:N), B(0:N), tkeold(0:N)
         real(rk) :: as(0:N), an(0:N)
         real(rk) :: sm(0:N), sh(0:N), cmue2(0:N)
         real(rk) :: x, LLk
         integer  :: i
         real(rk) :: du, dv, dz_imh
 
-        ! ---- Shear (SS), Buoyancy freq (NN), Production P, Buoyancy term B ----
+        ! Shear (SS), Buoyancy freq (NN), Production P, Buoyancy term B 
         SS(0:N) = 1.0e-6_rk
         NN(0:N) = 0.0_rk
         P (0:N) = 0.0_rk
@@ -64,12 +65,12 @@ contains
             ! Provide reasonable initial Nz/Kz
             P(i) = Nz(i) * SS(i)
             B(i) = -Kz(i) * NN(i)
-            Ri(i) = NN(i) / SS(i)  ! Richardson number
+            Ri(i) = NN(i) / max(SS(i), 1.0e-10_rk)  ! Richardson number
         end do
 
         ! boundaries
         SS(0) = SS(1);   NN(0) = NN(1);   P(0) = P(1);   B(0) = B(1)
-        SS(N) = SS(N-1); NN(N) = 0.0_rk;  Ri(N)= 0.0_rk; Ri(0) = NN(0) / SS(0)
+        SS(N) = SS(N-1); NN(N) = 0.0_rk; Ri(N) = 0.0_rk; Ri(0) = NN(0)/max(SS(0), 1.0e-10_rk)        
 
         tkeold = tke  
 
