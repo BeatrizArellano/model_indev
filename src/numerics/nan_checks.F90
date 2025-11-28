@@ -41,6 +41,9 @@ contains
       call check_field_1d('tke',    PS%tke,    loc)
       call check_field_1d('eps',    PS%eps,    loc)
       call check_field_1d('Lscale', PS%Lscale, loc)
+      call check_field_1d('NN',     PS%NN,     loc)
+      call check_field_1d('SS',     PS%SS,     loc)
+      call check_field_1d('Ri',     PS%Ri,     loc)
 
       ! Scalars
       call check_scalar('tau_x',  PS%tau_x,  loc)
