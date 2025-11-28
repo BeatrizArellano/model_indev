@@ -150,7 +150,7 @@ contains
         if (len_trim(location%name) > 0) then
             write(output_unit,'(7X,"Location: ",A)') trim(location%name)
         end if
-        write(output_unit,'("Latitude: ",F0.3,4X,"Longitude:",F0.1,4X,"Depth: ",F0.1," m")') &
+        write(output_unit,'("Latitude: ",F0.3,4X,"Longitude:",F0.3,4X,"Depth: ",F0.1," m")') &
                             location%lat, location%lon, location%depth
 
 
