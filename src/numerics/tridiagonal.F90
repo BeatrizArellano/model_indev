@@ -75,5 +75,4 @@ contains
       if (allocated(coeff%qu)) deallocate(coeff%qu)
   end subroutine clear_tridiag
 
-
 end module tridiagonal

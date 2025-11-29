@@ -8,7 +8,7 @@ module physics_types
 
   implicit none
 
-  public :: PhysicsState, PhysicsEnv, Dirichlet, Neumann
+  public :: PhysicsState, PhysicsEnv
 
   !======================
   ! Internal state
@@ -52,7 +52,4 @@ module physics_types
     logical              :: is_init = .false. ! Flag to indicate that the physics is initialised for this water column
   end type PhysicsEnv
 
-  ! Boundary types
-  integer, parameter :: Dirichlet = 1
-  integer, parameter :: Neumann   = 2
 end module physics_types
