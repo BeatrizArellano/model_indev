@@ -85,6 +85,12 @@ module bio_types
     type(VarMetadata), allocatable :: int_vars(:)              ! Metadata for Biogeochemical interior variables
     type(VarMetadata), allocatable :: sfc_vars(:)              ! Metadata for surfcace variables
     type(VarMetadata), allocatable :: btm_vars(:)              ! Metadata for bottom variables
+    ! conserved quantities diagnostics
+    integer :: n_conserved = 0                                 ! number of FABM conserved quantities
+    real(rk), allocatable :: conserved_interior(:,:)           ! (nz, n_conserved): interior values [per m3]
+    real(rk), allocatable :: conserved_boundary(:)             ! (n_conserved): surface+bottom totals [per m2]
+    real(rk), allocatable :: conserved_total(:)                ! column-integrated totals [per m2]
+    type(VarMetadata), allocatable :: conserved_vars(:)        ! metadata for conserved totals
     ! Working arrays
     real(rk), allocatable :: velocity(:,:)                     ! Vertical velocity due to residual movement (nz, n_interior)
     real(rk), allocatable :: vel_faces(:,:)                    ! Vertical velocity due to residual movement at interfaces (0:nz, n_interior)

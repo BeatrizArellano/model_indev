@@ -78,7 +78,7 @@ contains
         call build_water_grid(cfg_params, location%depth, wgrid)
         call write_vertical_grid(wgrid, 'Vertical_grid.dat')
         ! Verify and initialise forcing data
-        call ForcMan%set_hard_fail(stop_on_error)  
+        call ForcMan%set_error_mode(stop_on_error)  
 
         call ForcMan%init(cfg_params, calendar, location, start_datetime, end_datetime, ok, msg)
         if (.not. ok) stop 'init_forcing failed: '//trim(msg)           
@@ -110,7 +110,8 @@ contains
             if (.not. allocated(BE%diag_int_vars)) allocate(BE%diag_int_vars(0))
             if (.not. allocated(BE%sfc_vars))      allocate(BE%sfc_vars(0))
             if (.not. allocated(BE%btm_vars))      allocate(BE%btm_vars(0))
-            all_vars = [PE%phys_vars, BE%int_vars,BE%btm_vars, BE%sfc_vars, BE%diag_hz_vars, BE%diag_int_vars]            
+            if (.not. allocated(BE%conserved_vars)) allocate(BE%conserved_vars(0))
+            all_vars = [PE%phys_vars, BE%int_vars,BE%btm_vars, BE%sfc_vars, BE%diag_hz_vars, BE%diag_int_vars, BE%conserved_vars]            
         else
             all_vars = [PE%phys_vars]
         end if
@@ -131,7 +132,7 @@ contains
 
         integer(lk)        :: istep, model_time, dt_now
         integer            :: doy
-        real(rk)           :: sec_of_day
+        real(rk)           :: sec_of_day, doy_real
         integer            :: ierr
         character(len=512) :: errmsg
         logical            :: is_first_step = .true.  
@@ -168,7 +169,9 @@ contains
 
             if (bio_enabled) then
                 sec_of_day = real( current_datetime%hour*3600 + current_datetime%minute*60 + current_datetime%second, rk )
-                call integrate_bio_fabm(BE, PE%PS, ForcSnp, dt_now, istep, current_datetime, sec_of_day)
+                ! 0-based day-of-year + fractional day
+                doy_real = real(doy - 1, rk) + sec_of_day / 86400._rk
+                call integrate_bio_fabm(BE, PE%PS, ForcSnp, dt_now, istep, current_datetime, sec_of_day, doy_real)
             end if 
             ! Sample state for output
             call OM%step(dt_now)

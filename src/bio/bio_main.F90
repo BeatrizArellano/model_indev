@@ -78,6 +78,7 @@ contains
             end do
             if (allocated(BE%int_vars)) call output_all_variables(BE%int_vars)
         end if
+
         ! Allocating working arrays        
         allocate(BE%tendency_int(nz,nint))                        ! Sources (dC/dt) 
         allocate(BE%velocity(nz,nint))                            ! Velocities
@@ -206,6 +207,32 @@ contains
             if (allocated(BE%diag_hz_vars)) call output_all_variables(BE%diag_hz_vars)
         end if
 
+        ! For conserved Quantities
+        if (BE%params%output_conserved) then
+            BE%n_conserved = size(BE%model%conserved_quantities)
+            if (BE%n_conserved > 0) then
+                allocate(BE%conserved_interior(nz, BE%n_conserved))
+                allocate(BE%conserved_boundary(BE%n_conserved))
+                allocate(BE%conserved_total(BE%n_conserved))
+
+                BE%conserved_interior = 0.0_rk
+                BE%conserved_boundary = 0.0_rk
+                BE%conserved_total    = 0.0_rk
+                ! register variables for output      
+                do ivar=1, BE%n_conserved
+                    call register_variable(BE%conserved_vars,                                 &
+                                            name='conserved_total_'//trim(BE%model%conserved_quantities(ivar)%name),  &
+                                            long_name='Column-integrated total of '//trim(BE%model%conserved_quantities(ivar)%long_name),        &
+                                            units=trim(BE%model%conserved_quantities(ivar)%units)//'*m',         &
+                                            minimum=BE%model%conserved_quantities(ivar)%minimum,                 &
+                                            maximum=BE%model%conserved_quantities(ivar)%maximum,                 &
+                                            missing_value=BE%model%conserved_quantities(ivar)%missing_value,     &
+                                            vert_coord='surface', n_space_dims=0, data_0d=BE%conserved_total(ivar)) 
+                end do
+                if (allocated(BE%conserved_vars)) call output_all_variables(BE%conserved_vars)
+            end if
+        end if
+
         ! Provide location info to FABM
         call BE%model%link_interior_data(fabm_standard_variables%depth,BE%grid%z)                ! layer depths at centres
         call BE%model%link_interior_data(fabm_standard_variables%cell_thickness,BE%grid%dz)      ! layer thicknesses
@@ -213,7 +240,6 @@ contains
         call BE%model%link_horizontal_data(fabm_standard_variables%longitude, location%lon)      ! Longitude
         call BE%model%link_horizontal_data(fabm_standard_variables%bottom_depth, location%depth) ! Bottom depth
         ! call model%set_bottom_index(bottom_indices)
-        ! call model%link_scalar(fabm_standard_variables%number_of_days_since_start_of_the_year, yearday)
 
         ! Getting runtime variable ids to link environmental data to FABM.
         BE%id_temp    = BE%model%get_interior_variable_id(fabm_standard_variables%temperature)
@@ -230,6 +256,9 @@ contains
         BE%id_cloud   = BE%model%get_horizontal_variable_id(fabm_standard_variables%cloud_area_fraction)
         BE%id_stressb = BE%model%get_horizontal_variable_id(fabm_standard_variables%bottom_stress)
         BE%id_co2     = BE%model%get_horizontal_variable_id(fabm_standard_variables%mole_fraction_of_carbon_dioxide_in_air)
+        ! Scalar
+        BE%id_yearday = BE%model%get_scalar_variable_id(fabm_standard_variables%number_of_days_since_start_of_the_year)
+        call BE%model%link_scalar(BE%id_yearday, BE%BS%doy)
         
         ! Finding out which interior variables are actually used in FABM
         BE%need_temp    = BE%model%is_variable_used(BE%id_temp) 
@@ -292,8 +321,23 @@ contains
         BE%valid_int = .true.; BE%valid_btm=.true.; BE%valid_sfc=.true.
         
         BE%is_init = .true.
-        write(*,'("✓ Biogeochemistry initialised successfully with ",I0," variables:")') BE%BS%n_total
+        write(*,'("✓ Biogeochemistry initialised successfully with ",I0," state variables:")') BE%BS%n_total
         write(*,'(" ",I0," interior, ",I0," surface and ",I0," bottom variables")') BE%BS%n_interior, BE%BS%n_surface, BE%BS%n_bottom
+        write(*,'(" ",I0," interior and ",I0," horizontal diagnostic variable(s).")') &
+        BE%n_diag_int, BE%n_diag_hz
+        if (BE%params%output_conserved) then
+            if (BE%n_conserved > 0) then
+                write(*,'(" ",I0," conserved quantity(ies) will be tracked as column-integrated totals.")') &
+                    BE%n_conserved
+            else
+                write(*,'(" FABM reports no conserved quantities for this configuration.")')
+            end if
+        else
+            if (size(BE%model%conserved_quantities) > 0) then
+                write(*,'(" Conserved quantities are available (",I0,") but output is disabled (output_conserved_qt: no).")') &
+                    size(BE%model%conserved_quantities)
+            end if
+        end if
     end subroutine init_bio_fabm
 
     !=====================================================================================
@@ -303,14 +347,16 @@ contains
     !   - Applies vertical mixing and moves tracers according to reported velocities.
     !   - Integrates tracer tendencies (sources: dC/dt) subcycling if needed for stability.
     !=====================================================================================
-    subroutine integrate_bio_fabm(BE, PS, FS, timestep, istep_main, date, sec_of_day)
+    subroutine integrate_bio_fabm(BE, PS, FS, timestep, istep_main, date, sec_of_day, doy_fraction)
         type(BioEnv),          intent(inout) :: BE
         type(PhysicsState),    intent(in)    :: PS
         type(ForcingSnapshot), intent(in)    :: FS
         integer(lk),           intent(in)    :: timestep
         integer(lk),           intent(in)    :: istep_main
         type(DateTime),        intent(in)    :: date
-        real(rk)                             :: sec_of_day
+        real(rk),              intent(in)    :: sec_of_day
+        real(rk),              intent(in)    :: doy_fraction   ! 0-based day of year + fraction
+
 
         integer  :: nz, ivar, k, nint, nsfc, nbtm
         real(rk) :: istep_rk, dt_main, dt_sub
@@ -328,6 +374,8 @@ contains
         nint     = BE%BS%n_interior        ! Number of interior tracers
         nsfc     = BE%BS%n_surface
         nbtm     = BE%BS%n_bottom;
+
+        BE%BS%doy = doy_fraction
 
         !---------------------------------------------
         ! Update FABM with environment data
@@ -373,9 +421,10 @@ contains
         !------------------------------------------------
         call BE%model%finalize_outputs()
 
-        call update_bio_diagnostics(BE)
+        call update_bio_diagnostics(BE)        
 
         BE%velocity = 0.0_rk
+        BE%vel_faces = 0._rk   
         call BE%model%get_vertical_movement(1,nz, BE%velocity)   ! Obtain vertical velocities from FABM
         call velocity_at_interfaces(BE%velocity, BE%grid, BE%vel_faces)  ! Caluclate velocities at layer interfaces
 
@@ -394,9 +443,12 @@ contains
             if (nint>0) then
                 
                 do ivar=1, nint
-                    ! Move tracers due to sinking or floating 
-                    call apply_vertical_transport(BE%BS%interior_state(:,ivar), BE%grid,&
-                                                  w_face=BE%vel_faces(:,ivar), dt=dt_sub)
+                    if (any(BE%vel_faces(:, ivar) /= 0._rk)) then  
+                        ! Only if the tracer has vertical motion
+                        ! Move tracers due to sinking or floating 
+                        call apply_vertical_transport(BE%BS%interior_state(:,ivar), BE%grid,&
+                                                    w_face=BE%vel_faces(:,ivar), dt=dt_sub)
+                    end if
                     ! Mix internal tracers vertically due to turbulent diffusion.
                     call scalar_diffusion(Var=BE%BS%interior_state(:,ivar), N=nz, dt=dt_sub, h=BE%grid%dz, &
                                           Kz=BE%BS%vert_diff, cnpar=BE%params%cnpar, tricoef=BE%trid, ierr=ierr)
@@ -440,9 +492,17 @@ contains
                 end do
             end if
             ! Repair state, if needed, to let FABM restore all state variables within their registered bounds.
-            call check_and_repair_state(BE) 
-            
-        end do     
+            call check_and_repair_state(BE)       
+        end do   
+        
+        ! Compute totals for conserved quantities if needed
+        if (BE%params%output_conserved .and. BE%n_conserved > 0) then
+            call BE%model%get_interior_conserved_quantities(1, nz, BE%conserved_interior)
+            call BE%model%get_horizontal_conserved_quantities(BE%conserved_boundary)
+            do ivar = 1, BE%n_conserved
+                BE%conserved_total(ivar) = sum(BE%grid%dz(1:nz) * BE%conserved_interior(1:nz, ivar)) + BE%conserved_boundary(ivar)
+            end do
+        end if           
 
     end subroutine integrate_bio_fabm
 
@@ -536,6 +596,20 @@ contains
 
         BE%n_diag_int = 0
         BE%n_diag_hz  = 0
+
+        ! Deallocate arrays for conserved quantities
+        if (allocated(BE%conserved_interior)) deallocate(BE%conserved_interior)
+        if (allocated(BE%conserved_boundary)) deallocate(BE%conserved_boundary)
+        if (allocated(BE%conserved_total))    deallocate(BE%conserved_total)
+
+        if (allocated(BE%conserved_vars)) then
+            do i = 1, size(BE%conserved_vars)
+                nullify(BE%conserved_vars(i)%data_0d)
+                nullify(BE%conserved_vars(i)%data_1d)
+            end do
+            deallocate(BE%conserved_vars)
+        end if
+        BE%n_conserved = 0
 
 
         ! Deallocate BioEnv working arrays
