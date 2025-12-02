@@ -1,5 +1,7 @@
 # S2P3-new - 1-D Shelf Sea Physics & Biogeochemistry
 
+This testing version of the model (still in development) builds on the S2P3 physical core and provides a flexible interface to biogeochemical modules through FABM. It also incorporates concepts from BROM-transport to represent sediment transport processes, enabling coupled water-sediment biogeochemistry.
+
 ## Supported Platforms
 
 The model is **developed and tested on Linux**.
@@ -7,7 +9,7 @@ The model is **developed and tested on Linux**.
 CMake already contains compiler flags for GNU, Intel, and Cray Fortran compilers, so it *should* work on most UNIX-like systems:
 
 - **Linux** (recommended, tested)
-- **macOS** (via Homebrew/MacPorts) — not yet tested
+- **macOS** (via Homebrew/MacPorts) - not yet tested
 
 ---
 
@@ -69,12 +71,11 @@ git submodule update --init --recursive -- external/fabm
 ```
 
 ## Building the model
-From the repository root:
+From the repository root, run (Ignoring the Warnings):
 
 ```bash
 cmake --preset release
-cd build/release
-make
+cmake --build --preset release
 ```
 The executable of the model will be creasted at:
 ```bash
