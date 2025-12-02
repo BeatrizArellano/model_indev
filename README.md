@@ -51,8 +51,8 @@ nf-config --all
 
 ### Ubundu/Debian
 ```bash 
-sudo apt-get update
-sudo apt-get install -y \
+sudo apt update
+sudo apt install -y \
     git cmake gfortran gcc \
     libnetcdf-dev libnetcdff-dev
 ```
@@ -84,16 +84,19 @@ build/release/shelf_model
 ## Running the first simulation
 Once the model is built, you need:
 
-- A YAML configuration file (e.g. main.yaml)
+- A run directory containing the following
+
+- A YAML configuration file (main.yaml)
 
 - Forcing data in NetCDF format
 
-- A run directory containing the above
+- Optional: A YAML configuration file if including biogeochemistry (fabm.yaml)
 
-From the repository root (or your run directory), run:
+
+From the simulation directory, run the shelf_model executable correcting for the path in your directory structure:
 
 ```bash
-./build/bin/shelf_models
+../../build/bin/shelf_model
 ```
 
 ## Repository Structure (Overview)
@@ -102,7 +105,7 @@ From the repository root (or your run directory), run:
 external/fabm/      # FABM submodule (biogeochemical models)
 src/                # Model source code (physics, bio, IO, utilities)
 cmake/Modules/      # Custom CMake find modules (FindNetCDF.cmake)
-sims/              # Example configurations and forcing (if provided)
+sims/               # Example configurations and forcing 
 build/              # CMake build directory (created by you, not in git)
 ```
 
