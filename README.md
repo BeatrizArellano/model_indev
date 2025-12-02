@@ -70,6 +70,15 @@ cd model
 git submodule update --init --recursive -- external/fabm
 ```
 
+## Copying the FABM driver specific to the model
+
+Create a new directory called `shelf_model` (for now) inside `external/fabm/src/drivers/` and
+copy `fabm_driver.h` inside `external/driver/` into `external/fabm/src/drivers/shelf_model/`.
+```bash
+mkdir external/fabm/src/drivers/shelf_model
+cp external/driver/fabm_driver.h external/fabm/src/drivers/shelf_model/
+```
+
 ## Building the model
 From the repository root, run (Ignoring the Warnings):
 
