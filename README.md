@@ -63,7 +63,7 @@ sudo apt install -y \
 This repository includes FABM as a git submodule under `external/fabm`.
 
 ```bash
-git clone <REPO_URL> model
+git clone https://github.com/BeatrizArellano/model_indev model
 cd model
 
 # Fetch FABM (required)
