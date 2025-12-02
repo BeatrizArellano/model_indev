@@ -91,6 +91,16 @@ The executable of the model will be creasted at:
 build/release/shelf_model
 ```
 
+## Repository Structure (Overview)
+
+```
+external/fabm/      # FABM submodule (biogeochemical models)
+src/                # Model source code (physics, bio, IO, utilities)
+cmake/Modules/      # Custom CMake find modules (FindNetCDF.cmake)
+sims/               # Example configurations and forcing 
+build/              # CMake build directory (created by you, not in git)
+```
+
 ## Running the first simulation
 Once the model is built, you need:
 
@@ -103,19 +113,11 @@ Once the model is built, you need:
 - Optional: A YAML configuration file if including biogeochemistry (fabm.yaml)
 
 
-From the simulation directory, run the shelf_model executable correcting for the path in your directory structure:
+From the simulation directory, run the shelf_model executable adapting the path to your directory structure. This is an example considering that your simulation case is inside sims/simulationfolder/ within the repository structure. 
 
 ```bash
-../../build/bin/shelf_model
+../../build/release/bin/shelf_model
 ```
 
-## Repository Structure (Overview)
 
-```
-external/fabm/      # FABM submodule (biogeochemical models)
-src/                # Model source code (physics, bio, IO, utilities)
-cmake/Modules/      # Custom CMake find modules (FindNetCDF.cmake)
-sims/               # Example configurations and forcing 
-build/              # CMake build directory (created by you, not in git)
-```
 
