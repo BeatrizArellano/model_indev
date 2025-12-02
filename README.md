@@ -239,7 +239,7 @@ Think of `shelfseas` as the place to look if you want to understand “what happ
   - `physics_types`: holds `PhysicsState` (T, S, velocities, turbulence vars, etc.) and `PhysicsEnv`.
 
 - **Biogeochemistry (FABM)**
-  - `bio_main` – connects with FABM:
+  - `bio_main` – the main driver for plugging biogeochemistry via FABM:
     - `init_bio_fabm`:  allocates tracers, links environment fields.
     - `integrate_bio_fabm`: advances all FABM tracers for one physics time step (with sub-cycling as needed).
     - `end_bio_fabm`: cleans everything associated with biogeochemistry.
