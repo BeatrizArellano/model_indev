@@ -208,3 +208,58 @@ The main model will:
 3. Transport tracers according to vertical diffusion and their specified sinking/floating speeds. 
 
 The biogeochemistry behaviour is entirely determined by the contents of its configuration file (fabm.yaml), allowing flexible switching between simple test models and full ecosystem models. A sample configuration file can be found inside `sims/Biogeochemistry_toy_case/fabm.yaml`.
+
+## Quick guide to the structure of the code
+
+At the highest level, the model is organised around a small number of core modules that talk to each other via the `shelfseas` orchestrator. 
+
+
+### Main orchestrator
+
+- **`shelfseas`** (in `src/shelfseas.F90`)  (To change the name later, once a new name is decided)
+  1. Scans forcing data, main parameters, builds the vertical grid (water, and optionally sediments).
+  2. Initialises the forcing system, physics, optional biogeochemistry, and output.
+  3. Runs the main time-stepping loop.
+
+Think of `shelfseas` as the place to look if you want to understand “what happens in which order”.
+
+### Main building blocks
+
+- **Forcing**
+  - `forcing_manager`:
+    - scans forcing files,
+    - returns a `ForcingSnapshot` (all surface fields at the needed time step).
+
+- **Physics**
+  - `physics_main`: the core physics driver:
+    - `init_physics`: allocate and initialise fields.
+    - `solve_physics`: one full physics time step (turbulence, mixing, tidal forcing, etc.) called from `shelfseas`. Internally, it performs a **physics sub-cycling loop** to maintain numerical stability when the main time step `dt` is too large for the mixing or momentum equations.
+    - `end_physics`: clean-up.
+  - Additional internal modules (e.g. turbulence, mixing, tides) are called from here.
+  - `physics_types`: holds `PhysicsState` (T, S, velocities, turbulence vars, etc.) and `PhysicsEnv`.
+
+- **Biogeochemistry (FABM)**
+  - `bio_main` – connects with FABM:
+    - `init_bio_fabm`:  allocates tracers, links environment fields.
+    - `integrate_bio_fabm`: advances all FABM tracers for one physics time step (with sub-cycling as needed).
+    - `end_bio_fabm`: cleans everything associated with biogeochemistry.
+  - Only used if `biogeochemistry.enabled: yes` in `main.yaml`.
+
+- **Output**
+  - `variable_registry` – metadata for each variable (name, units, dimensions, pointers to data).
+  - `output_manager` – schedules output, accumulates statistics (mean/instant), and calls the writer.
+  - `output_writer` – handles NetCDF file creation, dimensions, variables, and writing to disk.
+
+### Sequence of steps in a nutshell
+
+1. Read configuration in main.yaml.  
+2. Build grids (water + optional sediments).
+3. Scan Forcing and initialise the forcing manager.
+4. For each main time step:
+   - Update forcing snapshot.
+   - Call `solve_physics`.
+   - If enabled, call `integrate_bio_fabm`.
+   - Call `om_step` (from `output_manager`) to accumulate and occasionally write output.
+5. Finalise physics, FABM, forcing, and output.
+
+If you’re new to the code start in `shelfseas.F90`, then look at the modules you're interested in physics, bio, io, etc. 
