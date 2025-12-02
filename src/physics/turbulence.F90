@@ -1,3 +1,21 @@
+!=======================================================================================
+!   Shelf Sea Physics:
+!   1-D MODEL OF THE EQUATION OF MOTION USING THE Canuto k-e TURBULENCE CLOSURE SCHEME
+!
+!   This code is fully based on the S2P3 model lineage:
+!
+!   • Original S2P3 (v7.0):
+!       Jonathan Sharples – Univ. of Liverpool & NOC
+!       Documented in: Simpson & Sharples (2012), CUP.
+!
+!   • Regional framework S2P3-R (v1.0):
+!       Marsh, Hickman & Sharples (2015), GMD 8, 3163–3178.
+!
+!   • Large-scale/efficient S2P3-R v2.0:
+!       Halloran et al. (2021), GMD 14, 6177–6195.
+!
+!=======================================================================================
+
 module turbulence
   use precision_types, only: rk
   use physics_params,  only: rho0, gravity, kappa, mol_nu, PhysicsParams
@@ -75,7 +93,7 @@ contains
         tkeold = tke  
 
         ! ---- Solve TKE (k) ----
-        call tke_calc(N, dt, h, Nz, P, B, tke, eps, u_taus, u_taub, z0s, trid)        
+        call tke_calc(N, dt, h, Nz, P, B, tke, eps, u_taus, u_taub, trid)        
 
         ! if first time: neutral init to generate an initial cmue1 to pass to dissipation
         
@@ -122,12 +140,12 @@ contains
 
     !---------------------------------------------------------------------------
     ! Solve TKE (k): tridiagonal implicit step with production/buoyancy split.
-    subroutine tke_calc(N, dt, h, Nz, P, B, tke, eps, u_taus, u_taub, z0s, tri)
+    subroutine tke_calc(N, dt, h, Nz, P, B, tke, eps, u_taus, u_taub, tri)
       integer,            intent(in)    :: N
       real(rk),           intent(in)    :: dt
       real(rk),           intent(in)    :: h(1:N), Nz(0:N), P(0:N), B(0:N)
       real(rk),           intent(inout) :: tke(0:N)
-      real(rk),           intent(in)    :: eps(0:N), u_taus, u_taub, z0s
+      real(rk),           intent(in)    :: eps(0:N), u_taus, u_taub
       type(TridiagCoeff), intent(inout) :: tri
 
       real(rk) :: avh(0:N)

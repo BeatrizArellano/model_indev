@@ -1,3 +1,21 @@
+!=======================================================================================
+!   Shelf Sea Physics:
+!   1-D MODEL OF THE EQUATION OF MOTION USING THE Canuto k-e TURBULENCE CLOSURE SCHEME
+!
+!   This code is fully based on the S2P3 model lineage:
+!
+!   • Original S2P3 (v7.0):
+!       Jonathan Sharples – Univ. of Liverpool & NOC
+!       Documented in: Simpson & Sharples (2012), CUP.
+!
+!   • Regional framework S2P3-R (v1.0):
+!       Marsh, Hickman & Sharples (2015), GMD 8, 3163–3178.
+!
+!   • Large-scale/efficient S2P3-R v2.0:
+!       Halloran et al. (2021), GMD 14, 6177–6195.
+!
+!=======================================================================================
+
 module momentum_eqns
     use precision_types, only: rk
     use physics_params,  only: rho_air, rho0, kappa, mol_nu, gravity, z0s_min
@@ -5,7 +23,7 @@ module momentum_eqns
     implicit none
     private
 
-    public :: EQN_PRESSURE, EQN_CORIOLIS, wind_stress_from_speed_dir, EQN_FRICTION
+    public :: EQN_PRESSURE, EQN_CORIOLIS, wind_stress_from_uv, EQN_FRICTION, update_surface_friction
 
 contains
     ! Equation of motion - pressure term
@@ -55,41 +73,81 @@ contains
         ! w_stress=sqrt(stressx*stressx + stressy*stressy) ! also called stresss in S2P3 not needed for the calculations
     end subroutine wind_stress_from_speed_dir
 
+    pure subroutine wind_stress_from_uv(u10, v10, windspeed, stressx, stressy)
+        implicit none
+        real(rk), intent(in)     :: u10, v10           ! 10m wind components [m s-1]
+        real(rk), intent(out)    :: stressx, stressy   ! surface stress [N m-2]
+        real(rk), intent(out)    :: windspeed          ! optional: return |U10|
+        real(rk) :: Cd, fac
+
+        ! Magnitude of 10m windspeed
+        windspeed = sqrt(u10*u10 + v10*v10)
+
+        ! Calm case
+        if (windspeed <= 0._rk) then
+            stressx = 0._rk
+            stressy = 0._rk
+            return
+        end if
+        ! Smith & Banke (1975): Cd = (0.63 + 0.066*wind_speed)×1e-3 (In Simon and Sharples)
+        Cd  = (0.63_rk + 0.066_rk*windspeed) * 1e-3_rk
+        ! Stress τ = rho_air * Cd * |ws| * u (or v)
+        fac    = rho_air * Cd * windspeed
+        stressx = fac * u10
+        stressy = fac * v10
+    end subroutine wind_stress_from_uv
+
+    pure subroutine update_surface_friction(tau_x, tau_y, rho_surf, charnock, u_taus, z0s)
+        !  u_taus,           [out] real     friction velocity at the surface u_* [m s-1]
+        !  z0s               [out] real     effective surface roughness length  [m]
+        implicit none
+        real(rk), intent(in)  :: tau_x, tau_y, rho_surf, charnock
+        real(rk), intent(out) :: u_taus, z0s
+        real(rk) :: tau_mag
+
+        !	surface stress boundary conditions...   
+        tau_mag = sqrt(tau_x*tau_x + tau_y*tau_y)
+        !u_taus: water-side friction velocity or shear velocity
+        u_taus  = sqrt(tau_mag / rho_surf)
+        ! water-side roughness length -> Formulations from NEMO have found a charnock value of 1400 is appropriate (e.g. Alari et al., 2016)
+        z0s     = max(charnock * (u_taus*u_taus) / gravity, z0s_min)
+    end subroutine update_surface_friction
+
+
+
     !**********************************************************
     !       Equation of motion subroutine - friction term
     !**********************************************************
     pure subroutine EQN_FRICTION(vel_comp_old, vel_comp_new, vel_comp2_bottom, Nz, h, dt, h0b, density, &
-                                 tau_surf, tau_surf2, charnock, u_taub, z0b, stressb, u_taus, z0s)
-        !  vel_comp_old,     [in ] real(:)  bottom-to-top component to update (u or v) at cell centres [m s-1]
+                                 tau_surf, u_taub, z0b, stressb)
+        !  vel_comp_old,     [in ] real(:)  bottom-to-top component to update (u or v) at layers' centres [m s-1]
         !  vel_comp_new,     [out] real(:)  updated component after diffusion + bottom drag + surface stress [m s-1]
-        !  vel_comp2_bottom  [in ] real     other component at i=1 (bottom-cell centre) used to form |U| [m s-1]
+        !  vel_comp2_bottom  [in ] real     other component at i=1 (bottom-layer centre) used to form |U| [m s-1]
         !  Nz,               [in ] real(:)  eddy viscosity (momentum) at interfaces (0..N) [m^2 s-1]
         !  h,                [in ] real(:)  layer thicknesses (centres 1..N) [m]
         !  dt,               [in ] real     time step [s]
         !  h0b,              [in ] real     Nikuradse bed roughness height k_s (physical roughness) [m]
         !  density                 real     Density 
-        !  tau_surf,         [in ] real     surface stress component (τ_sx or τ_sy) applied at top cell [N m-2]
-        !  tau_surf2,        [in ] real     Complementary surface stress component (τ_sx or τ_sy) applied at top cell [N m-2]
-        !  u_taub,           [out] real     friction velocity at bed u_* [m s-1]
-        !  u_taus,           [out] real     friction velocity at the surface u_* [m s-1]
-        !  z0b, z0s          [out] real     effective bottom and surface roughness lengths  [m]
+        !  tau_surf,         [in ] real     surface stress component (τ_sx or τ_sy) applied at top layer [N m-2]
+        !  u_taub,           [out] real     friction velocity at bed u_* [m s-1]        
+        !  z0b              [out] real     effective bottom roughness length  [m]
+
         implicit none
         ! Inputs
-        real(rk), intent(in)  :: vel_comp_old(:), vel_comp2_bottom, Nz(:), h(:), density(:), dt, h0b, tau_surf, tau_surf2, charnock
+        real(rk), intent(in)  :: vel_comp_old(:), vel_comp2_bottom, Nz(:), h(:), density(:), dt, h0b, tau_surf
         ! Outputs
-        real(rk), intent(out) :: vel_comp_new(size(vel_comp_old)), u_taub, z0b, stressb, u_taus, z0s
+        real(rk), intent(out) :: vel_comp_new(size(vel_comp_old)), u_taub, z0b, stressb
 
         integer  :: i, N
         real(rk) :: dz_imh, dz_iph, flux_dn, flux_up, dv
         real(rk) :: zc, Uc, rb, ustar_b, z0r, z0sm, z0new, tau_mag, logarg
-        real(rk) :: rho_surf, rho_bed
+        real(rk) :: rho_bed
         integer  :: it
 
         N     = size(vel_comp_old); vel_comp_new = vel_comp_old
         zc    = 0.5_rk*h(1)
 
         rho_bed  = density(1)
-        rho_surf = density(N)
 
         ! ---- Interior diffusion of horizontal momentum
         do i = 2, N-1
@@ -158,17 +216,9 @@ contains
             dz_imh  = 0.5_rk*(h(N-1) + h(N))                 ! face N-1/2 spacing
             flux_dn = Nz(N-1) * (vel_comp_old(N) - vel_comp_old(N-1)) / dz_imh
         end if
-        dv = dt * (-flux_dn / h(N) + tau_surf/(rho0*h(N)))
+        dv = dt * (-flux_dn / h(N) + tau_surf/(rho0*h(N)))  ! -> rho0 or density at the surface?
         vel_comp_new(N) = vel_comp_old(N) + dv
 
-        !	surface stress boundary conditions...        
-        !stresss = sqrt((tau_surf*tau_surf) + (tau_surf2*tau_surf2))
-        tau_mag = sqrt(tau_surf**2 + tau_surf2**2) 
-        !u_taus: water-side friction velocity or shear velocity
-        u_taus = sqrt(tau_mag / rho_surf)
-        !u_taus = (((tau_surf/rho_surf)**2 + (tau_surf2/rho_surf)**2 ))**0.25_rk
-        ! water-side roughness length -> Formulations from NEMO have found a charnock value of 1400 is appropriate (e.g. Alari et al., 2016)
-        z0s = max(charnock * (u_taus*u_taus) / gravity, z0s_min)  ! air-side u_* for Charnock
     end subroutine EQN_FRICTION
     
 end module momentum_eqns

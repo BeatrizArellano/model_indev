@@ -12,19 +12,24 @@ module forcing_manager
   implicit none
   private
 
-  ! -------- Data Snapshot handed to physics each step -------------------
+  ! Data Snapshot for each model step
   type, public :: ForcingSnapshot
      real(rk) :: air_temp   = 0._rk
      real(rk) :: slp        = 0._rk
      real(rk) :: rel_hum    = 0._rk
      real(rk) :: short_rad  = 0._rk
      real(rk) :: long_rad   = 0._rk
-     real(rk) :: wind_spd   = 0._rk
-     real(rk) :: wind_dir   = 0._rk
+     real(rk) :: wind_u10   = 0._rk   ! zonal (m s-1)
+     real(rk) :: wind_v10   = 0._rk   ! meridional (m s-1)
+     ! Freshwater fluxes [m s-1]
+     real(rk) :: precip     = 0._rk   ! precipitation (downward freshwater flux)
+     real(rk) :: evap       = 0._rk   ! evaporation (upward freshwater flux, negative = evaporation)
+     real(rk) :: runoff     = 0._rk   ! river/runoff (downward freshwater flux)
+     ! Co2
      real(rk) :: co2_air    = 0._rk
   end type ForcingSnapshot
 
-  ! ---------------Forcing Manager instance ------------------------------
+  ! ---------------Forcing Manager-------------------------------
   type, public :: ForcingManager
      ! config / plan
      type(ForcingState) :: Fstate
@@ -42,7 +47,7 @@ module forcing_manager
      logical     :: is_init     = .false.
      logical     :: have_curr   = .false.
      logical     :: have_next   = .false.
-     logical     :: hard_fail   = .true.   ! stop on error?
+     logical     :: stop_on_error   = .true.   ! stop on error?
 
      ! Per-instance cushion (seconds) to de-synchronise preload across many columns (if running in parallel)
      integer(lk) :: preload_cushion = 0_lk
@@ -52,7 +57,7 @@ module forcing_manager
      procedure :: tick
      procedure :: sample
      procedure :: clear
-     procedure :: set_hard_fail
+     procedure :: set_error_mode
      procedure :: set_preload_cushion
      procedure :: get_sim_calendar
   end type ForcingManager
@@ -72,10 +77,11 @@ contains
         character(*),          intent(out)   :: errmsg
 
         ok = .false.; errmsg = ''
+        write(*,'(A)') 'Scanning forcing data...'
 
         call scan_and_init_forcing(params, calendar_cfg, location, start_datetime, end_datetime, self%Fstate, ok, errmsg)
         if (.not. ok) then
-            call stop_fatal('scan_and_init_forcing', errmsg, self%hard_fail)
+            call stop_fatal('scan_and_init_forcing', errmsg, self%stop_on_error)
             return
         end if
 
@@ -89,7 +95,7 @@ contains
         ok = .true.
     end subroutine init
 
-    ! ---------------------- Prepare: first switch & first year ------------------
+    ! ---------------------- Prepare: first switch and first year ------------------
     subroutine prepare(self, dt_main, preload_pad_sec, ok, errmsg)
         class(ForcingManager), intent(inout) :: self
         integer(lk),           intent(in)    :: dt_main        ! main time-step
@@ -104,7 +110,7 @@ contains
         ok = .false.; errmsg = ''
         if (.not. self%is_init) then
             errmsg = 'ForcingManager not initialized'
-            call stop_fatal('prepare', errmsg, self%hard_fail)
+            call stop_fatal('prepare', errmsg, self%stop_on_error)
         end if
 
         ! Pad interval (ensure >= dt_main)
@@ -122,7 +128,7 @@ contains
         k = year_to_simyear(self%y_active, self%Fstate%sim_y_start, self%Fstate%sim_y_end)
         if (k <= 0) then
             errmsg = 'start year outside simulation range'
-            call stop_fatal('prepare: ', errmsg, self%hard_fail)
+            call stop_fatal('prepare: ', errmsg, self%stop_on_error)
             return
         end if
 
@@ -130,7 +136,7 @@ contains
         call load_year_data(self%Fstate, k, self%Ydata_curr, lok, lmsg)
         if (.not. lok) then
             errmsg = '(Y='//trim(adjustl(inttostr(self%sim_start%year)))//') failed: '//trim(lmsg)
-            call stop_fatal('load_year_data', errmsg, self%hard_fail)
+            call stop_fatal('load_year_data', errmsg, self%stop_on_error)
             return
         end if
 
@@ -168,7 +174,7 @@ contains
                 if (.not. lok) then
                 if (present(ok))     ok = .false.
                 if (present(errmsg)) errmsg = 'Preload next year failed: '//trim(lmsg)
-                call stop_fatal('tick', errmsg, self%hard_fail)
+                call stop_fatal('tick', errmsg, self%stop_on_error)
                 return
                 end if
                 self%have_next = .true.
@@ -192,7 +198,7 @@ contains
                     if (.not. lok) then
                         if (present(ok))     ok = .false.
                         if (present(errmsg)) errmsg = 'Just in time year data load failed: '//trim(lmsg)
-                        call stop_fatal('tick/just_in_time', errmsg, self%hard_fail)
+                        call stop_fatal('tick/just_in_time', errmsg, self%stop_on_error)
                         return
                     end if
                 self%have_curr = .true.
@@ -220,7 +226,7 @@ contains
         if (.not. self%have_curr) then
             if (present(ok))     ok = .false.
             if (present(errmsg)) errmsg = 'Forcing data snapshot failed, data is not loaded'
-            call stop_fatal('sample', errmsg, self%hard_fail)
+            call stop_fatal('sample', errmsg, self%stop_on_error)
             return
         end if
 
@@ -230,8 +236,11 @@ contains
         Fsnp%rel_hum   = self%Ydata_curr%rel_hum%value_at_step(model_time)
         Fsnp%short_rad = self%Ydata_curr%short_rad%value_at_step(model_time)
         Fsnp%long_rad  = self%Ydata_curr%long_rad%value_at_step(model_time)
-        Fsnp%wind_spd  = self%Ydata_curr%wind_spd%value_at_step(model_time)
-        Fsnp%wind_dir  = self%Ydata_curr%wind_dir%value_at_step(model_time)
+        Fsnp%wind_u10  = self%Ydata_curr%wind_u10%value_at_step(model_time)
+        Fsnp%wind_v10  = self%Ydata_curr%wind_v10%value_at_step(model_time)
+        Fsnp%precip     = self%Ydata_curr%precip%value_at_step(model_time)
+        Fsnp%evap       = self%Ydata_curr%evap%value_at_step(model_time)
+        Fsnp%runoff     = self%Ydata_curr%runoff%value_at_step(model_time)
         Fsnp%co2_air   = self%Ydata_curr%co2_air%value_at_step(model_time)
     end subroutine sample
 
@@ -247,11 +256,11 @@ contains
 
     ! Switch to stop the full simulation in case of failure -
     ! Adding this because not sure about stopping when running parallel processes in the future
-    subroutine set_hard_fail(self, on)
+    subroutine set_error_mode(self, on)
         class(ForcingManager), intent(inout) :: self
         logical,               intent(in)    :: on
-        self%hard_fail = on
-    end subroutine set_hard_fail
+        self%stop_on_error = on
+    end subroutine set_error_mode
   
     ! Sets a cushion of time to preload the data
     subroutine set_preload_cushion(self, cushion_seconds)
@@ -281,11 +290,11 @@ contains
         t_switch = seconds_between_datetimes(cal, dtb, start_datetime)
     end function compute_switch_time
 
-    subroutine stop_fatal(where, msg, hard_fail)
+    subroutine stop_fatal(where, msg, stop_on_error)
         character(*), intent(in) :: where, msg
-        logical,      intent(in) :: hard_fail
+        logical,      intent(in) :: stop_on_error
 
-        if (.not. hard_fail) return
+        if (.not. stop_on_error) return
 
         write(*,*) 'FATAL ForcingManager['//trim(where)//']: ', trim(msg)
         stop 1

@@ -661,7 +661,7 @@ contains
         BE%BS%rho  = PS%rho
         BE%BS%vert_diff = PS%Kz * 0.05_rk !+ mol_diff  ! Adding molecular diffusivity
         BE%BS%short_rad = FS%short_rad
-        BE%BS%wind_spd  = FS%wind_spd
+        BE%BS%wind_spd  = PS%wind_speed
         BE%BS%slp       = FS%slp * 100.0_rk ! Converting from hPa to Pa
         BE%BS%co2_air   = FS%co2_air
         BE%BS%stressb   = PS%stressb

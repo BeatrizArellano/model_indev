@@ -58,7 +58,7 @@ module test_load_forcing
             nt = size(surf%air_temp%data)
             if (size(surf%slp%data) /= nt .or. size(surf%rel_hum%data) /= nt .or. &
                 size(surf%short_rad%data) /= nt .or. size(surf%long_rad%data) /= nt .or. &
-                size(surf%wind_spd%data) /= nt .or. size(surf%wind_dir%data) /= nt) then
+                size(surf%wind_u10%data) /= nt .or. size(surf%wind_v10%data) /= nt) then
             stop 'Forcing variables have inconsistent lengths'
             end if
 
@@ -66,12 +66,12 @@ module test_load_forcing
             open(newunit=iu, file=trim(fname), status='replace', action='write', iostat=ios)
             if (ios /= 0) stop 'Failed to open output file'
 
-            write(iu,'(A)') 'surf_air_temp sl_pressure relative_humidity shortwave_radiation longwave_radiation wind_speed wind_direction co2_air'
+            write(iu,'(A)') 'surf_air_temp sl_pressure relative_humidity shortwave_radiation longwave_radiation wind_speed wind_v10ection co2_air'
             do i = 1, nt
             write(iu,'(8(1X,ES16.8))') surf%air_temp%data(i), surf%slp%data(i),       &
                                         surf%rel_hum%data(i),  surf%short_rad%data(i), &
-                                        surf%long_rad%data(i), surf%wind_spd%data(i),  &
-                                        surf%wind_dir%data(i), surf%co2_air%const_value
+                                        surf%long_rad%data(i), surf%wind_u10%data(i),  &
+                                        surf%wind_v10%data(i), surf%co2_air%const_value
             end do
             close(iu)
         end do
@@ -84,8 +84,8 @@ module test_load_forcing
         time = 350_lk*86400_lk + 86300_lk
         write(*,'(A,1X,ES12.5)') 'Tair_180:', surf%air_temp%value_at_step(time)
         write(*,'(A,1X,ES12.5)') 'psl:', surf%slp%value_at_step(time)
-        write(*,'(A,1X,ES12.5)') 'wind_speed:', surf%wind_spd%value_at_step(time)
-        write(*,'(A,1X,ES12.5)') 'wind_dir:', surf%wind_dir%value_at_step(time)
+        write(*,'(A,1X,ES12.5)') 'wind_u10:', surf%wind_u10%value_at_step(time)
+        write(*,'(A,1X,ES12.5)') 'wind_v10:', surf%wind_v10%value_at_step(time)
         write(*,'(A,1X,ES12.5)') 'shortwave:', surf%short_rad%value_at_step(time)
         write(*,'(A,1X,ES12.5)') 'longwave:', surf%long_rad%value_at_step(time)
         write(*,'(A,1X,ES12.5)') 'rel_hum:', surf%rel_hum%value_at_step(time)
@@ -128,8 +128,8 @@ end module test_load_forcing
         !            write(*,'(A,F12.5)') '  rel_hum        = ', ForcSnp%rel_hum
         !            write(*,'(A,F12.5)') '  short_rad      = ', ForcSnp%short_rad
         !            write(*,'(A,F12.5)') '  long_rad       = ', ForcSnp%long_rad
-        !            write(*,'(A,F12.5)') '  wind_spd       = ', ForcSnp%wind_spd
-        !            write(*,'(A,F12.5)') '  wind_dir       = ', ForcSnp%wind_dir
+        !            write(*,'(A,F12.5)') '  wind_u10       = ', ForcSnp%wind_u10
+        !            write(*,'(A,F12.5)') '  wind_v10       = ', ForcSnp%wind_v10
         !            write(*,'(A,F12.5)') '  co2_air        = ', ForcSnp%co2_air
         !            printed(k) = .true.
         !        end if

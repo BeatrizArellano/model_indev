@@ -40,6 +40,7 @@ module physics_params
   real(rk), parameter :: def_heat_shade          = 0.012_rk      ! Chl effect on heat attenuation (m2 (mg Chl)-1)
   real(rk), parameter :: def_lw_skin_penetration = 0.95          ! Fraction of incoming LW that reaches below the skin 
   real(rk), parameter :: def_cnpar               = 0.5           ! Degree of Implicitness when solving diffusive mixing [0-1]
+  character(len=8), parameter :: def_salmode = 'constant'        ! Default mode for salinity
   !--------------------------------------------------------------------------------------------------------------------
 
   public :: read_physics_parameters
@@ -50,6 +51,8 @@ module physics_params
      ! Initial conditions
      real(rk) :: temp0               ! [°C]
      real(rk) :: sal0                ! [PSU]
+     ! Compute salinity
+     logical  :: compute_salinity  
      ! Surface
      real(rk) :: charnock
      ! Seabed         
@@ -73,10 +76,23 @@ contains
     subroutine read_physics_parameters(cfg_params, phys)
         type(ConfigParams),  intent(in)   :: cfg_params
         type(PhysicsParams), intent(out)  :: phys
+
+        character(len=8), dimension(2) :: sal_choices
+        character(:), allocatable :: sal_mode
+        sal_choices = ['constant','compute ']
+
         phys = default_physics_params()
         ! ---------------- Variables ----------------
         phys%temp0 = cfg_params%get_param_num('physics.variables.temperature.initial_value', default=def_temp0, finite=.true.)
         phys%sal0  = cfg_params%get_param_num('physics.variables.salinity.initial_value', default=def_sal0, finite=.true., min=0._rk)
+        ! -------------- Flag
+        sal_mode  = cfg_params%get_param_str('physics.variables.salinity.mode', &
+                                             default=def_salmode, choices=sal_choices, trim_value=.true., match_case=.false.)
+        if (sal_mode == 'compute') then
+            phys%compute_salinity = .true.
+        else 
+            phys%compute_salinity = .false.
+        end if
         !------------------Surface ----------------
         phys%charnock = cfg_params%get_param_num('physics.surface.roughness.charnock', default=def_charnock, finite=.true., min=0._rk)
         ! ---------------- Seabed ----------------

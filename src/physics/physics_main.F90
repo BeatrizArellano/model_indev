@@ -1,4 +1,21 @@
 ! src/physics/physics_main.F90
+!=======================================================================================
+!   Shelf Sea Physics:
+!   1-D MODEL OF THE EQUATION OF MOTION USING THE Canuto k-e TURBULENCE CLOSURE SCHEME
+!
+!   This code is fully based on the S2P3 model lineage:
+!
+!   • Original S2P3 (v7.0):
+!       Jonathan Sharples – Univ. of Liverpool & NOC
+!       Documented in: Simpson & Sharples (2012), CUP.
+!
+!   • Regional framework S2P3-R (v1.0):
+!       Marsh, Hickman & Sharples (2015), GMD 8, 3163–3178.
+!
+!   • Large-scale/efficient S2P3-R v2.0:
+!       Halloran et al. (2021), GMD 14, 6177–6195.
+!
+!=======================================================================================
 module physics_main
   use iso_fortran_env,     only: error_unit
   use precision_types,     only: rk, lk
@@ -11,6 +28,7 @@ module physics_main
   use EOS_eqns,            only: eos_density
   use momentum_eqns
   use turbulence,          only: TURBULENCE_ke, tke_min
+  use freshwater_fluxes,   only: apply_surface_freshwater
   use heat_fluxes,         only: SURFACE_HEAT
   use vertical_mixing,     only: scalar_diffusion
   use numerical_stability, only: compute_phys_subcycles
@@ -139,14 +157,16 @@ contains
 
       
       ! Calculating wind stress from wind-speed and direction
-      call wind_stress_from_speed_dir(FS%wind_spd, FS%wind_dir, PE%PS%tau_x, PE%PS%tau_y)
+      call wind_stress_from_uv(FS%wind_u10, FS%wind_v10, PE%PS%wind_speed, PE%PS%tau_x, PE%PS%tau_y)
+
       ! Initial calculation for surface friction velocity and roughness length
-      PE%PS%u_taus = (((PE%PS%tau_x/PE%PS%rho(N))**2 + (PE%PS%tau_y/PE%PS%rho(N))**2 ))**0.25_rk
-      PE%PS%z0s = max(PE%params%charnock * (PE%PS%u_taus*PE%PS%u_taus) / gravity, z0s_min)  ! Surface roughness length ()
+      call update_surface_friction(tau_x=PE%PS%tau_x, tau_y=PE%PS%tau_y,              &
+                                       rho_surf=PE%PS%rho(N), charnock=PE%params%charnock, &
+                                       u_taus=PE%PS%u_taus, z0s=PE%PS%z0s)
 
       ! Turbulence: once per main step     
         ! Solves turbulence using the Canuto k-eps closure scheme and calculates Kz and Nz
-        call TURBULENCE_ke(N, dtm, PE%params, PE%grid%dz,                       &
+        call TURBULENCE_ke(N, dtm, PE%params, PE%grid%dz,                          &
                           density = PE%PS%rho, velx = u_old, vely = v_old,         &
                           u_taus = PE%PS%u_taus, u_taub = PE%PS%u_taub,            &
                           z0s = PE%PS%z0s, z0b = PE%PS%z0b,                        &
@@ -167,13 +187,21 @@ contains
           t_sub = real(elapsed_time,rk) + (real(ti,rk) - 0.5_rk)*dt_sub   ! Elapsed time for each substep
   
           call SURFACE_HEAT(temp = PE%PS%temp, dz = PE%grid%dz, N = N, dt=dt_sub, &
-                           rsds=FS%short_rad, rlds_down=FS%long_rad, wind_speed=FS%wind_spd,     &
+                           rsds=FS%short_rad, rlds_down=FS%long_rad, wind_speed=PE%PS%wind_speed,     &
                            airT=FS%air_temp, rh=FS%rel_hum, airP=FS%slp,                      &
                            lw_skin_penetration=PE%params%lw_skin_penetration,      &
                            lambda=PE%params%lambda)
           
           ! Update density
           PE%PS%rho  = eos_density(PE%PS%temp, PE%PS%sal)
+
+          if (PE%params%compute_salinity) then
+            call apply_surface_freshwater(salt=PE%PS%sal, dz=PE%grid%dz, precip=FS%precip, evap=FS%evap, runoff=FS%runoff)
+            ! Update density
+            !PE%PS%rho  = eos_density(PE%PS%temp, PE%PS%sal)
+            ! Then mix freshwater in the water column
+            !call scalar_diffusion(PE%PS%salt, N, dt_sub, PE%grid%dz, Kz_T, PE%params%cnpar, PE%trid, ierr)
+          end if 
           
 
   
@@ -188,20 +216,16 @@ contains
           call EQN_FRICTION( vel_comp_old = u_old, vel_comp_new = u_new,                &
                              vel_comp2_bottom = v_old(1), Nz=Nz_tot, h=PE%grid%dz,      &
                              dt=dt_sub, h0b=PE%params%h0b, density=PE%PS%rho,           &
-                             tau_surf=PE%PS%tau_x, tau_surf2=PE%PS%tau_y,               &
-                             charnock=PE%params%charnock,                               &
-                             u_taub=PE%PS%u_taub, z0b=PE%PS%z0b, stressb=PE%PS%stressb, &
-                             u_taus=PE%PS%u_taus, z0s=PE%PS%z0s )
+                             tau_surf=PE%PS%tau_x,                                      &
+                             u_taub=PE%PS%u_taub, z0b=PE%PS%z0b, stressb=PE%PS%stressb)
 
   
           ! Apply surface/bottom stresses and vertical viscosity (y component)
           call EQN_FRICTION( vel_comp_old = v_old, vel_comp_new = v_new,                &
                              vel_comp2_bottom = u_old(1), Nz=Nz_tot, h=PE%grid%dz,      &
                              dt=dt_sub, h0b=PE%params%h0b, density=PE%PS%rho,           &
-                             tau_surf=PE%PS%tau_y, tau_surf2=PE%PS%tau_x,               &
-                             charnock=PE%params%charnock,                               &
-                             u_taub=PE%PS%u_taub, z0b=PE%PS%z0b, stressb=PE%PS%stressb, &
-                             u_taus=PE%PS%u_taus, z0s=PE%PS%z0s )
+                             tau_surf=PE%PS%tau_y,                                      &
+                             u_taub=PE%PS%u_taub, z0b=PE%PS%z0b, stressb=PE%PS%stressb)
 
 
           ! Update olds for next substep

@@ -1,3 +1,20 @@
+!=======================================================================================
+!   Shelf Sea Physics:
+!   1-D MODEL OF THE EQUATION OF MOTION USING THE Canuto k-e TURBULENCE CLOSURE SCHEME
+!
+!   This code is fully based on the S2P3 model lineage:
+!
+!   • Original S2P3 (v7.0):
+!       Jonathan Sharples – Univ. of Liverpool & NOC
+!       Documented in: Simpson & Sharples (2012), CUP.
+!
+!   • Regional framework S2P3-R (v1.0):
+!       Marsh, Hickman & Sharples (2015), GMD 8, 3163–3178.
+!
+!   • Large-scale/efficient S2P3-R v2.0:
+!       Halloran et al. (2021), GMD 14, 6177–6195.
+!
+!=======================================================================================
 module heat_fluxes
   use precision_types, only: rk
   use physics_params,  only: rho0, rho_air, cp_sw, cp_air, sigma_SB

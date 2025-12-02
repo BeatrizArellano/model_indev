@@ -64,14 +64,32 @@ module load_forcing
    end type
 
    type :: ForcingYearData
-      type(ForcingVarData) :: air_temp, slp, rel_hum, short_rad, long_rad, wind_spd, wind_dir, co2_air
+      type(ForcingVarData) :: air_temp
+      type(ForcingVarData) :: slp
+      type(ForcingVarData) :: rel_hum
+      type(ForcingVarData) :: short_rad
+      type(ForcingVarData) :: long_rad
+
+      ! Wind components
+      type(ForcingVarData) :: wind_u10
+      type(ForcingVarData) :: wind_v10
+
+      ! Freshwater fluxes
+      type(ForcingVarData) :: precip     ! precipitation
+      type(ForcingVarData) :: evap       ! evaporation
+      type(ForcingVarData) :: runoff     ! runoff / river input
+
+      type(ForcingVarData) :: co2_air
    end type
 
 
-   character(len=24), parameter :: var_names(8) = [ character(len=24) :: &
-                                                 'surf_air_temp', 'sl_pressure', 'relative_humidity', &
-                                                 'shortwave_radiation', 'longwave_radiation',          &
-                                                 'wind_speed', 'wind_direction', 'co2_air' ]
+   character(len=24), parameter :: var_names(11) = [ character(len=24) :: &
+                                                   'surf_air_temp',       'sl_pressure',        'relative_humidity',  &
+                                                   'shortwave_radiation', 'longwave_radiation',                        &
+                                                   'wind_u10',            'wind_v10',                                  &
+                                                   'precipitation',       'evaporation',          'runoff',           &
+                                                   'co2_air' ]
+
 
 
 contains
@@ -96,6 +114,9 @@ contains
       type(ForcingCfg)                 :: cfg
       character(:),        allocatable :: global_file
       character(:),        allocatable :: req_names(:)
+      character(len=8), dimension(2) :: sal_choices
+      character(:), allocatable :: sal_mode
+      integer :: idx_p, idx_e
       logical :: ok_inside
       integer :: i, j, nfiles, nreq, maxlen, refk
 
@@ -104,6 +125,47 @@ contains
 
       ! Read forcing parameters
       call read_forcing_config(params, calendar_cfg, start_datetime, end_datetime, vars, cfg, global_file)
+
+      sal_choices = ['constant','compute ']
+
+      sal_mode = to_lower(trim(params%get_param_str('physics.variables.salinity.mode', &
+                                                 choices=sal_choices, trim_value=.true., &
+                                                 match_case=.false., default='constant')))
+
+      if (sal_mode == 'constant') then
+         ! If salinity is constant, completely ignore all freshwater fluxes.
+         do i = 1, size(vars)
+            select case (trim(vars(i)%id))
+            case ('precipitation','evaporation','runoff')
+               if (vars(i)%input_type /= in_off) then
+                  vars(i)%input_type = in_off
+                  vars(i)%name_in_file = ''
+                  vars(i)%file_path    = ''
+               end if
+            end select
+         end do
+
+      else if (sal_mode == 'compute') then
+         ! Salinity is prognostic:
+         ! - precipitation and evaporation are REQUIRED
+         ! - runoff remains optional
+         idx_p = find_var_index(vars, 'precipitation')
+         idx_e = find_var_index(vars, 'evaporation')
+
+         if (idx_p <= 0 .or. vars(idx_p)%input_type == in_off) then
+            errmsg = 'Salinity mode=compute but forcing.precipitation is off or missing. ' // &
+                     'Set forcing.precipitation.mode to file or constant, or use salinity.mode=constant.'
+            call clear_state(state)
+            return
+         end if
+
+         if (idx_e <= 0 .or. vars(idx_e)%input_type == in_off) then
+            errmsg = 'Salinity mode=compute but forcing.evaporation is off or missing. ' // &
+                     'Set forcing.evaporation.mode to file or constant, or use salinity.mode=constant.'
+            call clear_state(state)
+            return
+         end if
+      end if
 
       ! Unique file list
       call build_file_list(vars, files, nfiles)
@@ -138,7 +200,11 @@ contains
                               end_datetime%year,   end_datetime%month,   end_datetime%day,       &
                               end_datetime%hour,   end_datetime%minute,   end_datetime%second,   &
                               calendar_cfg%name(), req_names, scans, ok_inside, errmsg)
-         if (.not. ok_inside) return
+         if (.not. ok_inside) then
+            call clear_state(state)
+            return
+         end if
+
       else
          allocate(character(len=1) :: files(0))
          allocate(scans(0))
@@ -192,7 +258,7 @@ contains
          end if
       end do
 
-      ! 9) Build var -> scan index map (0 if const/off)
+      ! Build var -> scan index map (0 if const/off)
       allocate(state%scan_idx_of_var(size(vars)))
       do i=1, size(vars)
          state%scan_idx_of_var(i) = 0
@@ -203,8 +269,9 @@ contains
             end if
             end do
             if (state%scan_idx_of_var(i) == 0) then
-               errmsg = 'scan_and_init_forcing: file not found in scans for var '//trim(vars(i)%id); return
+               errmsg = 'scan_and_init_forcing: file not found in scans for var '//trim(vars(i)%id)
                call clear_state(state)
+               return
             end if
          end if
       end do
@@ -238,10 +305,10 @@ contains
 
       integer :: i
       character(:), allocatable :: s_mode, s_name, s_fname
-      character(len=8), dimension(4) :: mode_choices
+      character(len=8), dimension(5) :: mode_choices
       integer :: mode_enum
 
-      mode_choices = ['file    ','constant','compute ','off     ']
+      mode_choices = ['file    ','constant','compute ','off     ','false   ']
       allocate(vars(size(var_names)))
 
       ! Global file ('' if missing/null)
@@ -265,13 +332,15 @@ contains
       do i=1, size(var_names)
          vars(i)%id = var_names(i)
 
-         s_mode  = params%get_param_str('forcing.'//trim(adjustl(var_names(i)))//'.mode', &
-                                          required=.true., choices=mode_choices, trim_value=.true., match_case=.false.)
+         s_mode = params%get_param_str('forcing.'//trim(adjustl(var_names(i)))//'.mode', &
+                                       required=.true., choices=mode_choices, &
+                                       trim_value=.true., match_case=.false.)
+
          select case (trim(s_mode))
          case ('file');     mode_enum = in_file
          case ('constant'); mode_enum = in_constant
          case ('compute');  mode_enum = in_compute
-         case ('off');      mode_enum = in_off
+         case ('off','false'); mode_enum = in_off
          end select
          vars(i)%input_type = mode_enum
 
@@ -368,17 +437,36 @@ contains
                                     forcmd%scans(j)%yi, forcmd%scans(j)%xi )
                Y%long_rad%name = forcmd%vars(i)%id
 
-            case ('wind_speed')
-               call load_var_series( Y%wind_spd, forcmd%scans(j), db, forcmd%vars(i)%name_in_file, &
+            case ('wind_u10')
+               call load_var_series( Y%wind_u10, forcmd%scans(j), db, forcmd%vars(i)%name_in_file, &
                                     forcmd%scans(j)%time_name, i0, i1, forcmd%scans(j)%has_latlon, &
                                     forcmd%scans(j)%yi, forcmd%scans(j)%xi )
-               Y%wind_spd%name = forcmd%vars(i)%id
+               Y%wind_u10%name = forcmd%vars(i)%id
 
-            case ('wind_direction')
-               call load_var_series( Y%wind_dir, forcmd%scans(j), db, forcmd%vars(i)%name_in_file, &
+            case ('wind_v10')
+               call load_var_series( Y%wind_v10, forcmd%scans(j), db, forcmd%vars(i)%name_in_file, &
                                     forcmd%scans(j)%time_name, i0, i1, forcmd%scans(j)%has_latlon, &
                                     forcmd%scans(j)%yi, forcmd%scans(j)%xi )
-               Y%wind_dir%name = forcmd%vars(i)%id
+               Y%wind_v10%name = forcmd%vars(i)%id
+
+            case ('precipitation')
+               call load_var_series( Y%precip, forcmd%scans(j), db, forcmd%vars(i)%name_in_file, &
+                                    forcmd%scans(j)%time_name, i0, i1, forcmd%scans(j)%has_latlon, &
+                                    forcmd%scans(j)%yi, forcmd%scans(j)%xi )
+               Y%precip%name = forcmd%vars(i)%id
+
+            case ('evaporation')
+               call load_var_series( Y%evap, forcmd%scans(j), db, forcmd%vars(i)%name_in_file, &
+                                    forcmd%scans(j)%time_name, i0, i1, forcmd%scans(j)%has_latlon, &
+                                    forcmd%scans(j)%yi, forcmd%scans(j)%xi )
+               Y%evap%name = forcmd%vars(i)%id
+
+            case ('runoff')
+               call load_var_series( Y%runoff, forcmd%scans(j), db, forcmd%vars(i)%name_in_file, &
+                                    forcmd%scans(j)%time_name, i0, i1, forcmd%scans(j)%has_latlon, &
+                                    forcmd%scans(j)%yi, forcmd%scans(j)%xi )
+               Y%runoff%name = forcmd%vars(i)%id
+
 
             case ('co2_air')
                call load_var_series( Y%co2_air, forcmd%scans(j), db, forcmd%vars(i)%name_in_file, &
@@ -430,17 +518,40 @@ contains
                if (allocated(Y%long_rad%data)) deallocate(Y%long_rad%data)
                Y%long_rad%idx = 1; Y%long_rad%n = 0; Y%long_rad%t_next = INF_EDGE
 
-            case ('wind_speed')
-               Y%wind_spd%is_const = .true.; Y%wind_spd%const_value = forcmd%vars(i)%const_value
-               if (allocated(Y%wind_spd%t_axis)) deallocate(Y%wind_spd%t_axis)
-               if (allocated(Y%wind_spd%data)) deallocate(Y%wind_spd%data)
-               Y%wind_spd%idx = 1; Y%wind_spd%n = 0; Y%wind_spd%t_next = INF_EDGE
+            case ('wind_u10')
+               Y%wind_u10%is_const    = .true.
+               Y%wind_u10%const_value = forcmd%vars(i)%const_value
+               if (allocated(Y%wind_u10%t_axis)) deallocate(Y%wind_u10%t_axis)
+               if (allocated(Y%wind_u10%data))   deallocate(Y%wind_u10%data)
+               Y%wind_u10%idx = 1; Y%wind_u10%n = 0; Y%wind_u10%t_next = INF_EDGE
 
-            case ('wind_direction')
-               Y%wind_dir%is_const = .true.; Y%wind_dir%const_value = forcmd%vars(i)%const_value
-               if (allocated(Y%wind_dir%t_axis)) deallocate(Y%wind_dir%t_axis)
-               if (allocated(Y%wind_dir%data)) deallocate(Y%wind_dir%data)
-               Y%wind_dir%idx = 1; Y%wind_dir%n = 0; Y%wind_dir%t_next = INF_EDGE
+            case ('wind_v10')
+               Y%wind_v10%is_const    = .true.
+               Y%wind_v10%const_value = forcmd%vars(i)%const_value
+               if (allocated(Y%wind_v10%t_axis)) deallocate(Y%wind_v10%t_axis)
+               if (allocated(Y%wind_v10%data))   deallocate(Y%wind_v10%data)
+               Y%wind_v10%idx = 1; Y%wind_v10%n = 0; Y%wind_v10%t_next = INF_EDGE
+
+            case ('precipitation')
+               Y%precip%is_const    = .true.
+               Y%precip%const_value = forcmd%vars(i)%const_value
+               if (allocated(Y%precip%t_axis)) deallocate(Y%precip%t_axis)
+               if (allocated(Y%precip%data))   deallocate(Y%precip%data)
+               Y%precip%idx = 1; Y%precip%n = 0; Y%precip%t_next = INF_EDGE
+
+            case ('evaporation')
+               Y%evap%is_const    = .true.
+               Y%evap%const_value = forcmd%vars(i)%const_value
+               if (allocated(Y%evap%t_axis)) deallocate(Y%evap%t_axis)
+               if (allocated(Y%evap%data))   deallocate(Y%evap%data)
+               Y%evap%idx = 1; Y%evap%n = 0; Y%evap%t_next = INF_EDGE
+
+            case ('runoff')
+               Y%runoff%is_const    = .true.
+               Y%runoff%const_value = forcmd%vars(i)%const_value
+               if (allocated(Y%runoff%t_axis)) deallocate(Y%runoff%t_axis)
+               if (allocated(Y%runoff%data))   deallocate(Y%runoff%data)
+               Y%runoff%idx = 1; Y%runoff%n = 0; Y%runoff%t_next = INF_EDGE
 
             case ('co2_air')
                Y%co2_air%is_const = .true.; Y%co2_air%const_value = forcmd%vars(i)%const_value
@@ -453,10 +564,30 @@ contains
          end if
       end do
 
+      ! 
+      do i = 1, size(forcmd%vars)
+         if (forcmd%vars(i)%input_type == in_off) then
+            select case (trim(forcmd%vars(i)%id))
+            case ('precipitation')
+               Y%precip%is_const    = .true.
+               Y%precip%const_value = 0._rk
+            case ('evaporation')
+               Y%evap%is_const      = .true.
+               Y%evap%const_value   = 0._rk
+            case ('runoff')
+               Y%runoff%is_const    = .true.
+               Y%runoff%const_value = 0._rk
+            end select
+         end if
+      end do
+
+
       ! Initialize cursors
-      call Y%air_temp%init_cursor(); call Y%slp%init_cursor();      call Y%rel_hum%init_cursor()
-      call Y%short_rad%init_cursor(); call Y%long_rad%init_cursor(); call Y%wind_spd%init_cursor()
-      call Y%wind_dir%init_cursor();  call Y%co2_air%init_cursor()
+      call Y%air_temp%init_cursor();  call Y%slp%init_cursor();      call Y%rel_hum%init_cursor()
+      call Y%short_rad%init_cursor(); call Y%long_rad%init_cursor()
+      call Y%wind_u10%init_cursor();  call Y%wind_v10%init_cursor()
+      call Y%precip%init_cursor(); call Y%evap%init_cursor(); call Y%runoff%init_cursor()
+      call Y%co2_air%init_cursor()
 
       ok = .true.
    end subroutine load_year_data

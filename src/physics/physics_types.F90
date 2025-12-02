@@ -32,6 +32,7 @@ module physics_types
     real(rk), allocatable :: cmue1(:)                 ! Stability function 1 (used outside to pass to dissipation)
 
     ! --- Surface and bottom 
+    real(rk) :: wind_speed   = 0.0_rk
     real(rk) :: tau_x = 0.0_rk, tau_y = 0.0_rk        ! wind stress components [N m-2]
     real(rk) :: u_taus = 0.0_rk, u_taub = 0.0_rk      ! friction velocities at surface and bottom [m s-1]
     real(rk) :: z0s    = z0s_min, z0b  = 0.01_rk      ! surface and bottom roughness lengths [m]
