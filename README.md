@@ -119,5 +119,86 @@ From the simulation directory, run the shelf_model executable adapting the path 
 ../../build/release/bin/shelf_model
 ```
 
+## Quick guide to `main.yaml` (model configuration)
 
+The parameters relevant to the simulation can be edited in the configuration file `main.yaml`: site, time period, grid, forcing, physics, tides, and (optionally) FABM biogeochemistry.  
+You normally only need to edit a few sections for a new site / experiment.
 
+---
+
+### 1. YAML conventions
+
+- **Numbers**  
+  - Integers or reals are both fine.  
+  - Some fields are validated (e.g. must be positive, within min/max ranges).
+
+- **Booleans**  
+  - Prefer: `true`, `false`.  
+  - Also accepted: `yes/no`, `on/off`.
+
+- **Strings**  
+  - **Do not** use quotes.  
+  - Example:  
+    `file: path/to/file.nc`
+
+- **Null / “unset” values**  
+  - Use: `null`, `NULL`, `Null`, `none`, `None`, `~`  
+  - Or simply comment a key out.  
+  - `null` / missing are treated the same.  
+  - **Do not** use `NaN` to mean “unset”.
+
+- **Comments & indentation**  
+  - `#` starts a comment (rest of the line is ignored).  
+  - Use **spaces only** for indentation (recommended: 4 spaces).  
+  - Avoid TABs – they can break parsing.
+
+---
+
+## Forcing
+
+The model reads atmospheric and surface forcing from NetCDF files. A forcing file:
+
+- Contains a time dimension with a CF-compatible time variable.
+
+- Can contain information for different sites referenced by latitude and longitude. The model will choose the closest grid-point to the specified location. 
+
+- Must include all required variables for physics (and optionally biogeochemistry). Variables may be in one file or separate files, according to the filename field in `main.yaml`.
+
+### Forcing Variables:
+
+Below are the variables the model may read, depending on your YAML configuration.
+Each variable follows the pattern:
+```yaml
+mode: file | constant | off
+name: <variable in NetCDF>
+filename: off | <custom file>
+```
+
+- Surface air temperature (surf_air_temp): degrees Celsius.
+- Sea level pressure (sl_pressure): hPa.
+- Relative humidity (relative_humidity): percentage (%).
+- Shortwave radiation (shortwave_radiation): W/m2.
+- Longwave radiation (longwave_radiation): W/m2.
+- 10-m zonal wind (wind_u10): m/s.
+- 10-m meridional wind (wind_v10): m/s.
+- Precipitation (precipitation): m/s. (Optional, but required when computing salinity)
+- Evaporation (evaporation): m/s. Negative values mean evaporation. (Optional, but required when computing salinity)
+- Runoff (runoff): m/s. (Optional)
+
+The model does not convert units: preprocessing scripts must provide the expected units.
+
+## Biogeochemistry
+
+Biogeochemistry is configured separately using a FABM configuration file (typically fabm.yaml).
+This file defines:
+
+- Which FABM modules are active (e.g., NPZD, ERSEM, BROM components, custom models).
+- The parameters for each module (rate constants, remineralisation rates, sinking speeds, light parameters, etc.).
+
+The main model will:
+
+1. Initialise FABM  and provide all environmental fields
+2. Integrate the biogeochemical tracers consistently with the physics time-stepping.
+3. Transport tracers according to vertical diffusion and their specified sinking/floating speeds. 
+
+The biogeochemistry behaviour is entirely determined by the contents of its configuration file (fabm.yaml), allowing flexible switching between simple test models and full ecosystem models. A sample configuration file can be found inside `sims/Biogeochemistry_toy_case/fabm.yaml`.
