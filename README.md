@@ -119,6 +119,12 @@ From the simulation directory, run the shelf_model executable adapting the path 
 ../../build/release/bin/shelf_model
 ```
 
+Alternatively, you can configure the contents of `config_launch.json` to specify the path to the executable and then run the launcher script (Unix-like environments only):
+
+```bash
+bash launch_model.sh
+```
+
 ## Quick guide to `main.yaml` (model configuration)
 
 The parameters relevant to the simulation can be edited in the configuration file `main.yaml`: site, time period, grid, forcing, physics, tides, and (optionally) FABM biogeochemistry.  
