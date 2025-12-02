@@ -547,13 +547,19 @@ module netcdf_io
     end subroutine nc_sync
 
     subroutine nc_redef(db)
-        !> Enter NetCDF redefinition mode for an open file.
-        !! Allows adding new dimensions, variables, or attributes before returning to data mode with nc_enddef.
-        !! @param[in] db  NcFile handle for the open NetCDF file.
-        !! Example: call nc_redef(db)
         type(NcFile), intent(in) :: db
-        call nc_check(nf90_redef(db%ncid), 'redef')
+        integer :: status
+
+        status = nf90_redef(db%ncid)
+
+        if (status == NF90_EINDEFINE) then
+            ! Already in define mode – nothing to do, treat as success
+            return
+        end if
+
+        call nc_check(status, 'redef')
     end subroutine nc_redef
+
 
     !> Exit NetCDF redefinition mode and resume data writing.
     !! Completes structural changes started after nc_redef and finalizes the file’s header definition.

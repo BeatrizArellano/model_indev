@@ -89,7 +89,7 @@ contains
 
     ! Create and define coordinates
     call nc_create(this%db, this%filename, overwrite=.true.)
-    call nc_redef(this%db)
+    !call nc_redef(this%db) <- Fails with old compilers
 
     dim_t  = nc_def_dim(this%db, 'time',  NF90_UNLIMITED)
     dim_z  = nc_def_dim(this%db, 'depth',     int(this%N, kind=4))
