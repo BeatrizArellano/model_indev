@@ -1,6 +1,6 @@
 # S2P3-new - 1-D Shelf Sea Physics & Biogeochemistry
 
-This testing version of the model (still in development) builds on the S2P3 physical core and provides a flexible interface to biogeochemical modules through FABM. It also incorporates concepts from BROM-transport to represent sediment transport processes, enabling coupled water-sediment biogeochemistry.
+This testing version of the model (still in development) builds on the S2P3 physics core and provides a flexible interface to biogeochemical modules through FABM. It also incorporates concepts from BROM-transport to represent sediment transport processes, enabling coupled water-sediment biogeochemistry.
 
 ## Supported Platforms
 
@@ -21,7 +21,7 @@ To build the model you need:
 
 To clone the repository and initialise the FABM submodule.
 
-Check:
+Check by typing in the console:
 
 ```bash
 git --version
@@ -29,7 +29,7 @@ git --version
 
 ### 2. CMake ≥ 3.23
 
-Check:
+Check by typing in the console:
 
 ```bash
 cmake --version
@@ -51,7 +51,7 @@ nf-config --all
 
 ## Installing Dependencies on Linux
 
-### Ubundu/Debian
+### Debian/Ubuntu
 ```bash 
 sudo apt update
 sudo apt install -y \
