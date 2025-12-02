@@ -20,37 +20,39 @@ module precision_utils
 contains
 
   ! Work on scalars and arrays (element-wise)
-  pure elemental logical function is_equal(a, b, rel, abs_)
-    !   Robust floating-point comparison: returns .true. if A and B are
-    !   equal within a combined tolerance band (relative + absolute).
-    !   Arguments:
-    !     a, b   [in]  real(rk)  - values to compare.
-    !     rel    [in]  real(rk), optional - relative tolerance (dimensionless).
-    !                         If absent, uses rel_default.
-    !     abs_   [in]  real(rk), optional - absolute tolerance (same units as a/b).
-    !                         If absent, uses abs_default.
+  pure elemental logical function is_equal(a, b, rel, abs_) result(eq)
+    !! Robust floating-point comparison: true if |a-b| <= max(abs_tol, rel_tol*scale)
     real(rk), intent(in)           :: a, b
     real(rk), intent(in), optional :: rel, abs_
     real(rk) :: rtol, atol, scale
-    rtol  = merge(rel,  rel_default, present(rel))
-    atol  = merge(abs_, abs_default, present(abs_))
+
+    ! Avoid MERGE with OPTIONAL – some compilers miscompile that pattern
+    if (present(rel)) then
+       rtol = rel
+    else
+       rtol = rel_default
+    end if
+
+    if (present(abs_)) then
+       atol = abs_
+    else
+       atol = abs_default
+    end if
+
     scale = max(1.0_rk, abs(a), abs(b))
-    is_equal = abs(a - b) <= max(atol, rtol*scale)
+    eq = abs(a - b) <= max(atol, rtol*scale)
   end function is_equal
 
-  pure elemental logical function is_unequal(a, b, rel, abs_)
-  !   Negation of is_equal: returns .true. if A and B differ by more
-  !     than the tolerance band (relative + absolute).
+  pure elemental logical function is_unequal(a, b, rel, abs_) result(neq)
     real(rk), intent(in)           :: a, b
     real(rk), intent(in), optional :: rel, abs_
-    is_unequal = .not. is_equal(a, b, rel, abs_)
+    neq = .not. is_equal(a, b, rel, abs_)
   end function is_unequal
 
-  pure elemental logical function is_zero(a, rel, abs_)
-    ! Checks whether a value a is within tolerance of 0.0_rk.
+  pure elemental logical function is_zero(a, rel, abs_) result(isz)
     real(rk), intent(in)           :: a
     real(rk), intent(in), optional :: rel, abs_
-    is_zero = is_equal(a, 0.0_rk, rel, abs_)
+    isz = is_equal(a, 0.0_rk, rel, abs_)
   end function is_zero
 
 
