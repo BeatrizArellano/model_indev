@@ -1,0 +1,108 @@
+# S2P3-new - 1-D Shelf Sea Physics & Biogeochemistry
+
+## Supported Platforms
+
+The model is **developed and tested on Linux**.
+
+CMake already contains compiler flags for GNU, Intel, and Cray Fortran compilers, so it *should* work on most UNIX-like systems:
+
+- **Linux** (recommended, tested)
+- **macOS** (via Homebrew/MacPorts) — not yet tested
+
+---
+
+## Required Software
+
+To build the model you need:
+
+### 1. Git
+
+To clone the repository and initialise the FABM submodule.
+
+Check:
+
+```bash
+git --version
+```
+
+### 2. CMake ≥ 3.23
+
+Check:
+
+```bash
+cmake --version
+```
+
+### 3. Fortran & C compilers
+On Linux the recommended compilers are:
+- gfortran (version>=10)
+- gcc
+
+### 4. NetCDF Libraries (C + Fortran)
+On Debian/Ubuntu, the required packages are typically:
+- `libnetcdf-dev` and `libnetcdff-dev`
+
+Check with:
+```bash
+nf-config --all
+```
+
+## Installing Dependencies on Linux
+
+### Ubundu/Debian
+```bash 
+sudo apt-get update
+sudo apt-get install -y \
+    git cmake gfortran gcc \
+    libnetcdf-dev libnetcdff-dev
+```
+
+## Cloning the repository (including FABM)
+This repository includes FABM as a git submodule under `external/fabm`.
+
+```bash
+git clone <REPO_URL> model
+cd model
+
+# Fetch FABM (required)
+git submodule update --init --recursive -- external/fabm
+```
+
+## Building the model
+From the repository root:
+
+```bash
+cmake --preset release
+cd build/release
+make
+```
+The executable of the model will be creasted at:
+```bash
+build/release/shelf_model
+```
+
+## Running the first simulation
+Once the model is built, you need:
+
+- A YAML configuration file (e.g. main.yaml)
+
+- Forcing data in NetCDF format
+
+- A run directory containing the above
+
+From the repository root (or your run directory), run:
+
+```bash
+./build/bin/shelf_models
+```
+
+## Repository Structure (Overview)
+
+```
+external/fabm/      # FABM submodule (biogeochemical models)
+src/                # Model source code (physics, bio, IO, utilities)
+cmake/Modules/      # Custom CMake find modules (FindNetCDF.cmake)
+sims/              # Example configurations and forcing (if provided)
+build/              # CMake build directory (created by you, not in git)
+```
+
