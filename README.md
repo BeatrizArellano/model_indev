@@ -108,7 +108,7 @@ Once the model is built, you just need a **run directory** containing:
 
 - The main model configuration file (`main.yaml`): to specify details for location, time, grid, forcing, physics, output, etc. 
 
-- Forcing data: one or more NetCDF files providing the atmospheric and surface fields referenced in `main.yaml`.
+- Forcing data: one or more NetCDF files providing the atmospheric and surface vriables referenced in `main.yaml`.
 
 - Optional: A YAML configuration file (`fabm.yaml`) required only if biogeochemistry is activated.
 
@@ -119,7 +119,7 @@ For example, if your simulation case lives under `sims/simulationfolder/` within
 ```bash
 cd sims/simulationfolder/
 
-../../build/release/bin/shelf_model
+../../build/release/bin/shelf_model #Path relative to the simulation folder
 ```
 
 Alternatively, you can configure the contents of `config_launch.json` to specify the path to the executable and then run the launcher script (Unix-like environments only):
