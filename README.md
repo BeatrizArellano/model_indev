@@ -181,21 +181,42 @@ name: <variable in NetCDF>
 filename: off | <custom file>
 ```
 
-| Variable                     | YAML key            | Units   | Required                                      |
-|------------------------------|---------------------|---------|-----------------------------------------------|
-| Surface air temperature      | `surf_air_temp`     | °C      | Yes                                           |
-| Sea level pressure           | `sl_pressure`       | hPa     | Yes                                           |
-| Relative humidity            | `relative_humidity` | %       | Yes                                           |
-| Shortwave radiation          | `shortwave_radiation` | W m-2 | Yes                                           |
-| Longwave radiation           | `longwave_radiation`  | W m-2 | Yes                                           |
-| 10-m zonal wind              | `wind_u10`          | m s-1   | Yes                                           |
-| 10-m meridional wind         | `wind_v10`          | m s-1   | Yes                                           |
-| Precipitation                | `precipitation`     | m s-1   | Conditional (required if salinity is computed) |
-| Evaporation                  | `evaporation`       | m s-1   | Conditional (required if salinity is computed) |
-| Runoff                       | `runoff`            | m s-1   | Optional                                      |
+| Variable                     | YAML key            | Units    | Required                     |
+|------------------------------|---------------------|----------|------------------------------|
+| Surface air temperature      | `surf_air_temp`     | °C       | Yes                          |
+| Sea level pressure           | `sl_pressure`       | hPa      | Yes                          |
+| Relative humidity            | `relative_humidity` | %        | Yes                          |
+| Shortwave radiation          | `shortwave_radiation` | W m-2  | Yes                          |
+| Longwave radiation           | `longwave_radiation`  | W m-2  | Yes                          |
+| 10-m zonal wind              | `wind_u10`          | m s-1    | Yes                          |
+| 10-m meridional wind         | `wind_v10`          | m s-1    | Yes                          |
+| Precipitation                | `precipitation`     | m s-1    | Only if salinity is computed |
+| Evaporation                  | `evaporation`       | m s-1    | Only if salinity is computed |
+| Runoff                       | `runoff`            | m s-1    | Optional                     |
 
 
 The model does not convert units: preprocessing scripts must provide the expected units.
+
+### Tidal elliptic parameters
+
+The model includes **barotropic tidal forcing** using tidal **elliptic parameters**.  
+These describe the horizontal tidal current ellipse for each tidal constituent (M2, S2, N2, K1, O1) and consist of:
+
+- **Semi-major axis** (cm s-1): maximum tidal current amplitude.  
+- **Semi-minor axis** (cm s-1): minimum amplitude; may be negative to indicate rotation direction.  
+- **Inclination** (degrees): orientation of the ellipse relative to the eastward direction.  
+- **Greenwich phase angle** (degrees): timing of maximum tidal current relative to a universal reference.
+
+The model can obtain these parameters in two ways:
+
+1. **From a text file** (`tides.read_from_file: yes`)  
+   The model selects the closest grid point using the latitude/longitude in `main.yaml` (within `tol_deg`).
+
+2. **Manually in the YAML file** (`tides.read_from_file: no`)  
+   You may specify the ellipse for each constituent directly under `ellipse_params`.
+
+Missing or `nan` values are treated as zero.
+
 
 ## Biogeochemistry
 
