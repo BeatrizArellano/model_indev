@@ -103,20 +103,22 @@ build/              # CMake build directory (created by you, not in git)
 ```
 
 ## Running the first simulation
-Once the model is built, you need:
 
-- A run directory containing the following
+Once the model is built, you just need a **run directory** containing:
 
-- A YAML configuration file (main.yaml)
+- The main model configuration file (`main.yaml`): to specify details for location, time, grid, forcing, physics, output, etc. 
 
-- Forcing data in NetCDF format
+- Forcing data: one or more NetCDF files providing the atmospheric and surface fields referenced in `main.yaml`.
 
-- Optional: A YAML configuration file if including biogeochemistry (fabm.yaml)
+- Optional: A YAML configuration file (`fabm.yaml`) required only if biogeochemistry is activated.
 
 
-From the simulation directory, run the shelf_model executable adapting the path to your directory structure. This is an example considering that your simulation case is inside `sims/simulationfolder/` within the repository structure. 
+From the simulation directory, run the `shelf_model` executable adapting the path to your directory structure. 
+For example, if your simulation case lives under `sims/simulationfolder/` within the repository, and you compiled the model in `build/release/`, you can launch it as:
 
 ```bash
+cd sims/simulationfolder/
+
 ../../build/release/bin/shelf_model
 ```
 
