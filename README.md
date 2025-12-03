@@ -199,7 +199,7 @@ The model does not convert units: preprocessing scripts must provide the expecte
 
 ### Tidal elliptic parameters
 
-The model includes **barotropic tidal forcing** using tidal **elliptic parameters**.  
+The model includes barotropic tidal forcing using tidal **elliptic parameters**.  
 These describe the horizontal tidal current ellipse for each tidal constituent (M2, S2, N2, K1, O1) and consist of:
 
 - **Semi-major axis** (cm s-1): maximum tidal current amplitude.  
