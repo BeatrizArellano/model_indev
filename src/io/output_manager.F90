@@ -147,7 +147,11 @@ contains
       if (interval_s <= 0_lk) error stop 'Scheduler:init interval_s must be > 0.'
 
       this%interval_s = interval_s
-      this%model_time = merge(model_time, 0_lk, present(model_time))
+      if (present(model_time)) then
+         this%model_time = model_time
+      else
+         this%model_time = 0_lk
+      end if
       this%acc_time_s = 0_lk
    end subroutine sched_init
 
@@ -526,8 +530,18 @@ contains
   subroutine om_close(this, sync_now)
     class(OutputManager), intent(inout) :: this
     logical, intent(in), optional :: sync_now
-    if (.not. this%is_init) return
-    call this%writer%close_file(do_sync=merge(sync_now, .false., present(sync_now)))
+    logical :: do_sync
+
+   if (.not. this%is_init) return
+
+   if (present(sync_now)) then
+      do_sync = sync_now
+   else
+      do_sync = .false.
+   end if
+
+   call this%writer%close_file(do_sync=do_sync)
+
     this%is_init = .false.
   end subroutine om_close
 

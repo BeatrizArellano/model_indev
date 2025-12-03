@@ -802,7 +802,11 @@ contains
 
       do k=1, ny
          y  = sim_y_start + (k-1)
-         yf = merge(repeat_year, y, repeat_enabled)
+         if (repeat_enabled) then
+            yf = repeat_year
+         else
+            yf = y
+         end if
 
          ! Build year window in the file’s calendar/units (Jan-01 00:00 to Dec-31 23:59:59 equivalent)
          t0 = seconds_since_datetime_file(var%scan%cal, var%scan%u, yf, 1, 1, 0, 0, 0)
@@ -905,7 +909,11 @@ contains
          Yv%t_edge(2)      = Yv%t_axis(1) + huge(1_lk)/4_lk
       end if
       Yv%idx      = 1
-      Yv%t_next   = merge(Yv%t_axis(2), huge(1_lk), nt >= 2)
+      if (nt >= 2) then
+         Yv%t_next = Yv%t_axis(2)
+      else
+         Yv%t_next = huge(1_lk)   ! There is no next interval, this last interval extends indefinitely to the right
+      end if
    end subroutine load_var_series
 
 

@@ -38,7 +38,6 @@ contains
     else
        atol = abs_default
     end if
-
     scale = max(1.0_rk, abs(a), abs(b))
     eq = abs(a - b) <= max(atol, rtol*scale)
   end function is_equal

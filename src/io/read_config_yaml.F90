@@ -520,14 +520,15 @@ contains
       logical,  optional,  intent(out):: found
       logical,  optional,  intent(in) :: required, positive
       real(rk) :: r
-      logical :: has
-      integer :: dmin, dmax
+      logical :: has, req_flag
 
       ! get as real with suitable bounds
       if (present(default)) then
          r = self%get_param_num(key, default=real(default, rk), found=has, finite=.true.)
       else
-         r = self%get_param_num(key, required=merge(.true., .false., present(required)), found=has, finite=.true.)
+         req_flag = .false.
+         if (present(required)) req_flag = required
+         r = self%get_param_num(key, required=req_flag, found=has, finite=.true.)
       end if
 
       ! integerness check

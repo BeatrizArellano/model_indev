@@ -12,10 +12,11 @@
 !! Some routines and documentation were refined with assistance from ChatGPT (OpenAI).
 !======================================================================================
 
-module netcdf_io
-    use precision_types, only: rk, ik
-    use netcdf
+module netcdf_io    
     use find_utils,      only: find_name
+    use netcdf
+    use precision_types, only: rk, ik
+    
 
     implicit none
     private 
@@ -89,7 +90,16 @@ module netcdf_io
         !> Close an open NetCDF file associated with the given NcFile handle.
         !! Calls nf90_close, resets the ncid to -1, and deallocates the stored path.
         type(NcFile), intent(inout) :: db
-        if (db%ncid /= -1) call nc_check(nf90_close(db%ncid), 'close '//merge(db%path,'(unknown)',allocated(db%path)))
+        character(:), allocatable :: label
+        if (db%ncid /= -1) then
+            if (allocated(db%path)) then
+                label = 'close ' // trim(db%path)
+            else
+                label = 'close (unknown)'
+            end if
+            call nc_check(nf90_close(db%ncid), label)
+        end if
+
         db%ncid = -1
         if (allocated(db%path)) deallocate(db%path)
     end subroutine nc_close
@@ -320,7 +330,7 @@ module netcdf_io
         character(*), intent(in) :: varname
         real(rk), intent(out)    :: data_array(:,:)
         integer :: vid, xtype, ndims, dimids(NF90_MAX_VAR_DIMS), natts
-        integer :: j, lenj
+        integer :: j, lenj, g1, g2
         integer :: shp(2)
         character(len=64) :: want_s, got_s
 
@@ -336,10 +346,19 @@ module netcdf_io
             call nc_check(nf90_inquire_dimension(db%ncid, dimids(j), len=lenj), 'inquire_dimension('//trim(varname)//')')
             if (lenj /= shp(j)) then
                 write(want_s,'(I0,",",I0)') shp(1), shp(2)
-                write(got_s ,'(I0,",",I0)') merge(lenj, -1, j==1), merge(lenj, -1, j==2)  ! quick hint; or query both lens
+                select case (j)
+                case (1)
+                    g1 = lenj
+                    g2 = -1
+                case (2)
+                    g1 = -1
+                    g2 = lenj
+                end select
+                write(got_s ,'(I0,",",I0)') g1, g2
                 call nc_check(NF90_EEDGE, 'read_real_2d: size mismatch for '//trim(varname)//' want('//trim(want_s)// &
                                         ') vs file dims(~'//trim(got_s)//')')
             end if
+
         end do
 
         call nc_check(nf90_get_var(db%ncid, vid, data_array), 'get_var('//trim(varname)//')')
@@ -355,7 +374,7 @@ module netcdf_io
         character(*), intent(in) :: varname
         real(rk), intent(out)    :: data_array(:,:,:)
         integer :: vid, xtype, ndims, dimids(NF90_MAX_VAR_DIMS), natts
-        integer :: j, lenj
+        integer :: j, lenj, g1, g2, g3
         integer :: shp(3)
         character(len=96) :: want_s, got_s
 
@@ -371,7 +390,18 @@ module netcdf_io
             call nc_check(nf90_inquire_dimension(db%ncid, dimids(j), len=lenj), 'inquire_dimension('//trim(varname)//')')
             if (lenj /= shp(j)) then
                 write(want_s,'(I0,",",I0,",",I0)') shp(1), shp(2), shp(3)
-                write(got_s ,'(I0,",",I0,",",I0)') merge(lenj, -1, j==1), merge(lenj, -1, j==2), merge(lenj, -1, j==3)
+
+                select case (j)
+                    case (1)
+                        g1= lenj; g2= -1;   g3= -1
+                    case (2)
+                        g1= -1;   g2= lenj; g3= -1
+                    case (3)
+                        g1= -1;   g2= -1;   g3= lenj
+                end select
+
+                write(got_s ,'(I0,",",I0,",",I0)') g1, g2, g3
+
                 call nc_check(NF90_EEDGE, 'read_real_3d: size mismatch for '//trim(varname)//' want('//trim(want_s)// &
                                         ') vs file dims(~'//trim(got_s)//')')
             end if
@@ -543,7 +573,13 @@ module netcdf_io
         !! @param[in] db  NcFile handle for an open NetCDF file in write mode.
         !! Example: call nc_sync(db)
         type(NcFile), intent(in) :: db
-        call nc_check(nf90_sync(db%ncid), 'sync '//merge(db%path,'(unknown)',allocated(db%path)))
+        character(:), allocatable :: label
+        if (allocated(db%path)) then
+            label = 'sync ' // trim(db%path)
+        else
+            label = 'sync (unknown)'
+        end if
+        call nc_check(nf90_sync(db%ncid), label)
     end subroutine nc_sync
 
     subroutine nc_redef(db)

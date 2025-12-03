@@ -198,7 +198,11 @@ contains
         select case (cal%kind)
         case (cal_gregorian, cal_proleptic)
             ! 366 if it is leap (Gregorian) otherwise 365
-            nd = merge(366, 365, is_leap_gregorian(year))
+            if (is_leap_gregorian(year)) then
+                nd = 366
+            else
+                nd = 365
+            end if
         case (cal_noleap)
             nd = 365
         case (cal_all_leap)

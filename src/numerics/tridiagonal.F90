@@ -40,7 +40,6 @@ contains
       real(rk), parameter :: eps = 1.0e-30_rk
 
       ! Forward sweep
-      !denom = merge(coeff%bu(lt), sign(1.0_rk, coeff%bu(lt))*eps, abs(coeff%bu(lt))>eps) ! Ensure the diagonal s big enough
       coeff%ru(lt) = coeff%au(lt) / coeff%bu(lt)
       coeff%qu(lt) = coeff%du(lt) / coeff%bu(lt)
 

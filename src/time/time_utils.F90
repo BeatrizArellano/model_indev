@@ -204,7 +204,12 @@ contains
         integer, intent(in), optional :: calendar
         integer :: cal, daysinmonth
 
-        cal = merge(calendar, cal_gregorian, present(calendar))  ! default
+        ! Default calendar: Gregorian
+        if (present(calendar)) then
+            cal = calendar
+        else
+            cal = cal_gregorian
+        end if
 
         ok = .false.; errmsg=''
         
