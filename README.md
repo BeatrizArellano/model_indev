@@ -119,7 +119,7 @@ For example, if your simulation case lives under `sims/simulationfolder/` within
 ```bash
 cd sims/simulationfolder/
 
-../../build/release/bin/shelf_model #Path relative to the simulation folder
+../../build/release/bin/shelf_model
 ```
 
 Alternatively, you can configure the contents of `config_launch.json` to specify the path to the executable and then run the launcher script (Unix-like environments only):
