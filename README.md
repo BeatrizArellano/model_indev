@@ -72,8 +72,9 @@ git submodule update --init --recursive -- external/fabm
 
 ## Copying the FABM driver specific to the model
 
-Create a new directory called `shelf_model` (for now) inside `external/fabm/src/drivers/` and
-copy `fabm_driver.h` inside `external/driver/` into `external/fabm/src/drivers/shelf_model/`.
+To integrate FABM with the model, you need to provide a model-specific FABM driver.
+Create a new driver directory under FABM and copy the template driver into it:
+
 ```bash
 mkdir external/fabm/src/drivers/shelf_model
 cp external/driver/fabm_driver.h external/fabm/src/drivers/shelf_model/
@@ -113,7 +114,7 @@ Once the model is built, you need:
 - Optional: A YAML configuration file if including biogeochemistry (fabm.yaml)
 
 
-From the simulation directory, run the shelf_model executable adapting the path to your directory structure. This is an example considering that your simulation case is inside sims/simulationfolder/ within the repository structure. 
+From the simulation directory, run the shelf_model executable adapting the path to your directory structure. This is an example considering that your simulation case is inside `sims/simulationfolder/` within the repository structure. 
 
 ```bash
 ../../build/release/bin/shelf_model
@@ -216,7 +217,7 @@ At the highest level, the model is organised around a small number of core modul
 
 ### Main orchestrator
 
-- **`shelfseas`** (in `src/shelfseas.F90`)  (To change the name later, once a new name is decided)
+- **`shelfseas`** (in `src/shelfseas.F90`)  (The name will change once a new name has been decided)
   1. Scans forcing data, main parameters, builds the vertical grid (water, and optionally sediments).
   2. Initialises the forcing system, physics, optional biogeochemistry, and output.
   3. Runs the main time-stepping loop.
@@ -231,7 +232,7 @@ Think of `shelfseas` as the place to look if you want to understand “what happ
     - returns a `ForcingSnapshot` (all surface fields at the needed time step).
 
 - **Physics**
-  - `physics_main`: the core physics driver:
+  - `physics_main`: the core physics module:
     - `init_physics`: allocate and initialise fields.
     - `solve_physics`: one full physics time step (turbulence, mixing, tidal forcing, etc.) called from `shelfseas`. Internally, it performs a **physics sub-cycling loop** to maintain numerical stability when the main time step `dt` is too large for the mixing or momentum equations.
     - `end_physics`: clean-up.
@@ -239,7 +240,7 @@ Think of `shelfseas` as the place to look if you want to understand “what happ
   - `physics_types`: holds `PhysicsState` (T, S, velocities, turbulence vars, etc.) and `PhysicsEnv`.
 
 - **Biogeochemistry (FABM)**
-  - `bio_main` – the main driver for plugging biogeochemistry via FABM:
+  - `bio_main`: the main module for plugging biogeochemistry via FABM:
     - `init_bio_fabm`:  allocates tracers, links environment fields.
     - `integrate_bio_fabm`: advances all FABM tracers for one physics time step (with sub-cycling as needed).
     - `end_bio_fabm`: cleans everything associated with biogeochemistry.
@@ -259,7 +260,7 @@ Think of `shelfseas` as the place to look if you want to understand “what happ
    - Update forcing snapshot.
    - Call `solve_physics`.
    - If enabled, call `integrate_bio_fabm`.
-   - Call `om_step` (from `output_manager`) to accumulate and occasionally write output.
+   - Call `om_step` (from `output_manager`) to accumulate and write output.
 5. Finalise physics, FABM, forcing, and output.
 
 If you’re new to the code start in `shelfseas.F90`, then look at the modules you're interested in physics, bio, io, etc. 
