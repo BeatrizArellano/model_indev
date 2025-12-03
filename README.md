@@ -181,16 +181,19 @@ name: <variable in NetCDF>
 filename: off | <custom file>
 ```
 
-- Surface air temperature (surf_air_temp): degrees Celsius.
-- Sea level pressure (sl_pressure): hPa.
-- Relative humidity (relative_humidity): percentage (%).
-- Shortwave radiation (shortwave_radiation): W/m2.
-- Longwave radiation (longwave_radiation): W/m2.
-- 10-m zonal wind (wind_u10): m/s.
-- 10-m meridional wind (wind_v10): m/s.
-- Precipitation (precipitation): m/s. (Optional, but required when computing salinity)
-- Evaporation (evaporation): m/s. Negative values mean evaporation. (Optional, but required when computing salinity)
-- Runoff (runoff): m/s. (Optional)
+| Variable                     | YAML key            | Units   | Required                                      |
+|------------------------------|---------------------|---------|-----------------------------------------------|
+| Surface air temperature      | `surf_air_temp`     | °C      | Yes                                           |
+| Sea level pressure           | `sl_pressure`       | hPa     | Yes                                           |
+| Relative humidity            | `relative_humidity` | %       | Yes                                           |
+| Shortwave radiation          | `shortwave_radiation` | W m-2 | Yes                                           |
+| Longwave radiation           | `longwave_radiation`  | W m-2 | Yes                                           |
+| 10-m zonal wind              | `wind_u10`          | m s-1   | Yes                                           |
+| 10-m meridional wind         | `wind_v10`          | m s-1   | Yes                                           |
+| Precipitation                | `precipitation`     | m s-1   | Conditional (required if salinity is computed) |
+| Evaporation                  | `evaporation`       | m s-1   | Conditional (required if salinity is computed) |
+| Runoff                       | `runoff`            | m s-1   | Optional                                      |
+
 
 The model does not convert units: preprocessing scripts must provide the expected units.
 
