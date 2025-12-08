@@ -113,8 +113,22 @@ Once the model is built, you just need a **run directory** containing:
 
 - Optional: A YAML configuration file (`fabm.yaml`) required only if biogeochemistry is activated.
 
+**Note:** If your `main.yaml` specifies that output should be written into a dedicated directory, make sure this directory exists before running the model. 
+For example, inside `sims/simulationfolder` you can create it with:
 
-From the simulation directory, run the `shelf_model` executable adapting the path to your directory structure. 
+```bash
+mkdir output
+```
+This assumes your `output` block in the configuration file looks like this (adapt paths and filenames as needed):
+
+```yaml
+output:
+    file: output/your_output_filename   # The model will write to output/your_output_filename.nc
+    overwrite: yes
+    ...
+```
+
+From the simulation directory, **run the `shelf_model` executable** adapting the path to your directory structure. 
 For example, if your simulation case lives under `sims/simulationfolder/` within the repository, and you compiled the model in `build/release/`, you can launch it as:
 
 ```bash
@@ -127,21 +141,6 @@ Alternatively, you can configure the contents of `config_launch.json` to specify
 
 ```bash
 bash launch_model.sh
-```
-
-**Note:** If your `main.yaml` specifies that output should be written into a dedicated directory, make sure this directory exists before running the model. 
-For example, inside `sims/simulationfolder` you can create it with:
-
-```bash
-mkdir output
-```
-This assumes your `output` block in the configuration file looks like this:
-
-```yaml
-output:
-    file: output/your_output_filename   # The model will write to output/your_output_filename.nc
-    overwrite: yes
-    ...
 ```
 
 ## Quick guide to `main.yaml` (model configuration)
