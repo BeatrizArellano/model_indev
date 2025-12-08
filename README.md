@@ -87,10 +87,11 @@ From the repository root, run (Ignoring the Warnings):
 cmake --preset release
 cmake --build --preset release
 ```
-The executable of the model will be creasted at:
+The executable of the model will be created at:
 ```bash
-build/release/shelf_model
+build/release/bin/shelf_model
 ```
+or inside the folder for the preset you have chosen (e.g. `build/debug/bin/shelf_model`).
 
 ## Repository Structure (Overview)
 
@@ -126,6 +127,21 @@ Alternatively, you can configure the contents of `config_launch.json` to specify
 
 ```bash
 bash launch_model.sh
+```
+
+**Note:** If your `main.yaml` specifies that output should be written into a dedicated directory, make sure this directory exists before running the model. 
+For example, inside `sims/simulationfolder` you can create it with:
+
+```bash
+mkdir output
+```
+This assumes your `output` block in the configuration file looks like this:
+
+```yaml
+output:
+    file: output/your_output_filename   # The model will write to output/your_output_filename.nc
+    overwrite: yes
+    ...
 ```
 
 ## Quick guide to `main.yaml` (model configuration)
