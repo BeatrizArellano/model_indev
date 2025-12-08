@@ -47,8 +47,8 @@ module bio_types
   type, public :: BioEnv
     class (type_fabm_model), pointer :: model => null()  ! FABM model instance
     type(VerticalGrid)     :: grid                             ! full column grid 
-    type(VerticalGrid)     :: wat_grid                             ! water column grid 
-    type(VerticalGrid)     :: sed_grid                             ! sediments grid 
+    type(VerticalGrid)     :: wat_grid                         ! water column grid 
+    type(VerticalGrid)     :: sed_grid                         ! sediments grid 
     type(BioState)         :: BS                               ! State of tracers
     type(BioParams)        :: params                           ! per-column biogeochemical params (or shared elsewhere)
     ! FABM environment variable ids

@@ -15,10 +15,16 @@ module grids
     real(rk), allocatable :: z_w(:)             ! layer interfaces [m], 0=bottom … nz=surface
   end type
 
-
+  ! Defaults for the water column
   real(rk), parameter :: default_dz = 2.0
-  real(rk), parameter :: min_dz     = 0.2
+  real(rk), parameter :: min_dz     = 0.1
   integer,  parameter :: min_nz     = 3
+
+  ! Sediment-grid defaults
+  real(rk), parameter :: sed_growth_factor = 2.0_rk    ! geometric growth
+  real(rk), parameter :: sed_min_dz       = 1.0e-4_rk  ! minimum allowed thickness [m]
+  real(rk), parameter :: sed_default_dzmin = 1.0e-3_rk ! default top layer [m]  (1 mm)
+  real(rk), parameter :: sed_default_dzmax = 2.0e-2_rk ! default max layer [m]  (2 cm)
 
 contains
 
@@ -111,6 +117,148 @@ contains
         end select
     end subroutine build_water_grid
 
+    !------------------------------
+    ! Build sediment grid
+    !   - depth > 0 is total sediment depth [m] below the sediment–water interface.
+    !   - z_w(0)    = depth       (bottom of sediment column)
+    !   - z_w(nz)   = 0           (sediment–water interface)
+    !   - dz(i)     = z_w(i-1) - z_w(i) > 0, bottom to top
+    !   - z(i)      = 0.5*(z_w(i-1) + z_w(i)), 1=bottom … nz=top (interface)
+    !
+    ! Layer thicknesses are constructed TOP-DOWN as a geometric sequence:
+    !   dz_top = dz_min, then dz_top*growth, dz_top*growth^2, ...
+    !   until dz reaches dz_max; below that all layers have dz = dz_max.
+    !
+    ! Then the sequence is reversed to match bottom-first indexing.
+    ! The bottom cell is finally adjusted to dz_max (if smaller),
+    ! and grid%depth is increased accordingly so that:
+    !   sum(dz) = grid%depth
+    !------------------------------
+    subroutine build_sediment_grid(params, depth, grid, ierr)
+        type(ConfigParams), intent(in)  :: params
+        real(rk),           intent(in)  :: depth         ! requested sediment depth [m], positive
+        type(VerticalGrid), intent(out) :: grid
+        integer,  optional, intent(out) :: ierr          ! 0 OK; >0 error codes
+
+        real(rk) :: dz_min_sed, dz_max_sed
+        real(rk) :: rem, dz_cur, dz_eff, tol
+        real(rk), allocatable :: dz_tmp(:)
+        real(rk) :: orig_bottom, depth_extra
+        integer :: nmax, n, i
+
+        if (present(ierr)) ierr = 0
+
+        if (depth <= 0._rk) then
+            call zero_grid(grid)
+            if (present(ierr)) then
+                ierr = 1
+                return
+            else
+                stop 'build_sediment_grid: depth must be positive'
+            end if
+        end if
+
+        ! Read YAML choices for sediment grid
+        call read_sgrid_config(params, dz_min_sed, dz_max_sed)
+
+        ! Safety checks
+        if (dz_min_sed <= 0._rk .or. dz_max_sed <= 0._rk) then
+            call zero_grid(grid)
+            if (present(ierr)) then
+                ierr = 2
+                return
+            else
+                stop 'build_sediment_grid: dz_min_sed and dz_max_sed must be positive'
+            end if
+        end if
+        if (dz_min_sed > dz_max_sed) then
+            ! Swap if user inverted them
+            tol        = dz_min_sed
+            dz_min_sed = dz_max_sed
+            dz_max_sed = tol
+        end if
+
+        ! Upper bound on number of layers: worst case all at dz_min_sed
+        nmax = int(ceiling(depth / max(dz_min_sed, sed_min_dz))) + 10
+        if (nmax < 2) nmax = 2
+        allocate(dz_tmp(nmax))
+
+        rem    = depth
+        dz_cur = dz_min_sed
+        n      = 0
+
+        ! Build thicknesses from TOP (interface) downward
+        do while (rem > sed_min_dz .and. n < nmax)
+            dz_eff = min(dz_cur, dz_max_sed)
+
+            ! If what's left after this cell would be very small, just make this the last cell
+            if (rem - dz_eff <= sed_min_dz) then
+                n       = n + 1
+                dz_tmp(n) = rem
+                rem     = 0._rk
+                exit
+            else
+                n       = n + 1
+                dz_tmp(n) = dz_eff
+                rem     = rem - dz_eff
+
+                ! Grow geometrically until dz_max_sed is reached
+                if (dz_cur < dz_max_sed) dz_cur = dz_cur * sed_growth_factor
+            end if
+        end do
+
+        ! If we ran out of loop but still have significant remainder, append it
+        if (rem > sed_min_dz) then
+            if (n == nmax) then
+                call zero_grid(grid)
+                if (present(ierr)) then
+                    ierr = 3
+                    return
+                else
+                    stop 'build_sediment_grid: exceeded maximum number of sediment layers'
+                end if
+            end if
+            n       = n + 1
+            dz_tmp(n) = rem
+            rem     = 0._rk
+        end if
+
+        ! Ensure at least 2 layers for a meaningful vertical profile
+        if (n < 2) then
+            ! Just split the depth into two equal layers
+            n         = 2
+            dz_tmp(1) = 0.5_rk * depth
+            dz_tmp(2) = 0.5_rk * depth
+        end if
+
+        ! Now allocate the final grid with n layers (bottom-first indexing)
+        call allocate_grid(grid, n)
+
+        ! Requested depth so far (may be increased below)
+        grid%depth = depth
+
+        ! Reverse: dz_tmp(1)=top → grid%dz(n)=top
+        do i = 1, n
+            grid%dz(i) = dz_tmp(n - i + 1)
+        end do
+
+        deallocate(dz_tmp)
+
+        ! --- Enforce a full bottom layer thickness of dz_max_sed if needed ---
+        orig_bottom = grid%dz(1)
+
+        if (orig_bottom < dz_max_sed) then
+            depth_extra  = dz_max_sed - orig_bottom
+            grid%dz(1)   = dz_max_sed
+            grid%depth   = depth + depth_extra
+        else
+            ! No change: keep original bottom thickness and requested depth
+            grid%depth = depth
+        end if
+
+        ! Compute z, z_w using existing helper (bottom-first)
+        call calculate_layer_depths(grid)
+    end subroutine build_sediment_grid
 
 
     subroutine write_vertical_grid(grid, filename, ierr)
