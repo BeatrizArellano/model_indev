@@ -11,7 +11,6 @@ module shelfseas
   use physics_types,    only: PhysicsState, PhysicsEnv
   use physics_main,     only: init_physics, solve_physics, end_physics
   use output_manager,   only: OutputManager
-  use bio_params,       only: is_bio_enabled
   use bio_types,        only: BioEnv
   use bio_main,         only: init_bio_fabm, integrate_bio_fabm, end_bio_fabm
   use variable_registry, only: VarMetadata
@@ -29,10 +28,9 @@ module shelfseas
 
   
   character(len=20), public :: config_file = 'main.yaml'  
-  logical  :: bio_enabled         = .false.
-  logical  :: sediments_enabled   = .false.
+  logical  :: is_bio_enabled         = .false.
   logical  :: is_main_initialized = .false.
-  logical  :: stop_on_error = .true.                 ! Hard stop on error  -> useful in the future when running multiple columns
+  logical  :: stop_on_error = .true.                 ! Full stop on error  -> useful in the future when running multiple columns
   logical  :: ok = .false.
   character(len=256) :: msg
 
@@ -55,10 +53,9 @@ module shelfseas
 
 contains
 
-  !======================
-  ! Initialization
-  !======================
-
+    !======================
+    ! Initialisation
+    !======================
     subroutine init_shelfseas()
         integer, parameter :: cal_unknown = 0
         if (is_main_initialized) return
@@ -72,11 +69,10 @@ contains
         ! Print header for simulation
         call print_header(location,start_datetime,end_datetime) 
 
-        call is_bio_enabled(cfg_params, bio_enabled, sediments_enabled)
-
-        ! Builds vertical grid
+        ! Builds vertical grid for the water column 
         call build_water_grid(cfg_params, location%depth, wgrid)
         call write_vertical_grid(wgrid, 'Vertical_grid.dat')
+
         ! Verify and initialise forcing data
         call ForcMan%set_error_mode(stop_on_error)  
 
@@ -96,14 +92,15 @@ contains
         ! Initialise physics
         call init_physics(cfg_params, location, wgrid, PE)
 
-        if (bio_enabled) then
+        ! Verify if biogeochemistry is enabled, and initialise it if that's the case
+        is_bio_enabled = cfg_params%get_param_logical('biogeochemistry.enabled', default=.false.)
+        if (is_bio_enabled) then
             call init_bio_fabm(cfg_params, location, wgrid, dt, PE%PS, ForcSnp, BE)
         else 
              write(*,'(A)') 'Preparing a physics-only simulation (biogeochemistry is turned off).'
         end if
 
-
-        if (bio_enabled) then
+        if (is_bio_enabled) then
             ! Ensure optional arrays are at least allocated with size 0
             if (.not. allocated(BE%int_vars))  allocate(BE%int_vars(0))
             if (.not. allocated(BE%diag_hz_vars))  allocate(BE%diag_hz_vars(0))
@@ -118,15 +115,17 @@ contains
         ! Data needed for the output manager
         time_units = 'seconds since ' // trim(datetime_to_str(start_datetime)) ! Time units (CF-metadata convention)
         calname    = trim(calendar%name())
-
+        ! Initialise output manager and output file
         call OM%init(cfg_params, PE%grid, dt_s=dt, time_units=time_units, calendar_name=calname, &
                           vars = all_vars, loc=location)
+
         is_main_initialized = .true.     
         
     end subroutine init_shelfseas
 
-    ! Main subroutine 
-    ! The main loop over time is here. 
+    !=============================================
+    ! Main subroutine - Main loop over time is here
+    !============================================
     subroutine run_shelfseas()
         implicit none
 
@@ -167,7 +166,7 @@ contains
                 return
             end if
 
-            if (bio_enabled) then
+            if (is_bio_enabled) then
                 sec_of_day = real( current_datetime%hour*3600 + current_datetime%minute*60 + current_datetime%second, rk )
                 ! 0-based day-of-year + fractional day
                 doy_real = real(doy - 1, rk) + sec_of_day / 86400._rk
@@ -185,11 +184,15 @@ contains
         write(*,'(A,/)') 'Simulation completed.'
     end subroutine run_shelfseas
 
+
+    !======================
+    ! Clean memory
+    !======================
     subroutine end_shelfseas()
         if (.not. is_main_initialized) return
         call OM%close(sync_now=.true.)
         call end_physics(PE)
-        if (bio_enabled) then
+        if (is_bio_enabled) then
             call end_bio_fabm(BE)
         end if
         call cfg_params%clear()

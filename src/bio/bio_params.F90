@@ -5,7 +5,7 @@ module bio_params
   implicit none
   private
 
-  public :: BioParams, is_bio_enabled, read_bio_parameters
+  public :: BioParams, read_bio_parameters
   public :: mol_diff
 
   real(rk), parameter :: mol_diff   = 1.0e-6_rk             ! Molecular diffusivity in the water column [m2 s-1]
@@ -60,18 +60,5 @@ contains
         p%cnpar             = def_cnpar
         p%min_dt            = def_min_dt
     end function default_bio_params
-    
-    subroutine is_bio_enabled(cfg_params, bio_enabled, sediments_enabled)
-        type(ConfigParams),  intent(in)   :: cfg_params
-        logical,             intent(out)  :: bio_enabled, sediments_enabled
-
-        bio_enabled       = cfg_params%get_param_logical('biogeochemistry.enabled', default=.false.)
-        sediments_enabled = cfg_params%get_param_logical('biogeochemistry.sediments.enabled', default=.false.)
-
-        ! Enforce hierarchy: no sediments without column biogeochemistry
-        if (.not. bio_enabled) then
-            sediments_enabled = .false.
-        end if
-    end subroutine is_bio_enabled
 
 end module bio_params

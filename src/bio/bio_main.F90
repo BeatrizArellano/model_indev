@@ -15,7 +15,7 @@ module bio_main
     use tridiagonal,         only: init_tridiag, clear_tridiag
     use vertical_transport,  only: apply_vertical_transport, velocity_at_interfaces
     use vertical_mixing,     only: scalar_diffusion
-    use variable_registry,   only: register_variable,output_all_variables
+    use variable_registry,   only: register_variable, output_all_variables
 
 
   implicit none
@@ -43,7 +43,6 @@ contains
         write(*,'(A)') 'Initialising biogeochemistry via FABM...'
 
         BE%grid     = grid   ! Full grid
-        BE%wat_grid = grid   ! For now they're the same grid
         dt_main     = real(timestep, rk)
         nz          = BE%grid%nz              ! Number of vertical layers 
 
@@ -677,12 +676,12 @@ contains
         end if
         ! Profile of shortwave radiation
         if(BE%need_swr) then
-            call compute_SW_profile(BE%wat_grid%dz, BE%BS%short_rad, BE%BS%swr)  ! CORRECT when sediments added
+            call compute_SW_profile(BE%grid%dz, BE%BS%short_rad, BE%BS%swr)  ! CORRECT when sediments added
             call BE%model%link_interior_data(BE%id_swr, BE%BS%swr)
         end if
         ! PAR Profile
         if(BE%need_par) then
-            call compute_PAR_profile(BE%wat_grid%dz, BE%BS%short_rad, BE%BS%par)   ! CORRECT when sediments are added
+            call compute_PAR_profile(BE%grid%dz, BE%BS%short_rad, BE%BS%par)   ! CORRECT when sediments are added
             call BE%model%link_interior_data(BE%id_par, BE%BS%par)
         end if
         ! Linking surface data

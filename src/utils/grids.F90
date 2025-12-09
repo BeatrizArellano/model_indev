@@ -1,11 +1,10 @@
 module grids
   use precision_types,  only: rk
   use read_config_yaml, only: ConfigParams
-  use geo_utils,        only: LocationInfo
 
   implicit none
   private
-  public :: VerticalGrid, build_water_grid, write_vertical_grid
+  public :: VerticalGrid, build_water_grid, build_sediment_grid, write_vertical_grid
 
   type, public :: VerticalGrid
     integer               :: nz = 0             ! number of layers (bottom=1 … surface=nz)
@@ -16,26 +15,27 @@ module grids
   end type
 
   ! Defaults for the water column
-  real(rk), parameter :: default_dz = 2.0
-  real(rk), parameter :: min_dz     = 0.1
+  real(rk), parameter :: default_dz = 2.0_rk
+  real(rk), parameter :: min_dz     = 0.1_rk
   integer,  parameter :: min_nz     = 3
 
   ! Sediment-grid defaults
-  real(rk), parameter :: sed_growth_factor = 2.0_rk    ! geometric growth
-  real(rk), parameter :: sed_min_dz       = 1.0e-4_rk  ! minimum allowed thickness [m]
-  real(rk), parameter :: sed_default_dzmin = 1.0e-3_rk ! default top layer [m]  (1 mm)
-  real(rk), parameter :: sed_default_dzmax = 2.0e-2_rk ! default max layer [m]  (2 cm)
+  real(rk), parameter :: sed_growth_factor = 2.0_rk     ! geometric growth
+  real(rk), parameter :: sed_min_dz        = 1.0e-4_rk  ! minimum allowed thickness for any sediment layer [m]
+  real(rk), parameter :: sed_min_depth     = 3.0e-2_rk  ! Minimum depth for sediments [m] (3 cm)
+  real(rk), parameter :: sed_default_dzmin = 1.0e-3_rk  ! default top layer [m]  (1 mm)
+  real(rk), parameter :: sed_default_dzmax = 2.0e-2_rk  ! default max layer [m]  (2 cm)
 
 contains
 
     !------------------------------
     ! Build water grid
     !------------------------------
-    subroutine build_water_grid(params, depth, grid, ierr)
-        type(ConfigParams), intent(in)  :: params
+    subroutine build_water_grid(cfg, depth, grid, ierr)
+        type(ConfigParams), intent(in)  :: cfg
         real(rk),           intent(in)  :: depth         ! local depth [m], positive
         type(VerticalGrid), intent(out) :: grid
-        integer,  optional, intent(out) :: ierr      ! 0 OK; 1 bad depth; 2 nz too thin; 3 dz too thin
+        integer,  optional, intent(out) :: ierr      ! 0 OK; >0 is an error
 
         character(len=16) :: method
         integer           :: nz_cfg
@@ -45,8 +45,8 @@ contains
 
         if (present(ierr)) ierr = 0
 
-        ! Read YAML choices
-        call read_wgrid_config(params, nz_cfg, dz_cfg, method)
+        ! Read configuration choices
+        call read_wgrid_config(cfg, nz_cfg, dz_cfg, method)
 
         select case (trim(method))
 
@@ -119,7 +119,7 @@ contains
 
     !------------------------------
     ! Build sediment grid
-    !   - depth > 0 is total sediment depth [m] below the sediment–water interface.
+    !   - depth  is total sediment depth [m] below the sediment–water interface.
     !   - z_w(0)    = depth       (bottom of sediment column)
     !   - z_w(nz)   = 0           (sediment–water interface)
     !   - dz(i)     = z_w(i-1) - z_w(i) > 0, bottom to top
@@ -134,96 +134,78 @@ contains
     ! and grid%depth is increased accordingly so that:
     !   sum(dz) = grid%depth
     !------------------------------
-    subroutine build_sediment_grid(params, depth, grid, ierr)
-        type(ConfigParams), intent(in)  :: params
-        real(rk),           intent(in)  :: depth         ! requested sediment depth [m], positive
+    subroutine build_sediment_grid(cfg, grid, ierr)
+        type(ConfigParams), intent(in)  :: cfg
         type(VerticalGrid), intent(out) :: grid
-        integer,  optional, intent(out) :: ierr          ! 0 OK; >0 error codes
+        integer,  optional, intent(out) :: ierr          ! 0 is OK. >0 error codes
 
-        real(rk) :: dz_min_sed, dz_max_sed
-        real(rk) :: rem, dz_cur, dz_eff, tol
+        real(rk) :: depth, dz_min, dz_max
+        real(rk) :: rem, dz_next, dz_cur
         real(rk), allocatable :: dz_tmp(:)
         real(rk) :: orig_bottom, depth_extra
+        real(rk) :: dz
         integer :: nmax, n, i
+        logical :: uniform_layers
 
         if (present(ierr)) ierr = 0
 
-        if (depth <= 0._rk) then
-            call zero_grid(grid)
-            if (present(ierr)) then
-                ierr = 1
-                return
-            else
-                stop 'build_sediment_grid: depth must be positive'
-            end if
+        ! Read user-defined choices for sediment grid
+        call read_sgrid_config(cfg, depth, dz_min, dz_max)
+
+        !------------------------------------------------------------------
+        ! Special case: uniform grid (dz_min == dz_max)
+        !------------------------------------------------------------------
+        uniform_layers = (abs(dz_max - dz_min) <= 1.0e-6_rk * dz_min)
+
+        if (uniform_layers) then
+            dz = dz_min
+
+            ! Number of layers: increase depth to fit full layers
+            n = int(ceiling(depth / dz))
+            if (n < 2) n = 2
+
+            call allocate_grid(grid, n)
+
+            ! Bottom-first indexing, thickness is uniform
+            grid%dz(:) = dz
+
+            ! Actual sediment depth is now exactly n * dz (>= initial depth)
+            grid%depth = dz * n
+
+            call calculate_layer_depths(grid)
+            return
         end if
 
-        ! Read YAML choices for sediment grid
-        call read_sgrid_config(params, dz_min_sed, dz_max_sed)
+        !------------------------------------------------------------------
+        ! General case: grid with layer thicknesses increasing geometrically
+        !------------------------------------------------------------------
 
-        ! Safety checks
-        if (dz_min_sed <= 0._rk .or. dz_max_sed <= 0._rk) then
-            call zero_grid(grid)
-            if (present(ierr)) then
-                ierr = 2
-                return
-            else
-                stop 'build_sediment_grid: dz_min_sed and dz_max_sed must be positive'
-            end if
-        end if
-        if (dz_min_sed > dz_max_sed) then
-            ! Swap if user inverted them
-            tol        = dz_min_sed
-            dz_min_sed = dz_max_sed
-            dz_max_sed = tol
-        end if
-
-        ! Upper bound on number of layers: worst case all at dz_min_sed
-        nmax = int(ceiling(depth / max(dz_min_sed, sed_min_dz))) + 10
-        if (nmax < 2) nmax = 2
+        ! Maximum number of layers (temporary array): worst case all have a thickness dz_min
+        nmax = int(ceiling(depth / max(dz_min, sed_min_dz))) + 10
         allocate(dz_tmp(nmax))
 
-        rem    = depth
-        dz_cur = dz_min_sed
-        n      = 0
+        rem     = depth     ! Remainder depth
+        dz_next = dz_min    ! dz for the next layer
+        n       = 0         ! Layer number
 
-        ! Build thicknesses from TOP (interface) downward
+        ! Build thicknesses from the sediment-water interface downward
         do while (rem > sed_min_dz .and. n < nmax)
-            dz_eff = min(dz_cur, dz_max_sed)
-
-            ! If what's left after this cell would be very small, just make this the last cell
-            if (rem - dz_eff <= sed_min_dz) then
-                n       = n + 1
+            dz_cur = min(dz_next, dz_max)   ! Thickness for the current layer
+            n      = n + 1
+            ! If what's left after this layer is very small, just make this the last layer
+            if (rem - dz_cur <= sed_min_dz) then
                 dz_tmp(n) = rem
                 rem     = 0._rk
                 exit
             else
-                n       = n + 1
-                dz_tmp(n) = dz_eff
-                rem     = rem - dz_eff
-
-                ! Grow geometrically until dz_max_sed is reached
-                if (dz_cur < dz_max_sed) dz_cur = dz_cur * sed_growth_factor
+                dz_tmp(n) = dz_cur
+                rem     = rem - dz_cur
+                ! Grow geometrically until dz_max is reached
+                if (dz_next < dz_max) dz_next = dz_next * sed_growth_factor
             end if
         end do
 
-        ! If we ran out of loop but still have significant remainder, append it
-        if (rem > sed_min_dz) then
-            if (n == nmax) then
-                call zero_grid(grid)
-                if (present(ierr)) then
-                    ierr = 3
-                    return
-                else
-                    stop 'build_sediment_grid: exceeded maximum number of sediment layers'
-                end if
-            end if
-            n       = n + 1
-            dz_tmp(n) = rem
-            rem     = 0._rk
-        end if
-
-        ! Ensure at least 2 layers for a meaningful vertical profile
+        ! Ensure at least 2 layers
         if (n < 2) then
             ! Just split the depth into two equal layers
             n         = 2
@@ -237,23 +219,20 @@ contains
         ! Requested depth so far (may be increased below)
         grid%depth = depth
 
-        ! Reverse: dz_tmp(1)=top → grid%dz(n)=top
+        ! Reverse: dz_tmp(1)=top to grid%dz(n)=top
         do i = 1, n
             grid%dz(i) = dz_tmp(n - i + 1)
         end do
 
         deallocate(dz_tmp)
 
-        ! --- Enforce a full bottom layer thickness of dz_max_sed if needed ---
+        ! --- Enforce a full bottom layer thickness of dz_max ---
         orig_bottom = grid%dz(1)
 
-        if (orig_bottom < dz_max_sed) then
-            depth_extra  = dz_max_sed - orig_bottom
-            grid%dz(1)   = dz_max_sed
+        if (orig_bottom < dz_max) then
+            depth_extra  = dz_max - orig_bottom
+            grid%dz(1)   = dz_max
             grid%depth   = depth + depth_extra
-        else
-            ! No change: keep original bottom thickness and requested depth
-            grid%depth = depth
         end if
 
         ! Compute z, z_w using existing helper (bottom-first)
@@ -277,7 +256,6 @@ contains
             end if
         end if
 
-        inquire (iolength=u) u
         open(newunit=u, file=trim(filename), status='replace', action='write', form='formatted')
 
         write(u,'(A)') 'layer  depth_center_m  thickness_m  interface_top_m  interface_bottom_m'
@@ -288,7 +266,6 @@ contains
 
         close(u)
     end subroutine write_vertical_grid
-
 
 
     !------------------------------
@@ -350,8 +327,8 @@ contains
     end subroutine calculate_layer_depths
 
 
-    subroutine read_wgrid_config(params, nz, dz, method)
-        type(ConfigParams), intent(in)  :: params
+    subroutine read_wgrid_config(cfg, nz, dz, method)
+        type(ConfigParams), intent(in)  :: cfg
         integer,            intent(out) :: nz
         real(rk),           intent(out) :: dz
         character(len=*),   intent(out) :: method   ! 'dz' or 'nlayers'
@@ -363,24 +340,54 @@ contains
         dz     = default_dz
         method = 'dz'
 
-        has_dz = .not. params%is_disabled('grid.water.dz')
-        has_nz = .not. params%is_disabled('grid.water.nlayers')
+        has_dz = .not. cfg%is_disabled('grid.water.dz')
+        has_nz = .not. cfg%is_disabled('grid.water.nlayers')
 
         if (has_nz .and. has_dz) then
             ! Prefer dz when both are provided
-            dz     = params%get_param_num('grid.water.dz', required=.true., positive=.true., &
+            dz     = cfg%get_param_num('grid.water.dz', required=.true., positive=.true., &
                                         min=min_dz, finite=.true.)
             method = 'dz'
 
         else if (has_nz) then
-            nz     = params%get_param_int('grid.water.nlayers', min=min_nz)
+            nz     = cfg%get_param_int('grid.water.nlayers', min=min_nz)
             method = 'nlayers'
 
         else if (has_dz) then
-            dz     = params%get_param_num('grid.water.dz', required=.true., positive=.true., &
+            dz     = cfg%get_param_num('grid.water.dz', required=.true., positive=.true., &
                                         min=min_dz, finite=.true.)
             method = 'dz'
         end if
     end subroutine read_wgrid_config
+
+    ! Read parameters from the sediment grid configuration
+    subroutine read_sgrid_config(cfg, depth, dz_min, dz_max)
+        type(ConfigParams), intent(in)  :: cfg
+        real(rk),           intent(out) :: depth   ! sediment depth [m]
+        real(rk),           intent(out) :: dz_min  ! min layer thickness at top [m]
+        real(rk),           intent(out) :: dz_max  ! max layer thickness [m]
+
+
+        depth = cfg%get_param_num('grid.sediments.depth', required=.true., positive=.true., &
+                                    min=sed_min_depth, finite=.true.)
+
+        dz_min = cfg%get_param_num('grid.sediments.dz_min', positive=.true., &
+                                    min=sed_min_dz, default=sed_default_dzmin, finite=.true.)
+        
+        dz_max = cfg%get_param_num('grid.sediments.dz_max', positive=.true., &
+                                    min=sed_min_dz, default=sed_default_dzmax, finite=.true.)
+
+        if (dz_max < dz_min) then
+            stop 'read_sgrid_config: dz_max must be >= dz_min in the sediment grid.'
+        end if 
+        if (dz_min >= depth) then
+            stop 'read_sgrid_config: dz_min must be < depth in the sediment grid.'
+        end if
+
+        if (dz_max >= depth) then
+            stop 'read_sgrid_config: dz_max must be < depth in the sediment grid.'
+        end if
+
+    end subroutine read_sgrid_config
 
 end module grids

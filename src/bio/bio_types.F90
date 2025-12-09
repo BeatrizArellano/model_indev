@@ -45,7 +45,7 @@ module bio_types
 
   ! An envelope for the Biogeochemistry Environment in one column
   type, public :: BioEnv
-    class (type_fabm_model), pointer :: model => null()  ! FABM model instance
+    class (type_fabm_model), pointer :: model => null()        ! FABM model instance
     type(VerticalGrid)     :: grid                             ! full column grid 
     type(VerticalGrid)     :: wat_grid                         ! water column grid 
     type(VerticalGrid)     :: sed_grid                         ! sediments grid 
