@@ -36,12 +36,13 @@ module shelfseas
 
   integer(lk)   ::  dt, n_steps                      ! time-step (seconds) and total number of steps
   integer(lk)   ::  sim_length_sec, last_dt_length   ! Length of simulation in seconds and duration of last time-step
+  integer :: nsed
 
   type(ConfigParams)    :: cfg_params
   type(LocationInfo)    :: location
   type(DateTime)        :: start_datetime, end_datetime, current_datetime
   type(CFCalendar)      :: calendar
-  type(VerticalGrid)    :: wgrid
+  type(VerticalGrid)    :: wgrid, grid_out
   type(ForcingManager)  :: ForcMan
   type(ForcingSnapshot) :: ForcSnp
   type(PhysicsEnv)      :: PE
@@ -96,8 +97,12 @@ contains
         is_bio_enabled = cfg_params%get_param_logical('biogeochemistry.enabled', default=.false.)
         if (is_bio_enabled) then
             call init_bio_fabm(cfg_params, location, wgrid, dt, PE%PS, ForcSnp, BE)
+            grid_out = BE%grid
+            nsed = BE%nsed
         else 
-             write(*,'(A)') 'Preparing a physics-only simulation (biogeochemistry is turned off).'
+            grid_out = PE%grid     ! water-only
+            nsed = 0
+            write(*,'(A)') 'Preparing a physics-only simulation (biogeochemistry is turned off).'
         end if
 
         if (is_bio_enabled) then
@@ -115,9 +120,10 @@ contains
         ! Data needed for the output manager
         time_units = 'seconds since ' // trim(datetime_to_str(start_datetime)) ! Time units (CF-metadata convention)
         calname    = trim(calendar%name())
+
         ! Initialise output manager and output file
-        call OM%init(cfg_params, PE%grid, dt_s=dt, time_units=time_units, calendar_name=calname, &
-                          vars = all_vars, loc=location)
+        call OM%init(cfg_params, grid_out, dt_s=dt, time_units=time_units, calendar_name=calname, &
+                    vars=all_vars, loc=location, n_sed=nsed)
 
         is_main_initialized = .true.     
         

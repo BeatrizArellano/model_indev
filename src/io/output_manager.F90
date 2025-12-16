@@ -6,6 +6,7 @@ module output_manager
   use grids,             only: VerticalGrid
   use output_writer,     only: OutputWriter
   use variable_registry, only: VarMetadata
+  use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_quiet_nan
   implicit none
   private
   public :: OutputManager
@@ -261,6 +262,9 @@ contains
     class(OutputData),   intent(inout) :: this
     type(VarMetadata),   intent(in)    :: vars(:)
 
+    real(rk) :: fillv
+    real(rk), allocatable :: tmp(:)
+    integer :: nsrc, k0
     integer :: j, ic, ii, is
 
     ic = 0; ii = 0; is = 0
@@ -274,19 +278,57 @@ contains
           case ('centre')
              ic = ic + 1
              if (.not. associated(vars(j)%data_1d)) error stop 'OutputData:update: centre var has no data_1d'
-             if (allocated(this%centre_sum)) then
-                this%centre_sum(:, ic) = this%centre_sum(:, ic) + vars(j)%data_1d(:)
+             nsrc = size(vars(j)%data_1d)
+             fillv = ieee_value(0.0_rk, ieee_quiet_nan)
+ 
+             if (nsrc == this%N) then
+                if (allocated(this%centre_sum)) then
+                   this%centre_sum(:, ic) = this%centre_sum(:, ic) + vars(j)%data_1d(:)
+                else
+                   this%centre_last(:, ic) = vars(j)%data_1d(:)
+                end if
+             else if (nsrc < this%N) then
+                allocate(tmp(this%N))
+                tmp(:) = fillv
+                k0 = this%N - nsrc + 1              ! start index for water part in full column
+                tmp(k0:this%N) = vars(j)%data_1d(:)
+ 
+                if (allocated(this%centre_sum)) then
+                   this%centre_sum(:, ic) = this%centre_sum(:, ic) + tmp
+                else
+                   this%centre_last(:, ic) = tmp
+                end if
+                deallocate(tmp)
              else
-                this%centre_last(:, ic) = vars(j)%data_1d(:)
+                error stop 'OutputData:update: centre var longer than output grid.'
              end if
 
           case ('interface')
              ii = ii + 1
              if (.not. associated(vars(j)%data_1d)) error stop 'OutputData:update: iface var has no data_1d'
-             if (allocated(this%iface_sum)) then
-                this%iface_sum(:, ii) = this%iface_sum(:, ii) + vars(j)%data_1d(:)
+             nsrc = size(vars(j)%data_1d)
+             fillv = ieee_value(0.0_rk, ieee_quiet_nan)
+ 
+             if (nsrc == this%Ni) then
+                if (allocated(this%iface_sum)) then
+                   this%iface_sum(:, ii) = this%iface_sum(:, ii) + vars(j)%data_1d(:)
+                else
+                   this%iface_last(:, ii) = vars(j)%data_1d(:)
+                end if
+             else if (nsrc < this%Ni) then
+                allocate(tmp(this%Ni))
+                tmp(:) = fillv
+                k0 = this%Ni - nsrc + 1             ! start index for water interfaces in full column
+                tmp(k0:this%Ni) = vars(j)%data_1d(:)
+ 
+                if (allocated(this%iface_sum)) then
+                   this%iface_sum(:, ii) = this%iface_sum(:, ii) + tmp
+                else
+                   this%iface_last(:, ii) = tmp
+                end if
+                deallocate(tmp)
              else
-                this%iface_last(:, ii) = vars(j)%data_1d(:)
+                error stop 'OutputData:update: iface var longer than output grid.'
              end if
 
           case default
@@ -365,21 +407,26 @@ contains
 
   !================ OUTPUT MANAGER ================
   ! Read output config, set up scheduler and data storage, and open the NetCDF file.
-  subroutine om_init(this, params, grid_phys, dt_s, time_units, calendar_name, vars, loc)
+  subroutine om_init(this, params, grid, dt_s, time_units, calendar_name, vars, loc, n_sed)
     class(OutputManager), intent(inout) :: this
     type(ConfigParams),   intent(in)    :: params
-    type(VerticalGrid),   intent(in)    :: grid_phys
+    type(VerticalGrid),   intent(in)    :: grid
     integer(lk),          intent(in)    :: dt_s
     character(*),         intent(in)    :: time_units      ! "seconds since [datetime]"
     character(*),         intent(in)    :: calendar_name
     type(VarMetadata),    intent(in)    :: vars(:)
     type(LocationInfo),   intent(in)    :: loc
+    integer,       intent(in), optional :: n_sed
 
     character(:), allocatable :: path
     character(:), allocatable :: title_str
     logical :: exists
     integer :: ios
     integer :: j
+    integer :: nsed_local
+
+    nsed_local = 0
+    if (present(n_sed)) nsed_local = max(0, n_sed)
 
     ! Read config
     call read_output_config(params, this%cfg)
@@ -404,8 +451,8 @@ contains
        write(*,*) 'Creating new output file: ', trim(path)
     end if
 
-    this%N      = grid_phys%nz
-    this%Ni     = grid_phys%nz + 1
+    this%N      = grid%nz
+    this%Ni     = grid%nz + 1
     this%is_mean = (this%cfg%statistic == 'mean')
 
     ! Store metadata (shallow copy: pointers stay pointing to live arrays)
@@ -452,9 +499,9 @@ contains
     if (allocated(this%iface_rec))  deallocate(this%iface_rec)
     if (allocated(this%scalar_rec)) deallocate(this%scalar_rec)
 
-    if (this%n_centre > 0) allocate(this%centre_rec(this%N,  this%n_centre))
-    if (this%n_iface  > 0) allocate(this%iface_rec (this%Ni, this%n_iface))
-    if (this%n_scalar > 0) allocate(this%scalar_rec(this%n_scalar))
+    allocate(this%centre_rec(this%N,  max(0,this%n_centre)))
+    allocate(this%iface_rec (this%Ni, max(0,this%n_iface)))
+    allocate(this%scalar_rec(max(0,this%n_scalar)))
 
     ! Periodic sync if requested
     if (this%cfg%sync_frequency_s > 0_lk) then
@@ -467,12 +514,13 @@ contains
 
     ! Open NetCDF file and define structure using the same vars
     call this%writer%open_file(path              = path,              &
-                               grid              = grid_phys,         &
+                               grid              = grid,              &
                                interval_statistic= this%cfg%statistic,&
                                time_units        = time_units,        &
                                calendar_name     = calendar_name,     &
                                vars              = this%vars,         &
-                               title             = title_str)
+                               title             = title_str,         &
+                               n_sed             = nsed_local)
 
     this%is_init = .true.
   end subroutine om_init
@@ -497,9 +545,8 @@ contains
       if (emit) then
          
          ! Finalize statistics for current window
-         call this%acc%finalize(centre_out = this%centre_rec, &
-                                 iface_out  = this%iface_rec,  &
-                                 scalar_out = this%scalar_rec)
+         call this%acc%finalize(centre_out=this%centre_rec, iface_out=this%iface_rec, scalar_out=this%scalar_rec)
+
 
          ! Time info for this record
          t_emit = this%sched%emit_time_s(this%is_mean)

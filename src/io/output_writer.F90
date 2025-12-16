@@ -60,7 +60,7 @@ contains
   ! Open file, define coordinates and set attrubutes
   !========================
   subroutine outputwriter_open_file(this, path, grid, interval_statistic, time_units, &
-                                    calendar_name, vars, title)
+                                    calendar_name, vars, title, n_sed)
     class(OutputWriter), intent(inout) :: this
     character(*),        intent(in)    :: path
     type(VerticalGrid),  intent(in)    :: grid        ! bottom→surface order internally
@@ -68,17 +68,24 @@ contains
     character(*),        intent(in)    :: time_units       ! "seconds since ..."
     character(*),        intent(in)    :: calendar_name
     type(VarMetadata),   intent(in)    :: vars(:)
-    character(*),        intent(in), optional :: title    
+    character(*),        intent(in), optional :: title
+    integer,             intent(in), optional :: n_sed
 
     integer :: dim_t, dim_z, dim_zw
     integer :: j, ic, ii, is 
-    integer :: var_time, var_z, var_zw, varid_dummy
+    integer :: var_time, var_z, var_zw, var_mask, varid_dummy
+    integer :: nsed_local
     character(len=:), allocatable :: cm
     real(rk), allocatable :: z_out(:), zw_out(:)
+    real(rk), allocatable :: mask_out(:)
 
     ! sizes
     this%N  = grid%nz
     this%Ni = grid%nz + 1
+
+    nsed_local = 0
+    if (present(n_sed)) nsed_local = max(0, n_sed)
+    if (nsed_local > int(this%N)) error stop 'outputwriter_open_file: n_sed > N'
 
     this%filename           = trim(path)
     this%interval_statistic = trim(interval_statistic)
@@ -98,6 +105,13 @@ contains
     var_time = nc_def_var_double(this%db, 'time', [dim_t])              ! NOTE: uses rk; prefer rk=real64
     var_z    = nc_def_var_real(this%db, 'depth',    [dim_z])
     var_zw   = nc_def_var_real(this%db, 'depth_interface',  [dim_zw])
+
+    var_mask = nc_def_var_real(this%db, 'sediment_mask', [dim_z])
+    call nc_put_att_str(this%db, 'sediment_mask', 'long_name', 'Mask for sediment layers (1=sediment, 0=water)')
+    call nc_put_att_str(this%db, 'sediment_mask', 'units', '1')
+    call nc_put_att_str(this%db, 'sediment_mask', 'flag_values', '0 1')
+    call nc_put_att_str(this%db, 'sediment_mask', 'flag_meanings', 'water sediment')
+    call nc_put_att_str(this%db, 'sediment_mask', 'coordinates', 'depth')
 
     cm = cf_cell_methods_from_stat(interval_statistic) ! Write the statistic following the CF-metadata convention to set as attribute
 
@@ -224,12 +238,25 @@ contains
     call nc_put_att_str(this%db, 'depth',   'units',   'm')
     call nc_put_att_str(this%db, 'depth',   'positive','down')
     call nc_put_att_str(this%db, 'depth',   'axis',    'Z')
-    call nc_put_att_str(this%db, 'depth_interface',   'standard_name',   'depth of layer interfaces')
+    call nc_put_att_str(this%db, 'depth_interface',   'long_name',   'depth of layer interfaces')
     call nc_put_att_str(this%db, 'depth_interface', 'units',   'm')
     call nc_put_att_str(this%db, 'depth_interface', 'positive','down')
     call nc_put_att_str(this%db, 'depth_interface', 'axis',    'Z')
 
     call nc_enddef(this%db)
+
+
+    allocate(mask_out(this%N))
+    mask_out(:) = 0.0_rk
+
+    if (nsed_local > 0) then
+        ! In file order: surface->bottom, sediments are last n_sed elements
+        mask_out(this%N - nsed_local + 1 : this%N) = 1.0_rk
+    end if
+
+    call nc_write_real(this%db, 'sediment_mask', start=[1], count=[int(this%N,kind=4)], data_array=mask_out)
+    deallocate(mask_out)
+
 
     ! --- Depth values (surface to bottom)
     allocate(z_out(this%N), zw_out(this%Ni))
@@ -238,6 +265,7 @@ contains
 
     call nc_write_real(this%db, 'depth',   start=[1], count=[int(this%N,kind=4)],   data_array=z_out)
     call nc_write_real(this%db, 'depth_interface', start=[1], count=[int(this%Ni,kind=4)],  data_array=zw_out)
+    deallocate(z_out, zw_out)
   end subroutine outputwriter_open_file
 
   !========================
@@ -289,35 +317,41 @@ contains
 
 
     ! Data at layers' centres
-    start2d = [tidx, 1]
-    count2d = [1, int(this%N, kind=4)]
-    
-    do ivar = 1, this%n_centre  
-      ! Flip from bottom-surface to surface-bottom
-      call flip_centers_b2s_to_s2b(centre_data(:, ivar), this%center_row)      
+    if (this%n_centre > 0) then
+      start2d = [tidx, 1]
+      count2d = [1, int(this%N, kind=4)]
+      
+      do ivar = 1, this%n_centre  
+        ! Flip from bottom-surface to surface-bottom
+        call flip_centers_b2s_to_s2b(centre_data(:, ivar), this%center_row)      
 
-      call nc_write_real(this%db, this%centre_varids(ivar)%name, start=start2d, count=count2d, &
-                        data_array=reshape(this%center_row, [1, int(this%N,kind=4)]))
-    end do
+        call nc_write_real(this%db, this%centre_varids(ivar)%name, start=start2d, count=count2d, &
+                          data_array=reshape(this%center_row, [1, int(this%N,kind=4)]))
+      end do
+    end if 
     ! For data at the interfaces
-    start2d = [tidx, 1]
-    count2d = [1, int(this%Ni, kind=4)]
+    if (this%n_iface > 0) then
+      start2d = [tidx, 1]
+      count2d = [1, int(this%Ni, kind=4)]
 
-    do ivar = 1, this%n_iface
-        call flip_interfaces_b2s_to_s2b(iface_data(:, ivar), this%iface_row)       
+      do ivar = 1, this%n_iface
+          call flip_interfaces_b2s_to_s2b(iface_data(:, ivar), this%iface_row)       
 
-        call nc_write_real(this%db, this%iface_varids(ivar)%name, start=start2d, count=count2d, &
-                          data_array=reshape(this%iface_row, [1, int(this%Ni,kind=4)]))
-    end do
+          call nc_write_real(this%db, this%iface_varids(ivar)%name, start=start2d, count=count2d, &
+                            data_array=reshape(this%iface_row, [1, int(this%Ni,kind=4)]))
+      end do
+    end if
 
-    start1d = [tidx]
-    count1d = [1]
+    if (this%n_scalar > 0) then
+      start1d = [tidx]
+      count1d = [1]
 
-    do ivar = 1, this%n_scalar
-        call nc_write_real(this%db, this%scalar_varids(ivar)%name, &
-                           start=start1d, count=count1d,                 &
-                           data_array=[scalar_data(ivar)])
-    end do    
+      do ivar = 1, this%n_scalar
+          call nc_write_real(this%db, this%scalar_varids(ivar)%name, &
+                            start=start1d, count=count1d,                 &
+                            data_array=[scalar_data(ivar)])
+      end do 
+    end if   
   end subroutine outputwriter_append_record
 
   !========================
