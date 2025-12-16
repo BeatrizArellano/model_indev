@@ -4,14 +4,14 @@ module grids
 
   implicit none
   private
-  public :: VerticalGrid, build_water_grid, build_sediment_grid, write_vertical_grid
+  public :: VerticalGrid, build_water_grid, build_sediment_grid, build_full_grid, write_vertical_grid
 
   type, public :: VerticalGrid
-    integer               :: nz = 0             ! number of layers (bottom=1 … surface=nz)
+    integer               :: nz = 0             ! number of layers (bottom=1 ... surface=nz)
     real(rk)              :: depth  = 0.0_rk    ! local water depth [m], positive
-    real(rk), allocatable :: z(:)               ! layer centres [m], positive (1=bottom … nz=top)
+    real(rk), allocatable :: z(:)               ! layer centres [m], positive (1=bottom ... nz=top)
     real(rk), allocatable :: dz(:)              ! layer thickness [m], positive
-    real(rk), allocatable :: z_w(:)             ! layer interfaces [m], 0=bottom … nz=surface
+    real(rk), allocatable :: z_w(:)             ! layer interfaces [m], 0=bottom ... nz=surface
   end type
 
   ! Defaults for the water column
@@ -240,28 +240,129 @@ contains
     end subroutine build_sediment_grid
 
 
-    subroutine write_vertical_grid(grid, filename, ierr)
-        type(VerticalGrid), intent(in)  :: grid
-        character(*),       intent(in)  :: filename
-        integer,  optional, intent(out) :: ierr
+    !------------------------------
+    ! Build full (sediment + water) grid on one continuous depth axis
+    !
+    !   surface = 0
+    !   water bottom = wgrid%depth
+    !   sediment bottom = wgrid%depth + sgrid%depth
+    !
+    ! Result:
+    !   full%dz(1:nsed)      = sediment dz (bottom-first)
+    !   full%dz(nsed+1:end)  = water dz    (bottom-first)
+    !------------------------------
+    subroutine build_full_grid(wgrid, sgrid, full, ierr)
+        type(VerticalGrid), intent(in)  :: wgrid ! water grid
+        type(VerticalGrid), intent(in)  :: sgrid ! sediment grid
+        type(VerticalGrid), intent(out) :: full  ! full grid
+        integer, optional,  intent(out) :: ierr
 
-        integer :: u, i
+        integer :: nsed, nwat, nz, i
+        real(rk) :: depth_total
+
         if (present(ierr)) ierr = 0
 
-        if (grid%nz <= 0 .or. .not. allocated(grid%z) .or. .not. allocated(grid%z_w)) then
+        if (wgrid%nz <= 0 .or. .not. allocated(wgrid%dz)) then
+            if (present(ierr)) then; ierr = 1; return
+            else; stop 'build_full_grid: water grid not initialized'
+            end if
+        end if
+
+        if (sgrid%nz <= 0 .or. .not. allocated(sgrid%dz)) then
+            if (present(ierr)) then; ierr = 2; return
+            else; stop 'build_full_grid: sediment grid not initialized'
+            end if
+        end if
+
+        nsed = sgrid%nz
+        nwat = wgrid%nz
+        nz   = nsed + nwat
+
+        call allocate_grid(full, nz)
+
+        depth_total = wgrid%depth + sgrid%depth
+        full%depth  = depth_total
+
+        ! Stack dz bottom-first: deepest sediments first, then water
+        do i = 1, nsed
+            full%dz(i) = sgrid%dz(i)
+        end do
+        do i = 1, nwat
+            full%dz(nsed + i) = wgrid%dz(i)
+        end do
+
+        call calculate_layer_depths(full)
+    end subroutine build_full_grid
+
+
+    subroutine write_vertical_grid(grid, filename, n_sed, ierr)
+        type(VerticalGrid), intent(in)  :: grid
+        character(*),       intent(in)  :: filename
+        integer,  optional, intent(in)  :: n_sed
+        integer,  optional, intent(out) :: ierr
+
+        integer :: u, i, ns
+        character(len=8) :: domain
+
+        if (present(ierr)) ierr = 0
+
+        ! Basic checks
+        if (grid%nz <= 0 .or. .not. allocated(grid%z) .or. .not. allocated(grid%dz) .or. .not. allocated(grid%z_w)) then
             if (present(ierr)) then
-                ierr = 1; return
+                ierr = 1
+                return
             else
                 stop 'write_vertical_grid: grid not initialized'
+            end if
+        end if
+        if (lbound(grid%z_w,1) /= 0 .or. ubound(grid%z_w,1) /= grid%nz) then
+            if (present(ierr)) then
+                ierr = 2
+                return
+            else
+                stop 'write_vertical_grid: z_w must be indexed 0:nz'
+            end if
+        end if
+
+        ns = 0
+        if (present(n_sed)) then
+            ns = n_sed
+            if (ns < 0 .or. ns > grid%nz) then
+                if (present(ierr)) then
+                    ierr = 3
+                    return
+                else
+                    stop 'write_vertical_grid: invalid n_sed'
+                end if
             end if
         end if
 
         open(newunit=u, file=trim(filename), status='replace', action='write', form='formatted')
 
-        write(u,'(A)') 'layer  depth_center_m  thickness_m  interface_top_m  interface_bottom_m'
-        do i = grid%nz, 1,-1
-            write(u,'(I6,1X,F12.6,1X,F12.6,1X,F12.6,1X,F12.6)') &
-                i, grid%z(i), grid%dz(i), grid%z_w(i), grid%z_w(i-1)
+        write(u,'(A)') '# Vertical grid'
+        write(u,'(A)') '# depth [m] positive downward; layer 1 = bottom, layer nz = surface'
+        if (present(n_sed)) then
+            write(u,'(A,I0)') '# Number of sediment layers: ', ns
+        end if
+        write(u,'(A)') '#'
+        write(u,'(A)') 'layer  domain    z_center_m   dz_m    z_w_top_m  z_w_bottom_m'
+
+        ! Print from surface to bottom for readability (top layer first)
+        do i = grid%nz, 1, -1
+            if (present(n_sed)) then
+                if (i <= ns) then
+                    domain = 'sediment'
+                else
+                    domain = 'water'
+                end if
+            else
+                domain = 'water'
+            end if
+
+            ! z_w(i) is the "top" interface of layer i (shallower),
+            ! z_w(i-1) is the "bottom" interface (deeper).
+            write(u,'(I6,2X,A8,2X,F10.4,2X,F10.4,2X,F10.4,2X,F10.4)') &
+            i, domain, grid%z(i), grid%dz(i), grid%z_w(i) , grid%z_w(i-1)
         end do
 
         close(u)
@@ -302,7 +403,6 @@ contains
     subroutine calculate_layer_depths(g)
         type(VerticalGrid), intent(inout) :: g
         integer :: i
-        real(rk) :: tol
 
         if (g%nz <= 0) return
 
@@ -315,15 +415,11 @@ contains
             g%z(i)   = 0.5_rk * (g%z_w(i-1) + g%z_w(i))  ! centre depth
         end do
 
-        ! Tolerance for matching the surface at 0 m
-        tol = max(1.0e-12_rk, 1.0e-9_rk * g%depth)
-
-        ! Adjust the top cell so the surface is exactly at 0
-        if (abs(g%z_w(g%nz)) > tol) then
-            g%z_w(g%nz) = 0._rk
-            g%dz(g%nz)  = g%z_w(g%nz-1) - g%z_w(g%nz)
-            g%z(g%nz)   = 0.5_rk * (g%z_w(g%nz-1) + g%z_w(g%nz))
-        end if
+        ! Adjust the top cell so the surface is exactly at 0m
+        g%z_w(g%nz) = 0.0_rk
+        g%dz(g%nz)  = g%z_w(g%nz-1) - g%z_w(g%nz)
+        g%z(g%nz)   = 0.5_rk * (g%z_w(g%nz-1) + g%z_w(g%nz))
+        
     end subroutine calculate_layer_depths
 
 

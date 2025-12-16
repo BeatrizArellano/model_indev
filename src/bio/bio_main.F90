@@ -5,7 +5,7 @@ module bio_main
     use geo_utils,           only: LocationInfo
     use physics_types,       only: PhysicsState
     use forcing_manager,     only: ForcingSnapshot
-    use grids,               only: VerticalGrid   
+    use grids,               only: VerticalGrid, build_sediment_grid, build_full_grid, write_vertical_grid
     use light,               only: compute_SW_profile, compute_PAR_profile
     use numerical_stability, only: compute_bio_substeps
     use pressure,            only: compute_pressure 
@@ -42,11 +42,35 @@ contains
 
         write(*,'(A)') 'Initialising biogeochemistry via FABM...'
 
-        BE%grid     = grid   ! Full grid
-        dt_main     = real(timestep, rk)
-        nz          = BE%grid%nz              ! Number of vertical layers 
-
         call read_bio_parameters(cfg,BE%params)
+
+        dt_main     = real(timestep, rk)
+        BE%wat_grid = grid               ! Water grid
+        BE%nwat     = BE%wat_grid%nz
+
+        if (BE%params%sediments_enabled) then
+            ! Build sediment grid and full column grid
+            call build_sediment_grid(cfg,BE%sed_grid)
+            call build_full_grid(BE%wat_grid, BE%sed_grid, BE%grid)
+            call write_vertical_grid(BE%grid, 'Vertical_grid.dat', n_sed=BE%sed_grid%nz)
+            ! Number of sediment/water layers and useful indices
+            BE%nsed = BE%sed_grid%nz
+            BE%k_sed_btm = 1
+            BE%k_sed_sfc = BE%nsed
+            BE%k_wat_btm = BE%nsed + 1
+            BE%k_wat_sfc = BE%nsed + BE%nwat
+        else 
+            BE%grid = BE%wat_grid           ! The full grid is the water grid
+            BE%nsed = 0
+            BE%k_sed_btm = 0
+            BE%k_sed_sfc = 0
+            BE%k_wat_btm = 1
+            BE%k_wat_sfc = BE%nwat
+
+        end if
+        nz  = BE%grid%nz              ! Number of vertical layers in the full grid (water-only or water+sediments if it's the case)
+! Change
+!BE%grid     = grid   ! Full grid is water grid for now      
 
         ! Initialize (reads FABM configuration from fabm.yaml)
         ! After this the number of biogeochemical variables is fixed.
@@ -55,6 +79,7 @@ contains
 
         ! Provide extents of the spatial domain (number of layers nz for a 1D column)
         call BE%model%set_domain(nz, seconds_per_time_unit=dt_main)
+
 
         ! ---- Interior state variables ---------------
         nint = size(BE%model%interior_state_variables)
@@ -83,7 +108,6 @@ contains
         allocate(BE%velocity(nz,nint))                            ! Velocities
         allocate(BE%vel_faces(0:nz,nint))                         ! Velocities at interfaces
         allocate(BE%flux_sf(nint));    allocate(BE%flux_bt(nint)) ! Fluxes at the surface and bottom of interior variables 
-        allocate(BE%BS%vert_diff(0:nz))                           ! Vertical diffusivities
 
         ! --- Bottom-only state variables ---
         nbtm = size(BE%model%bottom_state_variables)
@@ -274,6 +298,13 @@ contains
         BE%need_stressb = BE%model%is_variable_used(BE%id_stressb)
         BE%need_co2     = BE%model%is_variable_used(BE%id_co2) .or. BE%model%variable_needs_values(BE%id_co2)
 
+        if (BE%need_pres) BE%need_rho = .true.    ! if pressure is needed, then we need density too
+        
+        ! Allocating environmental arrays for the full vertical column
+        if (BE%need_temp) allocate(BE%BS%temp(nz))
+        if (BE%need_salt) allocate(BE%BS%sal(nz))
+        if (BE%need_rho)  allocate(BE%BS%rho(nz))
+        allocate(BE%BS%vert_diff(0:nz))
 
         if (BE%need_pres) then
             if (.not. allocated(BE%BS%pres)) allocate(BE%BS%pres(nz))
@@ -289,12 +320,25 @@ contains
             stop 1
         end if
 
+        ! Point FABM to environmental data  
+        if (BE%need_temp) call BE%model%link_interior_data(BE%id_temp, BE%BS%temp)
+        if (BE%need_salt) call BE%model%link_interior_data(BE%id_salt, BE%BS%sal)
+        if (BE%need_rho)  call BE%model%link_interior_data(BE%id_rho,  BE%BS%rho)
+        if (BE%need_pres) call BE%model%link_interior_data(BE%id_pres, BE%BS%pres)
+        if (BE%need_swr ) call BE%model%link_interior_data(BE%id_swr,  BE%BS%swr)
+        if (BE%need_par ) call BE%model%link_interior_data(BE%id_par,  BE%BS%par)
+
+        call BE%model%link_horizontal_data(BE%id_windspd, BE%BS%wind_spd)
+        call BE%model%link_horizontal_data(BE%id_slp,     BE%BS%slp)
+        call BE%model%link_horizontal_data(BE%id_swr_sfc, BE%BS%short_rad)
+        call BE%model%link_horizontal_data(BE%id_co2,     BE%BS%co2_air)
+        call BE%model%link_horizontal_data(BE%id_par_sfc, BE%BS%par_sfc)
+        if (BE%need_stressb) call BE%model%link_horizontal_data(BE%id_stressb, BE%BS%stressb)
+
         ! Check other potential variables needed -> Implement a way to provide those variables. 
         ! Loop over a section within biogeochemistry in the yaml file to load those variables. 
 
-    !!! Change when sediments are integrated   
-        ! Point FABM to environmental data    
-        call link_environment_data(PS, FS, BE)      
+        call update_environment_data(PS, FS, BE)
 
         ! Complete initialization and check whether FABM has all dependencies fulfilled
         ! (i.e., whether all required calls to model%link_*_data have been made)
@@ -379,7 +423,7 @@ contains
         !---------------------------------------------
         ! Update FABM with environment data
         !--------------------------------------------
-        call link_environment_data(PS, FS, BE)
+        call update_environment_data(PS, FS, BE)
 
         ! Repair state, if needed, to let FABM restore all state variables within their registered bounds.
         call check_and_repair_state(BE)
@@ -415,9 +459,9 @@ contains
             end do
         end if    
 
-        !------------------------------------------------
+        !------------------------------------------------------
         ! Let FABM compute any remaining outputs (diagnostics) 
-        !------------------------------------------------
+        !------------------------------------------------------
         call BE%model%finalize_outputs()
 
         call update_bio_diagnostics(BE)        
@@ -454,7 +498,7 @@ contains
                 end do
             end if   
             
-            call BE%model%link_all_interior_state_data(BE%BS%interior_state)
+            !call BE%model%link_all_interior_state_data(BE%BS%interior_state)
 
             !-----------------------------------------------------------------------------
             ! Repir state for interior tracers after vertical redistribution of tracers
@@ -649,50 +693,84 @@ contains
 
     !============== INTERNAL HELPERS ===============================
 
-    ! Provides environment data to FABM
-    subroutine link_environment_data(PS, FS, BE)
-        type(PhysicsState),       intent(in) :: PS
-        type(ForcingSnapshot),    intent(in) :: FS
+    ! Communicates environmental data to FABM
+    subroutine update_environment_data(PS, FS, BE)
+        type(PhysicsState),    intent(in)    :: PS
+        type(ForcingSnapshot), intent(in)    :: FS
         type(BioEnv),          intent(inout) :: BE
- !! When sediments plugged, allocate first with the size of the full grid       
-        BE%BS%temp = PS%temp  !Later decide what to do with the sediment layers
-        BE%BS%sal  = PS%sal
-        BE%BS%rho  = PS%rho
-        BE%BS%vert_diff = PS%Kz * 0.05_rk !+ mol_diff  ! Adding molecular diffusivity
+
+        integer :: nz, nwat, nsed
+        integer :: kwb, kws
+        real(rk) :: Tbot, Sbot, Rhobot, Pbot
+
+        nz   = BE%grid%nz
+        nsed = BE%nsed
+        nwat = BE%nwat
+
+        kwb  = BE%k_wat_btm   ! = nsed + 1 when sediments are enabled
+        kws  = BE%k_wat_sfc
+
+        ! ---- Fill water part from physics
+        if (BE%need_temp) BE%BS%temp(kwb:kws) = PS%temp(1:nwat)
+        if (BE%need_salt) BE%BS%sal (kwb:kws) = PS%sal(1:nwat)
+        if (BE%need_rho)  BE%BS%rho (kwb:kws) = PS%rho(1:nwat)
+
+        ! ---- Sediments: repeating deepest water value
+        if (BE%params%sediments_enabled .and. nsed > 0) then
+            if (BE%need_temp) then
+                Tbot = BE%BS%temp(kwb)
+                BE%BS%temp(1:nsed) = Tbot
+            end if
+            if (BE%need_salt) then
+                Sbot = BE%BS%sal(kwb)
+                BE%BS%sal(1:nsed) = Sbot
+            end if
+            if (BE%need_rho) then
+                Rhobot = BE%BS%rho(kwb)
+                BE%BS%rho(1:nsed) = Rhobot
+            end if
+        end if
+
+        ! ---- Vertical diffusivity at layer interfaces
+        if (BE%params%sediments_enabled .and. nsed > 0) then
+! Change when we retrieve diffusivities
+            BE%BS%vert_diff(0:nsed)      = mol_diff                    ! sediment interfaces
+            BE%BS%vert_diff(nsed:nz)     = PS%Kz(0:nwat) + mol_diff    ! Vertical eddy diffusivity
+        else
+            BE%BS%vert_diff(0:nz)        = PS%Kz(0:nwat) + mol_diff
+        end if
+
+        ! ---- Surface forcing scalars
         BE%BS%short_rad = FS%short_rad
         BE%BS%wind_spd  = PS%wind_speed
-        BE%BS%slp       = FS%slp * 100.0_rk ! Converting from hPa to Pa
+        BE%BS%slp       = FS%slp * 100.0_rk   ! Converting from hPa to Pa
         BE%BS%co2_air   = FS%co2_air
         BE%BS%stressb   = PS%stressb
-        BE%BS%par_sfc   = BE%BS%short_rad * 0.45_rk ! Multiply instead by par_fraction as a parameter
+! Change when we have a parameter for par_fraction
+        BE%BS%par_sfc   = BE%BS%short_rad * 0.45_rk
 
-        ! Passing all these variables even if they are not needed as the information is already available
-        call BE%model%link_interior_data(BE%id_temp, BE%BS%temp)
-        call BE%model%link_interior_data(BE%id_salt, BE%BS%sal)
-        call BE%model%link_interior_data(BE%id_rho, BE%BS%rho)
+        ! ---- Pressure: compute on water only, then keep constant in sediments
         if (BE%need_pres) then
-            call compute_pressure(BE%grid%dz, BE%BS%rho, BE%BS%pres)
-            call BE%model%link_interior_data(BE%id_pres, BE%BS%pres)
+            ! compute water-only pressure into the water domain
+            call compute_pressure(BE%wat_grid%dz, BE%BS%rho(kwb:kws), BE%BS%pres(kwb:kws))
+            if (BE%params%sediments_enabled) then
+                Pbot = BE%BS%pres(kwb)
+                BE%BS%pres(1:nsed) = Pbot   ! Copy bottom-water pressure in sediment layers
+            end if
         end if
-        ! Profile of shortwave radiation
-        if(BE%need_swr) then
-            call compute_SW_profile(BE%grid%dz, BE%BS%short_rad, BE%BS%swr)  ! CORRECT when sediments added
-            call BE%model%link_interior_data(BE%id_swr, BE%BS%swr)
-        end if
-        ! PAR Profile
-        if(BE%need_par) then
-            call compute_PAR_profile(BE%grid%dz, BE%BS%short_rad, BE%BS%par)   ! CORRECT when sediments are added
-            call BE%model%link_interior_data(BE%id_par, BE%BS%par)
-        end if
-        ! Linking surface data
-        call  BE%model%link_horizontal_data(BE%id_windspd, BE%BS%wind_spd)
-        call  BE%model%link_horizontal_data(BE%id_slp, BE%BS%slp)
-        call  BE%model%link_horizontal_data(BE%id_swr_sfc, BE%BS%short_rad)
-        call  BE%model%link_horizontal_data(BE%id_co2, BE%BS%co2_air)
-        call  BE%model%link_horizontal_data(BE%id_par_sfc, BE%BS%par_sfc)
-        if(BE%need_stressb) call  BE%model%link_horizontal_data(BE%id_stressb, BE%BS%stressb)
 
-    end subroutine link_environment_data 
+        ! ---- SWR/PAR: compute in water, zero in sediments
+        if (BE%need_swr) then
+            call compute_SW_profile(BE%wat_grid%dz, BE%BS%short_rad, BE%BS%swr(kwb:kws))
+            if (BE%params%sediments_enabled) BE%BS%swr(1:nsed) = 0.0_rk
+        end if
+
+        if (BE%need_par) then
+            call compute_PAR_profile(BE%wat_grid%dz, BE%BS%short_rad, BE%BS%par(kwb:kws))
+            if (BE%params%sediments_enabled) BE%BS%par(1:nsed) = 0.0_rk
+        end if
+    end subroutine update_environment_data
+
 
     subroutine check_and_repair_state(BE)
         type(BioEnv), intent(inout) :: BE

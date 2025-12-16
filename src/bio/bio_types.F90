@@ -46,12 +46,19 @@ module bio_types
   ! An envelope for the Biogeochemistry Environment in one column
   type, public :: BioEnv
     class (type_fabm_model), pointer :: model => null()        ! FABM model instance
-    type(VerticalGrid)     :: grid                             ! full column grid 
-    type(VerticalGrid)     :: wat_grid                         ! water column grid 
-    type(VerticalGrid)     :: sed_grid                         ! sediments grid 
+    !----------- State and parameters
     type(BioState)         :: BS                               ! State of tracers
-    type(BioParams)        :: params                           ! per-column biogeochemical params (or shared elsewhere)
-    ! FABM environment variable ids
+    type(BioParams)        :: params                           ! Biogeochemical configuration parameters
+    ! ---------- Grids
+    type(VerticalGrid)     :: grid                             ! full column grid 
+    type(VerticalGrid)     :: wat_grid                         ! water-column grid 
+    type(VerticalGrid)     :: sed_grid                         ! sediments grid 
+    integer :: nsed = 0                                        ! Number of layers in sediments
+    integer :: nwat = 0                                        ! Number of layers in water
+    integer :: k_sed_btm = 0, k_sed_sfc = 0                    ! Bottom and surface Indices for sediments
+    integer :: k_wat_btm = 0, k_wat_sfc = 0                    ! Bottom and surface Indices for water
+
+    !------------ FABM environment variable ids
     type (type_fabm_interior_variable_id)   :: id_temp, id_salt, id_rho, id_swr, id_par, id_pres
     type (type_fabm_horizontal_variable_id) :: id_windspd, id_par_sfc, id_slp, id_cloud, id_stressb, id_swr_sfc, id_co2
     type (type_fabm_scalar_variable_id)     :: id_yearday
