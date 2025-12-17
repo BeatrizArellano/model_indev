@@ -13,7 +13,7 @@ module bio_params
   ! ----------------- Default values for parameters ----------------------------------------------------------
   real(rk), parameter :: def_frac_max    = 0.1_rk      ! Maximum fractional change allowed per main timestep per tracer
   real(rk), parameter :: def_min_dt      = 10.0_rk     ! Minimum time-step in the inner loop
-  real(rk), parameter :: def_cnpar       = 0.5         ! Degree of Implicitness when solving diffusive mixing [0-1]
+  real(rk), parameter :: def_cnpar       = 0.5_rk      ! Degree of Implicitness when solving diffusive mixing [0-1]
   logical,  parameter :: def_repair      = .false.     ! Indicates FABM whether to repair the state of the variables
   logical,  parameter :: def_conserv     = .false.     ! Retrieve conserved quantities from FABM and output the column-integrated totals
   logical,  parameter :: def_sed_enabled = .false.     ! Sediments enabled

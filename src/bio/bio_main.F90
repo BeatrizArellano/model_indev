@@ -56,9 +56,9 @@ contains
             ! Number of sediment/water layers and useful indices
             BE%nsed = BE%sed_grid%nz
             BE%k_sed_btm = 1
-            BE%k_sed_sfc = BE%nsed
-            BE%k_wat_btm = BE%nsed + 1
-            BE%k_wat_sfc = BE%nsed + BE%nwat
+            BE%k_sed_sfc = BE%nsed             ! Layer of sediments at Sediment-water interface
+            BE%k_wat_btm = BE%nsed + 1         ! Index for deepest water layer
+            BE%k_wat_sfc = BE%nsed + BE%nwat   
         else 
             BE%grid = BE%wat_grid           ! The full grid is the water grid
             BE%nsed = 0
@@ -68,9 +68,7 @@ contains
             BE%k_wat_sfc = BE%nwat
 
         end if
-        nz  = BE%grid%nz              ! Number of vertical layers in the full grid (water-only or water+sediments if it's the case)
-! Change
-!BE%grid     = grid   ! Full grid is water grid for now      
+        nz  = BE%grid%nz              ! Number of vertical layers in the full grid (water-only or water+sediments if it's the case)     
 
         ! Initialize (reads FABM configuration from fabm.yaml)
         ! After this the number of biogeochemical variables is fixed.
@@ -308,17 +306,39 @@ contains
 
         if (BE%need_pres) then
             if (.not. allocated(BE%BS%pres)) allocate(BE%BS%pres(nz))
+            call register_variable(BE%env_int_vars, name='env_pressure', &
+                                   long_name='Pressure', units='Pa',   &
+                                   vert_coord='centre', n_space_dims=1, data_1d=BE%BS%pres)
         end if
         if (BE%need_par .and. .not. allocated(BE%BS%par)) then
             allocate(BE%BS%par(nz))
+            call register_variable(BE%env_int_vars,                                &
+                                    name='env_par',                                                     &
+                                    long_name='Downwelling Photosynthetic Active Radiation',         &
+                                    units='W m-2',                                                  &
+                                    vert_coord='centre', n_space_dims=1,                            &
+                                    data_1d=BE%BS%par)
         end if
         if (BE%need_swr .and. .not. allocated(BE%BS%swr)) then
             allocate(BE%BS%swr(nz))
+            call register_variable(BE%env_int_vars,                    &
+                                    name='env_swr',                                         &
+                                    long_name='Downwelling shortwave flux', &
+                                    units='W m-2',                                          &
+                                    vert_coord='centre', n_space_dims=1,                    &
+                                    data_1d=BE%BS%swr)
         end if
         if (BE%need_cloud) then
             write(*,*) 'Access to cloud cover data is not already implemented'
             stop 1
-        end if
+        end if       
+
+! DEBUG block
+!if (BE%need_temp) call register_variable(BE%env_int_vars, name='env_temp',     long_name='Temperature provided to FABM', units='degC', vert_coord='centre', n_space_dims=1, data_1d=BE%BS%temp)
+!if (BE%need_salt) call register_variable(BE%env_int_vars, name='env_sal',      long_name='Practical salinity provided to FABM', units='1e-3', vert_coord='centre', n_space_dims=1, data_1d=BE%BS%sal)
+!if (BE%need_rho ) call register_variable(BE%env_int_vars, name='env_rho',      long_name='Density provided to FABM', units='kg m-3', vert_coord='centre', n_space_dims=1, data_1d=BE%BS%rho)
+
+        if (allocated(BE%env_int_vars)) call output_all_variables(BE%env_int_vars)
 
         ! Point FABM to environmental data  
         if (BE%need_temp) call BE%model%link_interior_data(BE%id_temp, BE%BS%temp)
@@ -355,6 +375,9 @@ contains
             write(*,*) "No variables found in biogeochemistry, disable biogeochemistry or provide a valid configuration of modules."
             stop 1
         end if
+
+        ! Allocate arrays for variable metadata (if not allocated)
+        call allocate_metadata_arrays(BE)
 
         ! Tridiagonal workspace
         call init_tridiag(BE%trid, nz)
@@ -820,4 +843,23 @@ contains
             end do
         end if
     end subroutine update_bio_diagnostics
+
+    ! Allocate arrays for Variables Metadata if not allocated 
+    ! Ensure optional arrays are at least allocated with size 0 (important for output)
+    subroutine allocate_metadata_arrays(BE)
+        type(BioEnv), intent(inout) :: BE
+
+        if (.not. allocated(BE%int_vars))        allocate(BE%int_vars(0))
+        if (.not. allocated(BE%btm_vars))        allocate(BE%btm_vars(0))
+        if (.not. allocated(BE%sfc_vars))        allocate(BE%sfc_vars(0))
+        if (.not. allocated(BE%diag_int_vars))   allocate(BE%diag_int_vars(0))
+        if (.not. allocated(BE%diag_hz_vars))    allocate(BE%diag_hz_vars(0))
+        if (.not. allocated(BE%conserved_vars))  allocate(BE%conserved_vars(0))
+        ! New optional groups
+
+        if (.not. allocated(BE%env_int_vars))    allocate(BE%env_int_vars(0))
+    end subroutine allocate_metadata_arrays
+
+
+
 end module bio_main

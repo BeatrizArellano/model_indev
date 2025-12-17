@@ -95,9 +95,10 @@ contains
             registry(n)%has_missing   = .false.
         end if
 
+        nullify(registry(n)%data_0d)
+        nullify(registry(n)%data_1d)
         ! Pointers to data
         registry(n)%data_1d  => data_1d
-        nullify(registry(n)%data_0d)
     end subroutine register_variable_1d
 
     subroutine register_variable_0d(registry, name, long_name, units, vert_coord, n_space_dims, data_0d, &
@@ -156,6 +157,7 @@ contains
             registry(n)%has_missing   = .false.
         end if
 
+        nullify(registry(n)%data_0d)
         registry(n)%data_0d  => data_0d
         nullify(registry(n)%data_1d)
     end subroutine register_variable_0d

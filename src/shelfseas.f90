@@ -106,14 +106,7 @@ contains
         end if
 
         if (is_bio_enabled) then
-            ! Ensure optional arrays are at least allocated with size 0
-            if (.not. allocated(BE%int_vars))  allocate(BE%int_vars(0))
-            if (.not. allocated(BE%diag_hz_vars))  allocate(BE%diag_hz_vars(0))
-            if (.not. allocated(BE%diag_int_vars)) allocate(BE%diag_int_vars(0))
-            if (.not. allocated(BE%sfc_vars))      allocate(BE%sfc_vars(0))
-            if (.not. allocated(BE%btm_vars))      allocate(BE%btm_vars(0))
-            if (.not. allocated(BE%conserved_vars)) allocate(BE%conserved_vars(0))
-            all_vars = [PE%phys_vars, BE%int_vars,BE%btm_vars, BE%sfc_vars, BE%diag_hz_vars, BE%diag_int_vars, BE%conserved_vars]            
+            all_vars = [PE%phys_vars, BE%env_int_vars, BE%int_vars, BE%btm_vars, BE%sfc_vars, BE%diag_hz_vars, BE%diag_int_vars, BE%conserved_vars]            
         else
             all_vars = [PE%phys_vars]
         end if

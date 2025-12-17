@@ -98,6 +98,8 @@ module bio_types
     real(rk), allocatable :: conserved_boundary(:)             ! (n_conserved): surface+bottom totals [per m2]
     real(rk), allocatable :: conserved_total(:)                ! column-integrated totals [per m2]
     type(VarMetadata), allocatable :: conserved_vars(:)        ! metadata for conserved totals
+    ! Other environment arrays
+    type(VarMetadata), allocatable :: env_int_vars(:)          ! 1D environment variables like par/swr/pres, etc.
     ! Working arrays
     real(rk), allocatable :: velocity(:,:)                     ! Vertical velocity due to residual movement (nz, n_interior)
     real(rk), allocatable :: vel_faces(:,:)                    ! Vertical velocity due to residual movement at interfaces (0:nz, n_interior)
