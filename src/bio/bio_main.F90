@@ -11,6 +11,7 @@ module bio_main
     use pressure,            only: compute_pressure 
     use precision_types,     only: rk, lk
     use read_config_yaml,    only: ConfigParams
+    use sediment,            only: init_sediment, clear_sediment_env
     use time_types,          only: DateTime
     use tridiagonal,         only: init_tridiag, clear_tridiag
     use vertical_transport,  only: apply_vertical_transport, velocity_at_interfaces
@@ -36,8 +37,9 @@ contains
         type(BioEnv),          intent(inout) :: BE
 
         integer  :: ivar, nz, nint, nsfc, nbtm
-        integer :: n_total_int_diag, n_save_int, j
-        integer :: n_total_hz_diag, n_save_hz
+        integer  :: n_total_int_diag, n_save_int, j
+        integer  :: n_total_hz_diag, n_save_hz
+        real(rk) :: diff_tracer
         real(rk) :: dt_main
 
         write(*,'(A)') 'Initialising biogeochemistry via FABM...'
@@ -50,25 +52,30 @@ contains
 
         if (BE%params%sediments_enabled) then
             ! Build sediment grid and full column grid
+            write(*,'(A)') '  Building the combined water-sediment grid...'
             call build_sediment_grid(cfg,BE%sed_grid)
             call build_full_grid(BE%wat_grid, BE%sed_grid, BE%grid)
             call write_vertical_grid(BE%grid, 'Vertical_grid.dat', n_sed=BE%sed_grid%nz)
+            write(*,'(A)') '  Computing profiles for sediment properties...'
+            call init_sediment(cfg,BE%sed_grid,BE%SED)
             ! Number of sediment/water layers and useful indices
             BE%nsed = BE%sed_grid%nz
             BE%k_sed_btm = 1
             BE%k_sed_sfc = BE%nsed             ! Layer of sediments at Sediment-water interface
             BE%k_wat_btm = BE%nsed + 1         ! Index for deepest water layer
             BE%k_wat_sfc = BE%nsed + BE%nwat   
+            if (BE%SED%is_init) then
+                write(*,'("  ✓ Sediments initialised successfully with ",I0," layers.")') BE%nsed
+            end if
         else 
-            BE%grid = BE%wat_grid           ! The full grid is the water grid
+            BE%grid = BE%wat_grid           ! The full grid corresponds to the water grid when sediments disabled
             BE%nsed = 0
             BE%k_sed_btm = 0
             BE%k_sed_sfc = 0
             BE%k_wat_btm = 1
             BE%k_wat_sfc = BE%nwat
-
         end if
-        nz  = BE%grid%nz              ! Number of vertical layers in the full grid (water-only or water+sediments if it's the case)     
+        nz  = BE%grid%nz                  ! Number of vertical layers in the full grid (water-only or water+sediments if it's the case)     
 
         ! Initialize (reads FABM configuration from fabm.yaml)
         ! After this the number of biogeochemical variables is fixed.
@@ -85,7 +92,8 @@ contains
         if (nint > 0) then
             ! Allocate the array for interior tracers concentrations
             if(allocated(BE%BS%interior_state)) deallocate(BE%BS%interior_state)
-            allocate(BE%BS%interior_state(nz, nint))            
+            allocate(BE%BS%interior_state(nz, nint))  
+            allocate(BE%tracer_info(nint))     ! Allocate array to store tracer properties (diffusivity, adsorption)       
             do ivar = 1, nint
                 ! Point FABM to the current concentration state for biogeochemical tracers
                 call BE%model%link_interior_state_data(ivar, BE%BS%interior_state(:,ivar))
@@ -97,6 +105,25 @@ contains
                                        maximum=BE%model%interior_state_variables(ivar)%maximum,                 &
                                        missing_value=BE%model%interior_state_variables(ivar)%missing_value,     &
                                        vert_coord='centre', n_space_dims=1, data_1d=BE%BS%interior_state(:,ivar))   
+
+                ! Retrieve useful properties (Important for sediments)
+                BE%tracer_info(ivar)%fabm_index = ivar    
+                ! Get diffusivity property: required to participate in sediments
+                diff_tracer = BE%model%interior_state_variables(ivar)%properties%get_real('diffusivity', default = 0._rk)
+                BE%tracer_info(ivar)%diffusivity = diff_tracer
+                ! If diffusivity is greater than 0, then it is a solute
+                if (diff_tracer > 0._rk) then
+                    BE%tracer_info(ivar)%is_solute      = .true.
+                    BE%tracer_info(ivar)%is_particulate = .false.
+                else
+                    ! Otherwise, the tracer is particulate matter
+                    BE%tracer_info(ivar)%is_solute      = .false.
+                    BE%tracer_info(ivar)%is_particulate = .true.  
+                end if
+                ! Adsorption coefficient
+                BE%tracer_info(ivar)%adsorption = BE%model%interior_state_variables(ivar)%properties%get_real('adsorption', default = 0._rk)   
+                ! Is transport disabled?
+                BE%tracer_info(ivar)%disable_transport = BE%model%interior_state_variables(ivar)%properties%get_logical('disable_transport', default=.false.)                   
             end do
             if (allocated(BE%int_vars)) call output_all_variables(BE%int_vars)
         end if
@@ -388,19 +415,19 @@ contains
         
         BE%is_init = .true.
         write(*,'("✓ Biogeochemistry initialised successfully with ",I0," state variables:")') BE%BS%n_total
-        write(*,'(" ",I0," interior, ",I0," surface and ",I0," bottom variables")') BE%BS%n_interior, BE%BS%n_surface, BE%BS%n_bottom
-        write(*,'(" ",I0," interior and ",I0," horizontal diagnostic variable(s).")') &
+        write(*,'("  ",I0," interior, ",I0," surface and ",I0," bottom variables")') BE%BS%n_interior, BE%BS%n_surface, BE%BS%n_bottom
+        write(*,'("  ",I0," interior and ",I0," horizontal diagnostic variable(s).")') &
         BE%n_diag_int, BE%n_diag_hz
         if (BE%params%output_conserved) then
             if (BE%n_conserved > 0) then
-                write(*,'(" ",I0," conserved quantity(ies) will be tracked as column-integrated totals.")') &
+                write(*,'("  ",I0," conserved quantity(ies) will be tracked as column-integrated totals.")') &
                     BE%n_conserved
             else
-                write(*,'(" FABM reports no conserved quantities for this configuration.")')
+                write(*,'("  FABM reports no conserved quantities for this configuration.")')
             end if
         else
             if (size(BE%model%conserved_quantities) > 0) then
-                write(*,'(" Conserved quantities are available (",I0,") but output is disabled (output_conserved_qt: no).")') &
+                write(*,'("  Conserved quantities are available (",I0,") but output is disabled (output_conserved_qt: no).")') &
                     size(BE%model%conserved_quantities)
             end if
         end if
@@ -597,6 +624,10 @@ contains
             nullify(BE%model)
         end if
 
+        if(BE%params%sediments_enabled) then
+            call clear_sediment_env(BE%SED)
+        end if
+
         ! Deallocate BioState arrays
         if (allocated(BE%BS%interior_state)) deallocate(BE%BS%interior_state)
         if (allocated(BE%BS%bottom_state))   deallocate(BE%BS%bottom_state)
@@ -709,6 +740,8 @@ contains
         BE%need_stressb = .false.
         BE%need_co2     = .false.
 
+        
+
         BE%is_init = .false.
     end subroutine end_bio_fabm
 
@@ -757,7 +790,7 @@ contains
         ! ---- Vertical diffusivity at layer interfaces
         if (BE%params%sediments_enabled .and. nsed > 0) then
 ! Change when we retrieve diffusivities
-            BE%BS%vert_diff(0:nsed)      = mol_diff                    ! sediment interfaces
+            BE%BS%vert_diff(0:nsed)      = 0.0_rk                    ! sediment interfaces
             BE%BS%vert_diff(nsed:nz)     = PS%Kz(0:nwat) + mol_diff    ! Vertical eddy diffusivity
         else
             BE%BS%vert_diff(0:nz)        = PS%Kz(0:nwat) + mol_diff

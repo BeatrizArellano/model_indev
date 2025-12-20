@@ -4,13 +4,13 @@ module bio_types
     use fabm,              only: type_fabm_model, type_fabm_interior_variable_id, &
                                    type_fabm_horizontal_variable_id, type_fabm_scalar_variable_id
     use tridiagonal,       only: TridiagCoeff
-    use bio_params,        only: BioParams
+    use bio_params,        only: BioParams, SedParams
     use variable_registry, only: VarMetadata
     
 
   implicit none
 
-  public :: BioState, BioEnv
+  public :: BioState, BioEnv, SedimentEnv
 
   !======================
   ! Internal state
@@ -43,12 +43,54 @@ module bio_types
     real(rk) :: doy        = 0._rk
   end type BioState
 
+  type :: TracerProperties
+      integer  :: fabm_index      = -1          ! index in interior_state_variables
+      logical  :: is_solute       = .false.
+      logical  :: is_particulate  = .false.
+      logical  :: disable_transport = .false.
+      real(rk) :: diffusivity     = 0._rk       ! molecular Diffusivity (m2/s) for solutes
+      real(rk) :: adsorption      = 0._rk       ! Coefficient for adsorption on sediment grains
+      
+   end type TracerProperties
+
+
+  !======================
+  ! Sediment Environment
+  !======================
+  type, public :: SedimentEnv
+      logical :: is_init = .false.
+
+      ! A pointer to the sediment grid owned by BioEnv
+      type(VerticalGrid), pointer :: grid => null()
+
+      ! Parameters
+      ! IMPORTANT:  Internal sediment computations must use params_SI only.
+      ! params_user stores (only for reference) the parameters in units commonly reported in the literature.
+      type(SedParams) :: params_user       ! Sediment configuation parameters in commonly reported units (cm, yr)
+      type(SedParams) :: params_SI         ! Sediment configuation parameters in standard units (m and s)      
+
+      integer :: nz = 0
+      ! ---- Properties at layers' centres (1:nz)
+      real(rk), allocatable :: poro(:)     ! [-] porosity at centres
+      real(rk), allocatable :: bioirr(:)   ! [s-1] 
+
+      ! ---- Properties at layer interfaces (0:nz)
+      real(rk), allocatable :: poro_w(:)     ! [-] porosity at interfaces
+      real(rk), allocatable :: theta(:)      ! [-] Squared tortuosity at interfaces
+      real(rk), allocatable :: bioturb(:)    ! [m2/s] particulate diffusivity    
+      real(rk), allocatable :: bioirr_w(:)   ! [s-1] 
+      ! Working space
+    type(TridiagCoeff)     :: trid                             ! workspace for solving scalar diffusion
+  end type SedimentEnv  
+
   ! An envelope for the Biogeochemistry Environment in one column
   type, public :: BioEnv
     class (type_fabm_model), pointer :: model => null()        ! FABM model instance
     !----------- State and parameters
     type(BioState)         :: BS                               ! State of tracers
     type(BioParams)        :: params                           ! Biogeochemical configuration parameters
+    ! --- Sediment environment
+    type(SedimentEnv)      :: SED
     ! ---------- Grids
     type(VerticalGrid)     :: grid                             ! full column grid 
     type(VerticalGrid)     :: wat_grid                         ! water-column grid 
@@ -84,6 +126,7 @@ module bio_types
     integer,   allocatable :: diag_int_index(:)                ! FABM indices of interior diagnostics
     real(rk),  allocatable :: diag_int(:,:)                    ! Array for interior diagnostics(nz, n_diag_int)
     type(VarMetadata), allocatable :: diag_int_vars(:)         ! Metadata for interior diagnostic variables
+    type(TracerProperties), allocatable :: tracer_info(:)
     ! Horizontal diagnostics 
     integer :: n_diag_hz  = 0
     integer,   allocatable :: diag_hz_index(:)                 ! FABM indices of horizontal diagnostics
@@ -114,6 +157,5 @@ module bio_types
     logical :: valid_sfc = .true.
     logical :: valid_btm = .true.
   end type BioEnv
-
 
 end module bio_types
