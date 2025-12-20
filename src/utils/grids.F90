@@ -20,7 +20,7 @@ module grids
   integer,  parameter :: min_nz     = 3
 
   ! Sediment-grid defaults
-  real(rk), parameter :: sed_growth_factor = 2.0_rk     ! geometric growth
+  real(rk), parameter :: sed_growth_factor = 1.2_rk     ! geometric growth
   real(rk), parameter :: sed_min_dz        = 1.0e-4_rk  ! minimum allowed thickness for any sediment layer [m]
   real(rk), parameter :: sed_min_depth     = 3.0e-2_rk  ! Minimum depth for sediments [m] (3 cm)
   real(rk), parameter :: sed_default_dzmin = 1.0e-3_rk  ! default top layer [m]  (1 mm)
