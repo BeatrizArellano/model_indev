@@ -304,6 +304,7 @@ contains
         BE%id_cloud   = BE%model%get_horizontal_variable_id(fabm_standard_variables%cloud_area_fraction)
         BE%id_stressb = BE%model%get_horizontal_variable_id(fabm_standard_variables%bottom_stress)
         BE%id_co2     = BE%model%get_horizontal_variable_id(fabm_standard_variables%mole_fraction_of_carbon_dioxide_in_air)
+        BE%id_ice_af  = BE%model%get_horizontal_variable_id(fabm_standard_variables%ice_area_fraction)
         ! Scalar
         BE%id_yearday = BE%model%get_scalar_variable_id(fabm_standard_variables%number_of_days_since_start_of_the_year)
         call BE%model%link_scalar(BE%id_yearday, BE%BS%doy)
@@ -322,6 +323,7 @@ contains
         BE%need_cloud   = BE%model%is_variable_used(BE%id_cloud)
         BE%need_stressb = BE%model%is_variable_used(BE%id_stressb)
         BE%need_co2     = BE%model%is_variable_used(BE%id_co2) .or. BE%model%variable_needs_values(BE%id_co2)
+        BE%need_ice_af  = BE%model%is_variable_used(BE%id_ice_af) .or. BE%model%variable_needs_values(BE%id_ice_af)
 
         if (BE%need_pres) BE%need_rho = .true.    ! if pressure is needed, then we need density too
         
@@ -378,9 +380,10 @@ contains
         call BE%model%link_horizontal_data(BE%id_windspd, BE%BS%wind_spd)
         call BE%model%link_horizontal_data(BE%id_slp,     BE%BS%slp)
         call BE%model%link_horizontal_data(BE%id_swr_sfc, BE%BS%short_rad)
-        call BE%model%link_horizontal_data(BE%id_co2,     BE%BS%co2_air)
+        call BE%model%link_horizontal_data(BE%id_co2,     BE%BS%co2_air)        
         call BE%model%link_horizontal_data(BE%id_par_sfc, BE%BS%par_sfc)
         if (BE%need_stressb) call BE%model%link_horizontal_data(BE%id_stressb, BE%BS%stressb)
+        if (BE%need_ice_af)  call BE%model%link_horizontal_data(BE%id_ice_af,  BE%BS%ice_af)   ! Ice area fraction, for now it's a constant 0
 
         ! Check other potential variables needed -> Implement a way to provide those variables. 
         ! Loop over a section within biogeochemistry in the yaml file to load those variables. 
