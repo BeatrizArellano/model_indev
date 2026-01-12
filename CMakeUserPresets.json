@@ -9,7 +9,10 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "USE_OPENMP": "ON",
-        "USE_NETCDF": "ON"
+        "USE_NETCDF": "ON",
+
+        "FABM_EXTRA_DIR": "${sourceDir}/external/fabm-extra",
+        "FABM_EXTRA_MODULES": "medusa"
       }
     },
     {
@@ -19,7 +22,10 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
         "USE_OPENMP": "ON",
-        "USE_NETCDF": "ON"
+        "USE_NETCDF": "ON",
+
+        "FABM_EXTRA_DIR": "${sourceDir}/external/fabm-extra",
+        "FABM_EXTRA_MODULES": "medusa"
       }
     },
     {
@@ -30,7 +36,10 @@
         "CMAKE_BUILD_TYPE": "Debug",
         "HEAVY_DEBUG": "ON",
         "USE_OPENMP": "ON",
-        "USE_NETCDF": "ON"
+        "USE_NETCDF": "ON",
+
+        "FABM_EXTRA_DIR": "${sourceDir}/external/fabm-extra",
+        "FABM_EXTRA_MODULES": "medusa"
       }
     }
   ],

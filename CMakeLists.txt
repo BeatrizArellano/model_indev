@@ -80,7 +80,7 @@ endif()
 # FABM submodule + embedded YAML
 # ------------------------------------------------------------------------------
 
-set(FABM_BASE "${CMAKE_SOURCE_DIR}/external/fabm")
+set(FABM_BASE "${CMAKE_SOURCE_DIR}/external/fabm" CACHE PATH "Path to FABM source tree")
 
 if(NOT EXISTS "${FABM_BASE}/CMakeLists.txt")
   message(FATAL_ERROR
@@ -90,6 +90,57 @@ if(NOT EXISTS "${FABM_BASE}/CMakeLists.txt")
     "Or set FABM_BASE to a valid path: -DFABM_BASE=/path/to/fabm\n"
   )
 endif()
+
+# ------------------------------------------------------------------------------
+# Optional: extra FABM institutes (third-party biogeochemical modules)
+#   User parameters (from presets):
+#     -DFABM_EXTRA_DIR=/path/to/fabm-extra
+#     -DFABM_EXTRA_MODULES="medusa;myinst;..."
+#
+#   Translation for FABM (expected cache vars):
+#     FABM_EXTRA_INSTITUTES
+#     FABM_<INSTITUTE>_BASE
+# ------------------------------------------------------------------------------
+set(FABM_EXTRA_DIR "${CMAKE_SOURCE_DIR}/external/fabm-extra" CACHE PATH
+    "Base directory containing extra FABM institutes (each in a subfolder).")
+set(FABM_EXTRA_MODULES "" CACHE STRING
+    "Semicolon-separated list of extra FABM institutes to compile (e.g. medusa;myinst).")
+
+# Convert user list into FABM's expected variable name.
+# If empty, FABM will compile only its built-in institutes.
+if(FABM_EXTRA_MODULES)
+  # Normalize: accept commas too (optional convenience)
+  string(REPLACE "," ";" _fabm_extra_list "${FABM_EXTRA_MODULES}")
+  string(REPLACE " " "" _fabm_extra_list "${_fabm_extra_list}")
+  list(REMOVE_DUPLICATES _fabm_extra_list)
+
+  # FABM expects this variable name
+  set(FABM_EXTRA_INSTITUTES "${_fabm_extra_list}" CACHE STRING "" FORCE)
+
+  foreach(_inst IN LISTS _fabm_extra_list)
+    if(_inst STREQUAL "")
+      continue()
+    endif()
+
+    set(_inst_dir "${FABM_EXTRA_DIR}/${_inst}")
+    if(NOT EXISTS "${_inst_dir}/CMakeLists.txt")
+      message(FATAL_ERROR
+        "\nFABM_EXTRA_MODULES includes '${_inst}', but the directory does not exist:\n"
+        "  ${_inst_dir}\n"
+        "Check FABM_EXTRA_DIR in your preset, or remove '${_inst}' from FABM_EXTRA_MODULES.\n"
+      )
+    endif()
+
+    string(TOUPPER "${_inst}" _inst_uc)
+    set("FABM_${_inst_uc}_BASE" "${_inst_dir}" CACHE PATH "" FORCE)
+  endforeach()
+
+else()
+  # Explicitly empty: build FABM without extra institutes
+  set(FABM_EXTRA_INSTITUTES "" CACHE STRING "" FORCE)
+endif()
+
+
 
 set(FABM_USE_YAML ON CACHE BOOL "" FORCE)
 set(FABM_EMBED_YAFYAML ON CACHE BOOL "" FORCE)
@@ -168,4 +219,6 @@ endif()
 
 
 message(STATUS "ShelfModel configured. FABM at: ${FABM_BASE}")
+message(STATUS "FABM extra institutes: ${FABM_EXTRA_MODULES}")
+
 
