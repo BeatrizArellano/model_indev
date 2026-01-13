@@ -383,7 +383,10 @@ contains
         call BE%model%link_horizontal_data(BE%id_co2,     BE%BS%co2_air)        
         call BE%model%link_horizontal_data(BE%id_par_sfc, BE%BS%par_sfc)
         if (BE%need_stressb) call BE%model%link_horizontal_data(BE%id_stressb, BE%BS%stressb)
-        if (BE%need_ice_af)  call BE%model%link_horizontal_data(BE%id_ice_af,  BE%BS%ice_af)   ! Ice area fraction, for now it's a constant 0
+        if (BE%need_ice_af) then
+            write(*,*) "WARNING: Using constant value ice_area_fraction = 0.0 (ice-free assumption)."
+            call BE%model%link_horizontal_data(BE%id_ice_af,  BE%BS%ice_af)   ! Ice area fraction, for now it's a constant 0
+        end if
 
         ! Check other potential variables needed -> Implement a way to provide those variables. 
         ! Loop over a section within biogeochemistry in the yaml file to load those variables. 
