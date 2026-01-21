@@ -1,5 +1,6 @@
 module sediment    
-    use bio_types,         only: SedimentEnv
+    use bio_types,         only: SedimentEnv, BioEnv, DIFF_NONE, DIFF_O2CO2_AB, DIFF_ION_LINEAR, &
+                                 DIFF_ARRHENIUS, DIFF_WILKE_CHANG, DIFF_STOKES_EINSTEIN
     use bio_params,        only: SedParams, read_sed_parameters
     use grids,             only: VerticalGrid
     use precision_types,   only: rk
@@ -9,7 +10,7 @@ module sediment
     implicit none
     private
 
-    public :: init_sediment, clear_sediment_env
+    public :: init_sediment, clear_sediment_env, write_tracer_properties
 
 contains
 
@@ -134,8 +135,8 @@ contains
     !===================================================================
     !         Burial velocities for solids and pore water 
     !     under the assumption of steady-state compaction
-    !! Applies constant solid flux (1-phi)w and porewater flux phi*u relative to a
-    !! reference depth z_ref and burial velocity w_ref (Boudreau, 1997).
+    ! Applies constant solid flux (1-phi)w and porewater flux phi*u relative to a
+    ! reference depth z_ref and burial velocity w_ref (Boudreau, 1997).
     !==================================================================
     subroutine compute_burial_velocities(grid, poro_int, z_ref, w_ref, w_solid, u_pore)
         type(VerticalGrid), intent(in)  :: grid
@@ -279,6 +280,118 @@ contains
 
         close(u)
     end subroutine write_sediment_profiles
+
+    ! Writes a file with the tracer properties
+    subroutine write_tracer_properties(BE, filename) 
+        type(BioEnv),     intent(in) :: BE
+        character(len=*), intent(in) :: filename
+
+        integer :: iu, i, ntr
+        character(len=64) :: name
+        character(len=11) :: phase
+        character(len=24) :: dm
+
+        ! Use strings for NA / numeric columns to avoid needing NaN helpers.
+        character(len=11) :: s_ads
+        character(len=9)  :: sA, sB, sm0, sm1, sA0, sEa, sVb, sDref, sTref
+
+        if (.not. allocated(BE%tracer_info)) then
+            write(*,*) 'write_tracer_properties: tracer_info not allocated.'
+            return
+        end if
+
+        ntr = size(BE%tracer_info)
+        if (ntr <= 0) return
+
+        open(newunit=iu, file=trim(filename), status='replace', action='write', form='formatted')
+
+        write(iu,'(a)') '# idx name phase adsorp diff_method A B m0 m1 A0 Ea Vb Dref Tref'
+        write(iu,'(a)') '# NA = not applicable'
+        write(iu,'(a)') 'idx  name           phase        adsorp      diff_method            A        B        m0       m1       A0       Ea       Vb      Dref     Tref'
+        write(iu,'(a)') '---  -------------  -----------  ----------  --------------------  -------  -------  -------  -------  -------  -------  ------  -------  ------'
+
+        do i = 1, ntr
+            ! Name
+            name = 'unknown'
+            if (associated(BE%model)) then
+                if (size(BE%model%interior_state_variables) >= i) then
+                    name = trim(BE%model%interior_state_variables(i)%name)
+                end if
+            end if
+
+            ! Phase
+            if (BE%tracer_info(i)%is_solute) then
+                phase = 'solute'
+            else
+                phase = 'particulate'
+            end if
+
+            ! Adsorption (NA for particulates)
+            if (BE%tracer_info(i)%is_solute) then
+                write(s_ads,'(ES10.3)') BE%tracer_info(i)%adsorption
+            else
+                s_ads = 'NA'
+            end if
+
+            ! Diff method label
+            dm = diff_label(BE%tracer_info(i)%diff_method)
+
+            ! Default all params to NA
+            sA    = 'NA'; sB    = 'NA'
+            sm0   = 'NA'; sm1   = 'NA'
+            sA0   = 'NA'; sEa   = 'NA'
+            sVb   = 'NA'
+            sDref = 'NA'; sTref = 'NA'
+
+            ! Populate only the relevant parameter columns
+            select case (BE%tracer_info(i)%diff_method)
+            case (DIFF_O2CO2_AB)
+            write(sA,'(ES9.2)') BE%tracer_info(i)%A
+            write(sB,'(ES9.2)') BE%tracer_info(i)%B
+            case (DIFF_ION_LINEAR)
+            write(sm0,'(ES9.2)') BE%tracer_info(i)%m0
+            write(sm1,'(ES9.2)') BE%tracer_info(i)%m1
+            case (DIFF_ARRHENIUS)
+            write(sA0,'(ES9.2)') BE%tracer_info(i)%A0
+            write(sEa,'(ES9.2)') BE%tracer_info(i)%Ea
+            case (DIFF_WILKE_CHANG)
+            write(sVb,'(ES9.2)') BE%tracer_info(i)%Vb
+            case (DIFF_STOKES_EINSTEIN)
+            write(sDref,'(ES9.2)') BE%tracer_info(i)%Dref
+            write(sTref,'(ES9.2)') BE%tracer_info(i)%Tref
+            case default
+            ! DIFF_NONE or unknown -> leave as NA
+            end select
+
+            ! Write row
+            write(iu,'(i3,2x,a13,2x,a11,2x,a10,2x,a20,2x,a7,2x,a7,2x,a7,2x,a7,2x,a7,2x,a7,2x,a6,2x,a7,2x,a6)') &
+            BE%tracer_info(i)%fabm_index, trim(name), trim(phase), trim(s_ads), trim(dm), &
+            trim(sA), trim(sB), trim(sm0), trim(sm1), trim(sA0), trim(sEa), trim(sVb), trim(sDref), trim(sTref)
+
+        end do
+
+        close(iu)
+
+        contains
+
+        pure function diff_label(method) result(s)
+            integer, intent(in) :: method
+            character(len=24) :: s
+            select case (method)
+            case (DIFF_NONE);            s = 'DIFF_NONE(0)'
+            case (DIFF_O2CO2_AB);        write(s,'(a,i0,a)') 'DIFF_O2CO2_AB(', method, ')'
+            case (DIFF_ION_LINEAR);      write(s,'(a,i0,a)') 'DIFF_ION_LINEAR(', method, ')'
+            case (DIFF_ARRHENIUS);       write(s,'(a,i0,a)') 'DIFF_ARRHENIUS(', method, ')'
+            case (DIFF_WILKE_CHANG);     write(s,'(a,i0,a)') 'DIFF_WILKE_CHANG(', method, ')'
+            case (DIFF_STOKES_EINSTEIN); write(s,'(a,i0,a)') 'DIFF_STOKES_EINSTEIN(', method, ')'
+            case default;                write(s,'(a,i0,a)') 'DIFF_UNKNOWN(', method, ')'
+            end select
+        end function diff_label
+
+    end subroutine write_tracer_properties
+
+
+
 
 
     !! Clear sediment environment state and release memory.

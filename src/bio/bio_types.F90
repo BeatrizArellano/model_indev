@@ -10,6 +10,9 @@ module bio_types
 
   implicit none
 
+  integer, parameter, public :: DIFF_NONE=0, DIFF_O2CO2_AB=1, DIFF_ION_LINEAR=2, &
+                                DIFF_ARRHENIUS=3, DIFF_WILKE_CHANG=4, DIFF_STOKES_EINSTEIN=5
+
   public :: BioState, BioEnv, SedimentEnv
 
   !======================
@@ -44,14 +47,36 @@ module bio_types
     real(rk) :: doy        = 0._rk
   end type BioState
 
-  type :: TracerProperties
+  type, public :: TracerProperties
       integer  :: fabm_index      = -1          ! index in interior_state_variables
       logical  :: is_solute       = .false.
       logical  :: is_particulate  = .false.
       logical  :: disable_transport = .false.
-      real(rk) :: diffusivity     = 0._rk       ! molecular Diffusivity (m2/s) for solutes
+      ! Adsorption 
       real(rk) :: adsorption      = 0._rk       ! Coefficient for adsorption on sediment grains
-      
+
+      !--- Diffusivity properties retrieved from FABM
+      integer  :: diff_method = DIFF_NONE       ! Selects how molecular diffusivity is computed for solute tracers.
+      ! O2 / CO2 empirical formulation (Boudreau 1997, Eqs. 4.58–4.59)
+      real(rk) :: A = 0._rk                     ! 
+      real(rk) :: B = 0._rk                     ! Slope of the linear relationship
+      ! Linear regresions of the Infinite-Dilution Diffusion Coefficients Do for ions vs Temperature       
+      ! Coefficients m0, m1 are taken directly from Boudreau (1997) Tables 4.7 and 4.8. 
+      !-- Ions: D = m0 + m1*t
+      real(rk) :: m0 = 0._rk
+      real(rk) :: m1 = 0._rk      
+      !-- Arrhenius: D = A0 * exp(-Ea/(R*T)) (Eq. 4.60 in Boudreau,1997)
+      real(rk) :: A0 = 0._rk                   ! units 10-5 cm2 s-1   (Following the units in Boudreau Table 4.4)
+      real(rk) :: Ea = 0._rk                   ! kJ mol-1
+      ! Wilke–Chang (Wilke & Chang 1955; Hayduk & Laudie 1974 modification)
+      ! 4.72E-09 * TK / (mu * Vb^0.6)  (Eq. 4.57 in Boudreau)
+      ! Numerical prefactor and cm2->m2 conversion applied in compute routine.
+      real(rk) :: Vb = 0._rk                   ! molar volume at boiling point [cm3/mol] (typical)
+      ! Stokes–Einstein scaling from a reference value (Sref=0, Pref=1 atm):
+      ! D(T,S,P) = Dref * (TK/TrefK) * (mu(Tref,0,Patm) / mu(T,S,P))
+      real(rk) :: Dref = 0._rk                 ! Reference diffusivity [m^2 s^-1] measured in pure water (S=0) at atmospheric pressure
+      real(rk) :: Tref = 0._rk                 ! Reference temperature [°C]    
+      real(rk) :: Sref = 0._rk                 ! Reference salinity [PSU]     
    end type TracerProperties
 
 

@@ -1,17 +1,19 @@
 module bio_main
     use fabm
     use bio_params,          only: read_bio_parameters, mol_diff
-    use bio_types,           only: BioEnv
+    use bio_types,           only: BioEnv, DIFF_NONE, DIFF_O2CO2_AB, DIFF_ION_LINEAR, &
+                                   DIFF_ARRHENIUS, DIFF_WILKE_CHANG, DIFF_STOKES_EINSTEIN
     use geo_utils,           only: LocationInfo
     use physics_types,       only: PhysicsState
     use forcing_manager,     only: ForcingSnapshot
     use grids,               only: VerticalGrid, build_sediment_grid, build_full_grid, write_vertical_grid
     use light,               only: compute_SW_profile, compute_PAR_profile
+    use molecular_diffusion, only: molecular_diffusivity
     use numerical_stability, only: compute_bio_substeps
     use pressure,            only: compute_pressure 
     use precision_types,     only: rk, lk
     use read_config_yaml,    only: ConfigParams
-    use sediment,            only: init_sediment, clear_sediment_env
+    use sediment,            only: init_sediment, clear_sediment_env, write_tracer_properties
     use time_types,          only: DateTime
     use tridiagonal,         only: init_tridiag, clear_tridiag
     use vertical_transport,  only: apply_vertical_transport, velocity_at_interfaces
@@ -106,24 +108,85 @@ contains
                                        missing_value=BE%model%interior_state_variables(ivar)%missing_value,     &
                                        vert_coord='centre', n_space_dims=1, data_1d=BE%BS%interior_state(:,ivar))   
 
-                ! Retrieve useful properties (Important for sediments)
-                BE%tracer_info(ivar)%fabm_index = ivar    
-                ! Get diffusivity property: required to participate in sediments
-                diff_tracer = BE%model%interior_state_variables(ivar)%properties%get_real('diffusivity', default = 0._rk)
-                BE%tracer_info(ivar)%diffusivity = diff_tracer
-                ! If diffusivity is greater than 0, then it is a solute
-                if (diff_tracer > 0._rk) then
-                    BE%tracer_info(ivar)%is_solute      = .true.
-                    BE%tracer_info(ivar)%is_particulate = .false.
-                else
-                    ! Otherwise, the tracer is particulate matter
-                    BE%tracer_info(ivar)%is_solute      = .false.
-                    BE%tracer_info(ivar)%is_particulate = .true.  
-                end if
-                ! Adsorption coefficient
-                BE%tracer_info(ivar)%adsorption = BE%model%interior_state_variables(ivar)%properties%get_real('adsorption', default = 0._rk)   
+                ! Retrieve useful properties 
+                BE%tracer_info(ivar)%fabm_index = ivar 
                 ! Is transport disabled?
-                BE%tracer_info(ivar)%disable_transport = BE%model%interior_state_variables(ivar)%properties%get_logical('disable_transport', default=.false.)                   
+                BE%tracer_info(ivar)%disable_transport = BE%model%interior_state_variables(ivar)%properties%get_logical('disable_transport', default=.false.)          
+                ! Phase classification - Important when sediments are enabled
+                if (BE%params%sediments_enabled) then
+                    ! FABM provides is_solute (true/false).
+                    BE%tracer_info(ivar)%is_solute = BE%model%interior_state_variables(ivar)%properties%get_logical('is_solute', default=.false.)
+                    BE%tracer_info(ivar)%is_particulate = .not. BE%tracer_info(ivar)%is_solute     
+                                                                                                
+                    ! Retrieve diffusivity properties for the solute
+                    if (BE%tracer_info(ivar)%is_solute) then
+
+                        ! Adsorption coefficient
+                        BE%tracer_info(ivar)%adsorption = BE%model%interior_state_variables(ivar)%properties%get_real('adsorption', default = 0._rk)   
+
+                        ! -Method to compute diffusivity vs T (solutes only) 
+                        ! Default to none; only solutes should define diffusivity methods.
+                        BE%tracer_info(ivar)%diff_method = BE%model%interior_state_variables(ivar)%properties%get_integer('diff_method', default=DIFF_NONE)
+
+                        select case (BE%tracer_info(ivar)%diff_method)
+
+                        case (DIFF_NONE) 
+                            write(*,*) 'ERROR: Solute tracer "', trim(BE%model%interior_state_variables(ivar)%name), &
+                                        '" is defined as solute (is_solute=true) but not a specified method to compute diffusivity (diff_method).'
+                            stop 1
+                        case (DIFF_O2CO2_AB)
+                            BE%tracer_info(ivar)%A = BE%model%interior_state_variables(ivar)%properties%get_real('A', default=0._rk)
+                            BE%tracer_info(ivar)%B = BE%model%interior_state_variables(ivar)%properties%get_real('B', default=0._rk)
+                            if (BE%tracer_info(ivar)%A <= 0._rk .or. BE%tracer_info(ivar)%B <= 0._rk) then
+                                write(*,*) 'ERROR: O2/CO2 diffusivity requires A>0 and B>0 for tracer "', &
+                                            trim(BE%model%interior_state_variables(ivar)%name), '".'
+                                stop 1
+                            end if
+
+                        case (DIFF_ION_LINEAR)
+                            BE%tracer_info(ivar)%m0 = BE%model%interior_state_variables(ivar)%properties%get_real('m0', default=0._rk)
+                            BE%tracer_info(ivar)%m1 = BE%model%interior_state_variables(ivar)%properties%get_real('m1', default=0._rk)
+                            if (BE%tracer_info(ivar)%m0 == 0._rk .and. BE%tracer_info(ivar)%m1 == 0._rk) then
+                                write(*,*) 'ERROR: Ion linear diffusivity requires positive m0 and m1 for tracer "', &
+                                            trim(BE%model%interior_state_variables(ivar)%name), '".'
+                                stop 1
+                            end if
+
+                        case (DIFF_ARRHENIUS)
+                            BE%tracer_info(ivar)%A0 = BE%model%interior_state_variables(ivar)%properties%get_real('A0', default=0._rk)
+                            BE%tracer_info(ivar)%Ea = BE%model%interior_state_variables(ivar)%properties%get_real('Ea', default=0._rk)
+                            if (BE%tracer_info(ivar)%A0 <= 0._rk .or. BE%tracer_info(ivar)%Ea <= 0._rk) then
+                                write(*,*) 'ERROR: Arrhenius diffusivity requires A0>0 and Ea>0 for tracer "', &
+                                            trim(BE%model%interior_state_variables(ivar)%name), '".'
+                                stop 1
+                            end if
+
+                        case (DIFF_WILKE_CHANG)
+                            BE%tracer_info(ivar)%Vb = BE%model%interior_state_variables(ivar)%properties%get_real('Vb', default=0._rk)
+                            if (BE%tracer_info(ivar)%Vb <= 0._rk) then
+                                write(*,*) 'ERROR: Wilke–Chang diffusivity requires Vb>0 for tracer "', &
+                                            trim(BE%model%interior_state_variables(ivar)%name), '".'
+                                stop 1
+                            end if
+
+                        case (DIFF_STOKES_EINSTEIN)
+                            BE%tracer_info(ivar)%Dref = BE%model%interior_state_variables(ivar)%properties%get_real('Dref', default=0._rk)
+                            BE%tracer_info(ivar)%Tref = BE%model%interior_state_variables(ivar)%properties%get_real('Tref', default=0._rk)
+                            BE%tracer_info(ivar)%Sref = BE%model%interior_state_variables(ivar)%properties%get_real('Sref', default=0._rk)
+                            if (BE%tracer_info(ivar)%Dref <= 0._rk .or. BE%tracer_info(ivar)%Tref <= 0._rk .or. BE%tracer_info(ivar)%Sref < 0._rk) then !Pure water becomes ice at 0°C
+                                write(*,*) 'ERROR: Stokes–Einstein diffusivity requires Dref>0 and Tref>0, Sref>=0 for tracer "', &
+                                            trim(BE%model%interior_state_variables(ivar)%name), '".'
+                                stop 1
+                            end if
+                        case default
+                            write(*,*) 'ERROR: Unknown diff_method for tracer "', trim(BE%model%interior_state_variables(ivar)%name), &
+                                        '": ', BE%tracer_info(ivar)%diff_method
+                            stop 1
+                        end select
+                    end if
+                    ! Output information of the tracers:
+                    call write_tracer_properties(BE, 'tracer_properties.dat')
+                end if                        
             end do
             if (allocated(BE%int_vars)) call output_all_variables(BE%int_vars)
         end if
@@ -204,16 +267,16 @@ contains
                 j = j + 1
                 BE%diag_int_index(j) = ivar   ! map our j-th diagnostic to FABM index i
 
-                call register_variable( BE%diag_int_vars,                                    &
+                call register_variable( BE%diag_int_vars,                                                           &
                                         name        = trim(BE%model%interior_diagnostic_variables(ivar)%name),      &
                                         long_name   = trim(BE%model%interior_diagnostic_variables(ivar)%long_name), &
                                         units       = trim(BE%model%interior_diagnostic_variables(ivar)%units),     &
-                                        minimum=BE%model%interior_diagnostic_variables(ivar)%minimum,                 &
-                                        maximum=BE%model%interior_diagnostic_variables(ivar)%maximum,                 &
-                                        missing_value=BE%model%interior_diagnostic_variables(ivar)%missing_value,     &
+                                        minimum     = BE%model%interior_diagnostic_variables(ivar)%minimum,         &
+                                        maximum     = BE%model%interior_diagnostic_variables(ivar)%maximum,         &
+                                        missing_value = BE%model%interior_diagnostic_variables(ivar)%missing_value, &
                                         vert_coord  = 'centre',                                                 &
                                         n_space_dims= 1,                                                        &
-                                        data_1d     = BE%diag_int(:, j) )
+                                        data_1d     = BE%diag_int(:, j))
             end do
             if (allocated(BE%diag_int_vars)) call output_all_variables(BE%diag_int_vars)
         end if
@@ -269,7 +332,7 @@ contains
                 ! register variables for output      
                 do ivar=1, BE%n_conserved
                     call register_variable(BE%conserved_vars,                                 &
-                                            name='conserved_total_'//trim(BE%model%conserved_quantities(ivar)%name),  &
+                                            name='conserved_'//trim(BE%model%conserved_quantities(ivar)%name),  &
                                             long_name='Column-integrated total of '//trim(BE%model%conserved_quantities(ivar)%long_name),        &
                                             units=trim(BE%model%conserved_quantities(ivar)%units)//'*m',         &
                                             minimum=BE%model%conserved_quantities(ivar)%minimum,                 &
@@ -437,6 +500,7 @@ contains
                     size(BE%model%conserved_quantities)
             end if
         end if
+
     end subroutine init_bio_fabm
 
     !=====================================================================================
@@ -796,7 +860,7 @@ contains
         ! ---- Vertical diffusivity at layer interfaces
         if (BE%params%sediments_enabled .and. nsed > 0) then
 ! Change when we retrieve diffusivities
-            BE%BS%vert_diff(0:nsed)      = 0.0_rk                    ! sediment interfaces
+            BE%BS%vert_diff(0:nsed)      = 0.0_rk                      ! sediment interfaces
             BE%BS%vert_diff(nsed:nz)     = PS%Kz(0:nwat) + mol_diff    ! Vertical eddy diffusivity
         else
             BE%BS%vert_diff(0:nz)        = PS%Kz(0:nwat) + mol_diff
