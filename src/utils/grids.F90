@@ -120,7 +120,7 @@ contains
     !------------------------------
     ! Build sediment grid
     !   - depth  is total sediment depth [m] below the sediment–water interface.
-    !   - z_w(0)    = depth       (bottom of sediment column)
+    !   - z_w(0)    = depth       (bottom of sediment column) !Depth below the sea water interface
     !   - z_w(nz)   = 0           (sediment–water interface)
     !   - dz(i)     = z_w(i-1) - z_w(i) > 0, bottom to top
     !   - z(i)      = 0.5*(z_w(i-1) + z_w(i)), 1=bottom … nz=top (interface)
