@@ -1,6 +1,6 @@
 module sediment    
-    use bio_types,         only: SedimentEnv, BioEnv, DIFF_NONE, DIFF_O2CO2_AB, DIFF_ION_LINEAR, &
-                                 DIFF_ARRHENIUS, DIFF_WILKE_CHANG, DIFF_STOKES_EINSTEIN
+    use bio_types,         only: SedimentEnv, BioEnv, TracerProperties, DIFF_NONE, DIFF_O2CO2_AB, &
+                                 DIFF_ION_LINEAR, DIFF_ARRHENIUS, DIFF_WILKE_CHANG, DIFF_STOKES_EINSTEIN
     use bio_params,        only: SedParams, read_sed_parameters
     use grids,             only: VerticalGrid
     use precision_types,   only: rk
@@ -19,7 +19,7 @@ contains
     !! and precomputes sediment property profiles (porosity, tortuosity, Db, irrigation).
     subroutine init_sediment(cfg_params, grid, SE)
         type(ConfigParams),  intent(in) :: cfg_params
-        type(VerticalGrid), intent(in), target  :: grid        ! Sediment grid
+        type(VerticalGrid),  intent(in), target  :: grid        ! Sediment grid
         type(SedimentEnv),intent(inout) :: SE
 
         ! Associate grid pointer
@@ -37,12 +37,135 @@ contains
         call compute_porosity_profile(grid, SE%params_SI, SE%poro, SE%poro_w, SE%theta)
         call compute_bioturbation_profile(grid, SE%params_SI%biot_db_sfc, SE%params_SI%biot_mld, SE%params_SI%biot_ez, SE%bioturb)
         call compute_bioirrigation_alpha(grid, SE%params_SI%irr_sfc, SE%params_SI%irr_ez, SE%bioirr, SE%bioirr_w)
+        ! ---- Burial velocities (interfaces). 
+        call compute_burial_velocities(SE%grid, SE%poro_w, SE%params_SI%sed_ref_depth, SE%params_SI%sed_rate, SE%vel_solids, SE%vel_solutes)
 
-!!! Initialise tridiagonal matrix (Later)
+
+        ! Initialise tridiagonal matrix
+        call init_tridiag(SE%sed_trid, SE%nz)
 
         SE%is_init = .true.
         call write_sediment_profiles('Sediment_profiles.dat',SE%grid, SE)
     end subroutine init_sediment
+
+    ! Convert from phase-specific concentrations to bulk-sediment concentrations
+    ! For solids (bulk=(1-phi)*C) and for solutes (bulk=(phi)*C)
+    pure subroutine phase_to_bulk(C_phase, poro, is_solute, C_bulk)
+        real(rk), intent(in)  :: C_phase(:)      ! phase-specific concentration (nsed)
+        real(rk), intent(in)  :: poro(:)         ! porosity at centres (nsed)
+        logical, intent(in)   :: is_solute
+        real(rk), intent(out) :: C_bulk(:)       ! bulk-sediment concentration (nsed)
+
+        integer :: n, k
+        real(rk), parameter :: tiny = 1.0e-12_rk
+        real(rk) :: phi, one_m_phi
+
+        n = size(C_phase)
+
+        if (is_solute) then
+            do k = 1, n
+                phi = max(poro(k), tiny)
+                C_bulk(k) = phi * C_phase(k)
+            end do
+        else
+            do k = 1, n
+                one_m_phi = max(1.0_rk - poro(k), tiny)
+                C_bulk(k) = one_m_phi * C_phase(k)
+            end do
+        end if
+    end subroutine phase_to_bulk
+
+    ! Convert from bulk-sediment concentrations to phase-specific concentrations
+    ! For solids (bulk=(1-phi)*C) and for solutes (bulk=(phi)*C)
+    pure subroutine bulk_to_phase(C_bulk, poro, is_solute, C_phase)
+        real(rk), intent(in)  :: C_bulk(:)       ! bulk-sediment concentration (nsed)
+        real(rk), intent(in)  :: poro(:)         ! porosity at centres (nsed)
+        logical, intent(in)   :: is_solute
+        real(rk), intent(out) :: C_phase(:)      ! phase-specific concentration (nsed)
+
+        integer :: n, k
+        real(rk), parameter :: tiny = 1.0e-12_rk
+        real(rk) :: phi, one_m_phi
+
+        n = size(C_bulk)
+
+        if (is_solute) then
+            do k = 1, n
+                phi = max(poro(k), tiny)
+                C_phase(k) = C_bulk(k) / phi
+            end do
+        else
+            do k = 1, n
+                one_m_phi = max(1.0_rk - poro(k), tiny)
+                C_phase(k) = C_bulk(k) / one_m_phi
+            end do
+        end if
+    end subroutine bulk_to_phase
+
+    !------------------------------------------------------------
+    ! Convert phase-specific -> bulk-sediment for ALL tracers
+    ! Arrays are (nsed, ntr)
+    !------------------------------------------------------------
+    pure subroutine phase_to_bulk_all(C_phase, poro, tracer_info, C_bulk)
+        real(rk), intent(in)  :: C_phase(:,:)          ! (nsed, ntr)
+        real(rk), intent(in)  :: poro(:)               ! (nsed)
+        type(TracerProperties), intent(in) :: tracer_info(:) ! (ntr)
+        real(rk), intent(out) :: C_bulk(:,:)           ! (nsed, ntr)
+
+        integer :: nsed, ntr, k, j
+        real(rk) :: phi, one_m_phi
+        real(rk), parameter :: tiny = 1.0e-12_rk
+
+        nsed = size(C_phase, 1)
+        ntr  = size(C_phase, 2)
+
+        do j = 1, ntr
+            if (tracer_info(j)%is_solute) then
+                do k = 1, nsed
+                    phi = max(poro(k), tiny)
+                    C_bulk(k, j) = phi * C_phase(k, j)
+                end do
+            else
+                do k = 1, nsed
+                    one_m_phi = max(1.0_rk - poro(k), tiny)
+                    C_bulk(k, j) = one_m_phi * C_phase(k, j)
+                end do
+            end if
+        end do
+    end subroutine phase_to_bulk_all
+
+    !------------------------------------------------------------
+    ! Convert bulk-sediment -> phase-specific for ALL tracers
+    ! Arrays are (nsed, ntr)
+    !------------------------------------------------------------
+    pure subroutine bulk_to_phase_all(C_bulk, poro, tracer_info, C_phase)
+        real(rk), intent(in)  :: C_bulk(:,:)           ! (nsed, ntr)
+        real(rk), intent(in)  :: poro(:)               ! (nsed)
+        type(TracerProperties), intent(in) :: tracer_info(:) ! (ntr)
+        real(rk), intent(out) :: C_phase(:,:)          ! (nsed, ntr)
+
+        integer :: nsed, ntr, k, j
+        real(rk) :: phi, one_m_phi
+        real(rk), parameter :: tiny = 1.0e-12_rk
+
+        nsed = size(C_bulk, 1)
+        ntr  = size(C_bulk, 2)
+
+        do j = 1, ntr
+            if (tracer_info(j)%is_solute) then
+                do k = 1, nsed
+                    phi = max(poro(k), tiny)
+                    C_phase(k, j) = C_bulk(k, j) / phi
+                end do
+            else
+                do k = 1, nsed
+                    one_m_phi = max(1.0_rk - poro(k), tiny)
+                    C_phase(k, j) = C_bulk(k, j) / one_m_phi
+                end do
+            end if
+        end do
+    end subroutine bulk_to_phase_all
+
 
     !! Compute porosity and tortuosity profiles from an exponential compaction law.
     !! Returns porosity at layers centres (1:nz) and interfaces (0:nz), and squared
@@ -148,24 +271,31 @@ contains
 
         integer  :: k, nz, k_ref
         real(rk) :: phi_ref, phik, phi_min
+        real(rk) :: wref_neg, zref
 
         nz = grid%nz
         phi_min = 1.0e-12_rk
 
+        wref_neg = - abs(w_ref)      ! Enforcing negative velocity for burial
+        zref = min(max(z_ref, 0._rk), grid%depth)
+
         ! Find index for closest interface to reference depth
-        k_ref = minloc(abs(grid%z_w(0:nz) - z_ref), dim=1) - 1
+        k_ref = minloc(abs(grid%z_w(0:nz) - zref), dim=1) - 1  
+
+        if (k_ref < 0 .or. k_ref > nz) error stop "compute_burial_velocities: k_ref out of range"
+        ! Porosity at the reference depth
         phi_ref = min(max(poro_int(k_ref), phi_min), 1._rk - phi_min)
 
         do k = 0, nz
             phik = min(max(poro_int(k), phi_min), 1._rk - phi_min)
 
-            ! Solid burial velocity: (1-phi) w  = (1-phi_ref) w_ref
-            ! (1-ϕ)w = (1-ϕx)wx  Eq. 3.67 in Boudreau (1997)
-            w_solid(k) = w_ref * (1._rk - phi_ref) / (1._rk - phik)
+            ! Solid burial velocity: (1-phi) w  = (1-phi_ref) wref_neg
+            ! (1-ϕ)w = (1-ϕ_x)w_x  Eq. 3.67 in Boudreau (1997)
+            w_solid(k) = wref_neg * (1._rk - phi_ref) / (1._rk - phik)
 
-            ! Porewater burial velocity: phi u = phi_ref w_ref
-            ! ϕu = ϕx wx     Eq. 3.68 in Boudreau (1997)
-            u_pore(k)  = (w_ref * phi_ref) / phik
+            ! Porewater burial velocity: phi u = phi_ref wref_neg
+            ! ϕu = ϕ_x w_x     Eq. 3.68 in Boudreau (1997)
+            u_pore(k)  = (wref_neg * phi_ref) / phik
         end do
     end subroutine compute_burial_velocities
 
@@ -185,7 +315,7 @@ contains
         si%poro_deep = user%poro_deep
 
         ! Depth scales: cm -> m
-        si%sed_ref_depth = user%sed_ref_depth * cm_to_m
+        si%sed_ref_depth = abs(user%sed_ref_depth * cm_to_m)
         si%poro_decay    = user%poro_decay    * cm_to_m
         si%biot_mld      = user%biot_mld      * cm_to_m
         si%biot_ez       = user%biot_ez       * cm_to_m
@@ -229,57 +359,73 @@ contains
 
         if (allocated(SE%bioirr_w)) deallocate(SE%bioirr_w)
         allocate(SE%bioirr_w(0:nz)) 
+
+        ! --- Burial velocities (interfaces 0:nz)
+        if (allocated(SE%vel_solids)) deallocate(SE%vel_solids)
+        allocate(SE%vel_solids(0:nz))
+        SE%vel_solids = 0._rk
+
+        if (allocated(SE%vel_solutes)) deallocate(SE%vel_solutes)
+        allocate(SE%vel_solutes(0:nz))
+        SE%vel_solutes = 0._rk
     end subroutine allocate_sed_arrays
 
     !! Write sediment interface profiles to an ASCII diagnostics file.
     !! Outputs a single table on the interface grid (0:nz): depth, porosity, tortuosity^2,
-    !! bioturbation diffusivity, and bioirrigation exchange rate.
+    !! bioturbation diffusivity, bioirrigation exchange rate, and burial velocities.
     subroutine write_sediment_profiles(filename, grid, SE, ierr)
-        use, intrinsic :: iso_fortran_env, only: error_unit
         character(*),       intent(in)  :: filename
         type(VerticalGrid), intent(in)  :: grid
         type(SedimentEnv),  intent(in)  :: SE
         integer, optional,  intent(out) :: ierr
 
         integer :: u, k, nz
-        if (present(ierr)) ierr = 0
 
+        character(len=*), parameter :: fmt_row = &
+            '(I6,1X,ES18.10,1X,ES18.10,1X,ES18.10,1X,ES18.10,1X,ES18.10,1X,ES18.10,1X,ES18.10)'
+
+        if (present(ierr)) ierr = 0
         nz = grid%nz
 
         if (.not. allocated(SE%poro_w) .or. .not. allocated(SE%theta) .or. &
-            .not. allocated(SE%bioturb) .or. .not. allocated(SE%bioirr_w)) then
+            .not. allocated(SE%bioturb) .or. .not. allocated(SE%bioirr_w) .or. &
+            .not. allocated(SE%vel_solids) .or. .not. allocated(SE%vel_solutes)) then
             if (present(ierr)) then
-                ierr = 2; return
+                ierr = 2
+                return
             else
                 error stop "write_sediment_profiles: Missing sediment interface arrays"
             end if
         end if
 
         ! Size checks (avoid silent mismatch)
-        if (size(SE%poro_w) /= nz+1 .or. size(SE%theta) /= nz+1 .or. &
-            size(SE%bioturb) /= nz+1 .or. size(SE%bioirr_w) /= nz+1) then
+        if (size(SE%poro_w)      /= nz+1 .or. size(SE%theta)      /= nz+1 .or. &
+            size(SE%bioturb)     /= nz+1 .or. size(SE%bioirr_w)   /= nz+1 .or. &
+            size(SE%vel_solids)  /= nz+1 .or. size(SE%vel_solutes)/= nz+1) then
             if (present(ierr)) then
-                ierr = 3; return
+                ierr = 3
+                return
             else
                 error stop "write_sediment_profiles: Array size mismatch (expected 0:nz)"
             end if
         end if
 
-        ! ---- Write file ----
         open(newunit=u, file=trim(filename), status='replace', action='write', form='formatted')
 
         write(u,'(A)') '# Sediment interface profiles'
-        write(u,'(A)') '# Depth coordinate: z_w is depth below SWI [m], positive downward; z_w(nz)=0 at SWI'
-        write(u,'(A)') 'Layer   depth[m]  porosity[-]  tortuosity[squared]  Db[m2s-1]  bioirr[s-1]'
+        write(u,'(A)') '# z_w is depth below SWI [m], positive downward; z_w(nz)=0 at SWI; z_w(0)=sediment bottom'
+        write(u,'(A)') '# Velocities are burial velocities at layer interfaces; negative values indicate downward motion.'
+        write(u,'(A)') 'Layer   depth[m]  porosity[-]  tortuosity[squared]  Db[m2s-1]  bioirr[s-1]  w_solid[ms-1]  u_pore[ms-1]'
 
         ! Print from SWI downward for readability (k = nz .. 0)
         do k = nz, 0, -1
-            write(u,'(I6,1X,ES18.10,1X,ES18.10,1X,ES18.10,1X,ES18.10,1X,ES18.10)') &
-                k, grid%z_w(k), SE%poro_w(k), SE%theta(k), SE%bioturb(k), SE%bioirr_w(k)
+            write(u,fmt_row) k, grid%z_w(k), SE%poro_w(k), SE%theta(k), SE%bioturb(k), SE%bioirr_w(k), &
+                             SE%vel_solids(k), SE%vel_solutes(k)
         end do
 
         close(u)
     end subroutine write_sediment_profiles
+
 
     ! Writes a file with the tracer properties
     subroutine write_tracer_properties(BE, filename) 
@@ -409,8 +555,13 @@ contains
         if (allocated(SE%bioturb))  deallocate(SE%bioturb)
         if (allocated(SE%bioirr_w)) deallocate(SE%bioirr_w)
 
+        if (allocated(SE%vel_solids))  deallocate(SE%vel_solids)
+        if (allocated(SE%vel_solutes)) deallocate(SE%vel_solutes)
+
+        if(allocated(SE%bulk_conc)) deallocate(SE%bulk_conc)
+
         ! ---- Reset workspace ----
-        call clear_tridiag(SE%trid)
+        call clear_tridiag(SE%sed_trid)
 
         ! ---- Reset size/flags and pointer ----
         SE%nz      = 0

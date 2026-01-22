@@ -102,11 +102,18 @@ module bio_types
 
       ! ---- Properties at layer interfaces (0:nz)
       real(rk), allocatable :: poro_w(:)     ! [-] porosity at interfaces
-      real(rk), allocatable :: theta(:)      ! [-] Squared tortuosity at interfaces
+      real(rk), allocatable :: theta(:)      ! [-] Diffusion tortuosity factor (Boudreau 1997), used as D_eff = D0 / theta2
       real(rk), allocatable :: bioturb(:)    ! [m2/s] particulate diffusivity    
       real(rk), allocatable :: bioirr_w(:)   ! [s-1] 
+      ! --- Burial velocities
+      real(rk), allocatable :: vel_solids(:)     ! [m/s] Burial velocity for particulate matter
+      real(rk), allocatable :: vel_solutes(:)    ! [m/s] Burial velocity for porewater
+
+      ! ---- Working arrays
+      real(rk), allocatable :: bulk_conc(:,:)      ! (nsed, n_interior) Bulk-sediment concentrations for mass-conservation
+      real(rk), allocatable :: tendency_sed(:,:)   ! (nsed, n_interior)
       ! Working space
-    type(TridiagCoeff)     :: trid                             ! workspace for solving scalar diffusion
+    type(TridiagCoeff)      :: sed_trid            ! workspace for solving scalar diffusion
   end type SedimentEnv  
 
   ! An envelope for the Biogeochemistry Environment in one column
@@ -147,7 +154,7 @@ module bio_types
     logical :: need_ice_af  = .false.                          ! Ice area fraction
     logical :: is_init = .false.                               ! has biogeochemistry been initialised?
     ! Working space
-    type(TridiagCoeff)     :: trid                             ! workspace for solving scalar diffusion
+    type(TridiagCoeff)     :: wat_trid                             ! workspace for solving scalar diffusion
     ! Interior diagnostics 
     integer :: n_diag_int = 0
     integer,   allocatable :: diag_int_index(:)                ! FABM indices of interior diagnostics

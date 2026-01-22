@@ -59,7 +59,7 @@ contains
             call build_full_grid(BE%wat_grid, BE%sed_grid, BE%grid)
             call write_vertical_grid(BE%grid, 'Vertical_grid.dat', n_sed=BE%sed_grid%nz)
             write(*,'(A)') '  Computing profiles for sediment properties...'
-            call init_sediment(cfg,BE%sed_grid,BE%SED)
+            call init_sediment(cfg,BE%sed_grid, BE%SED)
             ! Number of sediment/water layers and useful indices
             BE%nsed = BE%sed_grid%nz
             BE%k_sed_btm = 1
@@ -95,7 +95,13 @@ contains
             ! Allocate the array for interior tracers concentrations
             if(allocated(BE%BS%interior_state)) deallocate(BE%BS%interior_state)
             allocate(BE%BS%interior_state(nz, nint))  
-            allocate(BE%tracer_info(nint))     ! Allocate array to store tracer properties (diffusivity, adsorption)       
+            allocate(BE%tracer_info(nint))     ! Allocate array to store tracer properties (diffusivity, adsorption)    
+            if (BE%params%sediments_enabled) then
+                ! Array to store concentrations per bulk-sediment volume
+                if(allocated(BE%SED%bulk_conc)) deallocate(BE%SED%bulk_conc)
+                allocate(BE%SED%bulk_conc(BE%nsed, nint)) 
+                BE%SED%bulk_conc = 0._rk
+            end if   
             do ivar = 1, nint
                 ! Point FABM to the current concentration state for biogeochemical tracers
                 call BE%model%link_interior_state_data(ivar, BE%BS%interior_state(:,ivar))
@@ -184,11 +190,11 @@ contains
                             stop 1
                         end select
                     end if
-                    ! Output information of the tracers:
-                    call write_tracer_properties(BE, 'tracer_properties.dat')
                 end if                        
             end do
             if (allocated(BE%int_vars)) call output_all_variables(BE%int_vars)
+            ! Write dat file with information of the tracer properties
+            call write_tracer_properties(BE, 'tracer_properties.dat')
         end if
 
         ! Allocating working arrays        
@@ -467,6 +473,12 @@ contains
         if (nsfc > 0) call BE%model%initialize_surface_state()
         if (nbtm > 0) call BE%model%initialize_bottom_state()
 
+        if (nbtm > 0 .and. BE%params%sediments_enabled) then
+            write(*,'(A)') 'WARNING: Bottom variables reported by FABM are placed at the bottom of the sediment,'
+            write(*,'(A)') '         not at the bottom of the water column. Review these variables carefully.'
+            write(*,'(A)') '         Fluxes for bottom variables will be ignored when sediments are enabled.'
+        end if
+
         if (BE%BS%n_total <= 0) then
             write(*,*) "No variables found in biogeochemistry, disable biogeochemistry or provide a valid configuration of modules."
             stop 1
@@ -475,8 +487,8 @@ contains
         ! Allocate arrays for variable metadata (if not allocated)
         call allocate_metadata_arrays(BE)
 
-        ! Tridiagonal workspace
-        call init_tridiag(BE%trid, nz)
+        ! Tridiagonal workspace for water column
+        call init_tridiag(BE%wat_trid, BE%nwat)
 
         ! Initialising counters
         BE%nrepair_int = 0; BE%nrepair_btm=0; BE%nrepair_sfc=0;
@@ -524,7 +536,8 @@ contains
         integer  :: nz, ivar, k, nint, nsfc, nbtm
         real(rk) :: istep_rk, dt_main, dt_sub
         integer  :: nsub, isub, nsub_adv, nsub_diff, nsub_bio
-        integer :: ierr          
+        integer  :: kwb, kws, ksb, kss, nwat, nfaces_wat
+        integer  :: ierr          
 
         if (.not. BE%is_init) then
             write(*,*) 'integrate_bio_fabm: Biogeochemistry is not initialised.'
@@ -537,6 +550,15 @@ contains
         nint     = BE%BS%n_interior        ! Number of interior tracers
         nsfc     = BE%BS%n_surface
         nbtm     = BE%BS%n_bottom;
+
+        ! Local aliases for location indices
+        kwb = BE%k_wat_btm                ! Index for water bottom layer
+        kws = BE%k_wat_sfc                ! Index for water surface layer
+        ksb = BE%k_sed_btm                ! Index for sediment bottom layer
+        kss = BE%k_sed_sfc                ! Index for sediment surface layer
+        nwat = BE%nwat                    ! number of layers in water column
+        nfaces_wat = nwat + 1             ! Number of layer interfaces in water
+
 
         BE%BS%doy = doy_fraction
 
@@ -568,10 +590,12 @@ contains
         ! Include contribution of bottom and surface fluxes to tendencies at bottom and surface
         if (nint > 0) then
             do ivar = 1, nint
-                ! Bottom flux: positive is flux into the column, negative out of the column
-                ! Flux = mass/(Area*dt)
-                ! Concentration change due to flux = mass flux/volume = (Flux Area)/(Area dz) = Flux/dz
-                BE%tendency_int(1,ivar)  = BE%tendency_int(1,ivar)  + BE%flux_bt(ivar) / BE%grid%dz(1)
+                if (.not. BE%params%sediments_enabled) then
+                    ! Bottom flux: positive is flux into the column, negative out of the column
+                    ! Flux = mass/(Area*dt)
+                    ! Concentration change due to flux = mass flux/volume = (Flux Area)/(Area dz) = Flux/dz
+                    BE%tendency_int(1,ivar)  = BE%tendency_int(1,ivar)  + BE%flux_bt(ivar) / BE%grid%dz(1)
+                end if
 
                 ! Surface flux: positive is flux into the water, negative out of the water
                 ! Concentration change due to flux = mass flux/volume = (Flux Area)/(Area dz) = Flux/dz
@@ -601,22 +625,49 @@ contains
         ! Inner loop to maintain numerical stabilty
         do isub=1, nsub
             !------------------------------------------------------------
-            ! Apply vertical residual movement and mix tracers vertically
+            ! Apply vertical residual movement and mix tracers vertically in the water column only
             !------------------------------------------------------------
-            if (nint>0) then
-                
+            if (nint>0) then                
                 do ivar=1, nint
-                    if (any(BE%vel_faces(:, ivar) /= 0._rk)) then  
-                        ! Only if the tracer has vertical motion
-                        ! Move tracers due to sinking or floating 
-                        call apply_vertical_transport(BE%BS%interior_state(:,ivar), BE%grid,&
-                                                    w_face=BE%vel_faces(:,ivar), dt=dt_sub)
+                    if (.not. BE%tracer_info(ivar)%disable_transport) then
+                        if (any(BE%vel_faces(:, ivar) /= 0._rk)) then  
+                            ! Only if the tracer has vertical motion
+                            ! Move tracers due to sinking or floating 
+                            call apply_vertical_transport(BE%BS%interior_state(kwb:kws,ivar), BE%wat_grid,&
+                                                        w_face=BE%vel_faces(kwb-1:kws,ivar), dt=dt_sub)
+                        end if
+                        ! Mix internal tracers vertically due to turbulent diffusion.
+                        call scalar_diffusion(Var=BE%BS%interior_state(kwb:kws,ivar), N=nwat, dt=dt_sub, h=BE%wat_grid%dz, &
+                                              Kz=BE%BS%vert_diff(kwb-1:kws), cnpar=BE%params%cnpar, tricoef=BE%wat_trid, ierr=ierr)
                     end if
-                    ! Mix internal tracers vertically due to turbulent diffusion.
-                    call scalar_diffusion(Var=BE%BS%interior_state(:,ivar), N=nz, dt=dt_sub, h=BE%grid%dz, &
-                                          Kz=BE%BS%vert_diff, cnpar=BE%params%cnpar, tricoef=BE%trid, ierr=ierr)
                 end do
-            end if   
+            end if  
+            
+            !--------------------------------------------------------------
+            ! Vertical diffusivity and burial in the sediments (if enabled)
+            !--------------------------------------------------------------
+            if (BE%params%sediments_enabled) then
+                !--- Particulate deposition at Sediment-water interface
+                !do ivar=1, nint
+                !    if (BE%tracer_info(ivar)%disable_transport) cycle
+                !    if (BE%tracer_info(ivar)%is_particulate) then
+                !        ! Velocity exactly at the Sediment-water interface
+                !        vel_swi = BE%vel_faces(kwb-1, ivar)   
+!
+                !        ! Only downward movement deposits into sediments.
+                !        if (vel_swi < 0.0_rk) then
+                !            ! Flux out of bottom-water cell into sediments (amount m^-2 s^-1)
+                !            Fdep = (-vel_swi) * BE%BS%interior_state(kwb, ivar)
+!
+                !            ! Remove from bottom water layer
+                !            BE%BS%interior_state(kwb, ivar) = BE%BS%interior_state(kwb, ivar) - dt_sub * Fdep / BE%wat_grid%dz(1)
+!
+                !            ! Add to top sediment layer bulk inventory
+                !            BE%SED%bulk_conc(kss, ivar) = BE%SED%bulk_conc(kss, ivar) + dt_sub * Fdep / BE%sed_grid%dz(nsed)
+                !        end if
+                !    end if
+                !end do
+            end if
             
             !call BE%model%link_all_interior_state_data(BE%BS%interior_state)
 
@@ -624,10 +675,6 @@ contains
             ! Repir state for interior tracers after vertical redistribution of tracers
             !----------------------------------------------------------------------------
             call check_and_repair_state(BE)
-            if (.not. BE%valid_int) then
-                write(*,*) "After transport"
-                stop 1
-            end if
             
             !-----------------------------------------------------------------------------
             ! Integrate tracers using exflicit Forward Euler
@@ -788,7 +835,7 @@ contains
         if (allocated(BE%flux_bt))      deallocate(BE%flux_bt)
 
         ! Clear Tridiagonal workspace 
-        call clear_tridiag(BE%trid)
+        call clear_tridiag(BE%wat_trid)
 
         ! Reset counters and flags
         BE%BS%n_interior = 0
@@ -859,8 +906,7 @@ contains
 
         ! ---- Vertical diffusivity at layer interfaces
         if (BE%params%sediments_enabled .and. nsed > 0) then
-! Change when we retrieve diffusivities
-            BE%BS%vert_diff(0:nsed)      = 0.0_rk                      ! sediment interfaces
+            BE%BS%vert_diff(0:nsed)      = 0.0_rk                      ! sediment interfaces Kz is zero in the sediments
             BE%BS%vert_diff(nsed:nz)     = PS%Kz(0:nwat) + mol_diff    ! Vertical eddy diffusivity
         else
             BE%BS%vert_diff(0:nz)        = PS%Kz(0:nwat) + mol_diff
