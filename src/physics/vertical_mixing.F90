@@ -182,11 +182,11 @@ contains
         !---------------------------
         select case (top_type)
             case (BC_NEUMANN)
-                !   bot_val is the flux INTO the top layer [Var m^-2 s^-1]
+                !   top_val is the flux INTO the top layer [Var m^-2 s^-1]
                 !   (positive = into the layer, negative = out of the domain)
                 a = 2.0_rk * dt * diff(N-1)/(h(N)+h(N-1))/h(N)
                 tricoef%au(N) = -cnpar * a
-                ! Patankar tweak if flux leaves the column and non-negativity enforced
+                ! Patankar approach if flux leaves the column and non-negativity enforced
                 if (do_nonneg .and. top_val < 0.0_rk) then
                     tricoef%bu(N) = 1.0_rk - tricoef%au(N) - dt*top_val / (max(Var(N),tinyV)*h(N))
                     tricoef%du(N) = Var(N) + (1.0_rk-cnpar)*a*(Var(N-1)-Var(N))
