@@ -11,6 +11,7 @@ module sediment
     private
 
     public :: init_sediment, clear_sediment_env, write_tracer_properties
+    public :: phase_to_bulk, bulk_to_phase, phase_to_bulk_all, bulk_to_phase_all
 
 contains
 
@@ -34,7 +35,7 @@ contains
         call allocate_sed_arrays(SE)
 
         ! Compute profiles for sediment properties
-        call compute_porosity_profile(grid, SE%params_SI, SE%poro, SE%poro_w, SE%theta)
+        call compute_porosity_profile(grid, SE%params_SI, SE%poro, SE%poro_w, SE%theta2, SE%porewat_thickness, SE%solid_thickness)
         call compute_bioturbation_profile(grid, SE%params_SI%biot_db_sfc, SE%params_SI%biot_mld, SE%params_SI%biot_ez, SE%bioturb)
         call compute_bioirrigation_alpha(grid, SE%params_SI%irr_sfc, SE%params_SI%irr_ez, SE%bioirr, SE%bioirr_w)
         ! ---- Burial velocities (interfaces). 
@@ -167,34 +168,44 @@ contains
     end subroutine bulk_to_phase_all
 
 
+    !==================== SEDIMENT PROFILES=========================================
     !! Compute porosity and tortuosity profiles from an exponential compaction law.
     !! Returns porosity at layers centres (1:nz) and interfaces (0:nz), and squared
     !! tortuosity at interfaces using Boudreau (1997) and Soetaert (1997) formulation.
-    subroutine compute_porosity_profile(grid, SedP, poro, poro_int, theta2)
+    subroutine compute_porosity_profile(grid, SedP, poro, poro_int, theta2, porewat_thickness, solid_thickness)
         type(VerticalGrid), intent(in) :: grid          ! this is the SEDIMENT grid
         type(SedParams),   intent(in)  :: SedP
-        real(rk),          intent(out) :: poro(1:grid%nz)      ! Porosity at layers centres
-        real(rk),          intent(out) :: poro_int(0:grid%nz)  ! Porosity at interfaces
-        real(rk),          intent(out) :: theta2(0:grid%nz)    ! Squared tortuosity at interfaces
+        real(rk),          intent(out) :: poro(1:grid%nz)        ! Porosity at layers centres
+        real(rk),          intent(out) :: poro_int(0:grid%nz)    ! Porosity at interfaces
+        real(rk),          intent(out) :: theta2(0:grid%nz)      ! Diffusion tortuosity factor (Boudreau 1997), used as D_eff = D0 / theta2
+        real(rk),          intent(out) :: porewat_thickness(1:grid%nz)  ! Storage capacity of porewater per unit horizontal-area
+        real(rk),          intent(out) :: solid_thickness(1:grid%nz)   ! Storage capacity of solids per unit horizontal-area
 
         integer ::  k
-        real(rk) :: z, por_decay, phi   
+        real(rk) :: z, por_decay 
+
+        real(rk), parameter :: phi_min = 1.0e-6_rk
+        real(rk), parameter :: phi_max = 1.0_rk - 1.0e-6_rk
 
         por_decay = max(SedP%poro_decay, 1.0e-12_rk)
 
         do k = 1, grid%nz   
             z = grid%z(k)   ! depth below SWI [m]
             poro(k) = SedP%poro_deep + (SedP%poro_sfc - SedP%poro_deep) * exp(-z / por_decay)
+            poro(k) = min(max(poro(k), phi_min), phi_max)
+
+            porewat_thickness(k) = poro(k) * grid%dz(k) 
+            solid_thickness(k) =  (1.0_rk - poro(k)) * grid%dz(k) 
         end do
 
         do k = 0, grid%nz   
             z = grid%z_w(k) ! interfaces: z_w(nz)=0 at SWI
             ! Porosity at layer interfaces
             poro_int(k) = SedP%poro_deep + (SedP%poro_sfc - SedP%poro_deep) * exp(-z / por_decay)
+            poro_int(k) = min(max(poro_int(k), phi_min), phi_max)  ! Ensuring it's within (0,1)
 
-            phi = min(max(poro_int(k), 1.0e-6_rk), 1.0_rk - 1.0e-6_rk)  ! Ensuring it's within (0,1)
             !---Tortuosity (Boudreau 1997, Eq. 4.120) ------
-            theta2(k) = 1.0_rk - 2.0_rk*log(phi)
+            theta2(k) = 1.0_rk - 2.0_rk*log(poro_int(k))
         end do
     end subroutine compute_porosity_profile
 
@@ -229,6 +240,12 @@ contains
     !! Compute bioirrigation exchange rate profile (alpha) at layers centres.
     !! Applies an exponential decay with depth below SWI, with surface rate alpha0
     !! and e-folding depth z_decay; outputs alpha(1:nz) and alpha_w(0:nz).
+    !!
+    !! Bioirrigation is represented as a non-local exchange term following Boudreau (1984),
+    !! which arises from lateral averaging of burrow-scale irrigation processes. 
+    !! The depth dependence of the exchange coefficient is parameterized as an exponential decay, 
+    !! a commonly used empirical form motivated by observed decreases in burrow density
+    !! and ventilation intensity with depth.
     subroutine compute_bioirrigation_alpha(grid, alpha0, z_decay, alpha, alpha_w)
         type(VerticalGrid), intent(in)  :: grid
         real(rk),           intent(in)  :: alpha0          ! [s-1]
@@ -297,6 +314,10 @@ contains
             ! ϕu = ϕ_x w_x     Eq. 3.68 in Boudreau (1997)
             u_pore(k)  = (wref_neg * phi_ref) / phik
         end do
+        ! Enforce no advective burial flux through the SWI (top interface k=nz).
+        ! SWI exchange is handled separately via deposition/solute exchange.
+        !w_solid(nz) = 0.0_rk
+        !u_pore(nz) = 0.0_rk
     end subroutine compute_burial_velocities
 
     !================= Helpers================== 
@@ -343,6 +364,12 @@ contains
         ! Centres: 1:nz        
         if (allocated(SE%poro))   deallocate(SE%poro)
         allocate(SE%poro(nz))
+
+        if (allocated(SE%porewat_thickness))   deallocate(SE%porewat_thickness)
+        allocate(SE%porewat_thickness(nz))
+
+        if (allocated(SE%solid_thickness))   deallocate(SE%solid_thickness)
+        allocate(SE%solid_thickness(nz))
                
         if (allocated(SE%bioirr)) deallocate(SE%bioirr)
         allocate(SE%bioirr(nz))        
@@ -351,14 +378,23 @@ contains
         if (allocated(SE%poro_w)) deallocate(SE%poro_w)
         allocate(SE%poro_w(0:nz))
         
-        if (allocated(SE%theta)) deallocate(SE%theta)
-        allocate(SE%theta(0:nz))
+        if (allocated(SE%theta2)) deallocate(SE%theta2)
+        allocate(SE%theta2(0:nz))
 
         if (allocated(SE%bioturb)) deallocate(SE%bioturb)
         allocate(SE%bioturb(0:nz))
 
         if (allocated(SE%bioirr_w)) deallocate(SE%bioirr_w)
         allocate(SE%bioirr_w(0:nz)) 
+
+        ! Array to store molecular diffusivities in the sediments (unique per tracer)
+        if (allocated(SE%diff_sed)) deallocate(SE%diff_sed)
+        allocate(SE%diff_sed(0:nz)) 
+        SE%diff_sed = 0.0_rk
+
+        if (allocated(SE%Db_eff_solids)) deallocate(SE%Db_eff_solids)
+        allocate(SE%Db_eff_solids(0:nz)) 
+        SE%Db_eff_solids = 0.0_rk
 
         ! --- Burial velocities (interfaces 0:nz)
         if (allocated(SE%vel_solids)) deallocate(SE%vel_solids)
@@ -371,7 +407,7 @@ contains
     end subroutine allocate_sed_arrays
 
     !! Write sediment interface profiles to an ASCII diagnostics file.
-    !! Outputs a single table on the interface grid (0:nz): depth, porosity, tortuosity^2,
+    !! Outputs a single table on the interface grid (0:nz): depth, porosity, tortuosity,
     !! bioturbation diffusivity, bioirrigation exchange rate, and burial velocities.
     subroutine write_sediment_profiles(filename, grid, SE, ierr)
         character(*),       intent(in)  :: filename
@@ -387,7 +423,7 @@ contains
         if (present(ierr)) ierr = 0
         nz = grid%nz
 
-        if (.not. allocated(SE%poro_w) .or. .not. allocated(SE%theta) .or. &
+        if (.not. allocated(SE%poro_w) .or. .not. allocated(SE%theta2) .or. &
             .not. allocated(SE%bioturb) .or. .not. allocated(SE%bioirr_w) .or. &
             .not. allocated(SE%vel_solids) .or. .not. allocated(SE%vel_solutes)) then
             if (present(ierr)) then
@@ -399,7 +435,7 @@ contains
         end if
 
         ! Size checks (avoid silent mismatch)
-        if (size(SE%poro_w)      /= nz+1 .or. size(SE%theta)      /= nz+1 .or. &
+        if (size(SE%poro_w)      /= nz+1 .or. size(SE%theta2)      /= nz+1 .or. &
             size(SE%bioturb)     /= nz+1 .or. size(SE%bioirr_w)   /= nz+1 .or. &
             size(SE%vel_solids)  /= nz+1 .or. size(SE%vel_solutes)/= nz+1) then
             if (present(ierr)) then
@@ -419,7 +455,7 @@ contains
 
         ! Print from SWI downward for readability (k = nz .. 0)
         do k = nz, 0, -1
-            write(u,fmt_row) k, grid%z_w(k), SE%poro_w(k), SE%theta(k), SE%bioturb(k), SE%bioirr_w(k), &
+            write(u,fmt_row) k, grid%z_w(k), SE%poro_w(k), SE%theta2(k), SE%bioturb(k), SE%bioirr_w(k), &
                              SE%vel_solids(k), SE%vel_solutes(k)
         end do
 
@@ -538,8 +574,6 @@ contains
 
 
 
-
-
     !! Clear sediment environment state and release memory.
     !! Deallocates all sediment arrays, clears the tridiagonal workspace, resets flags/counters,
     !! and nullifies the grid pointer.
@@ -547,11 +581,13 @@ contains
         type(SedimentEnv), intent(inout) :: SE
 
         ! ---- Deallocate allocatable arrays ----
-        if (allocated(SE%poro))     deallocate(SE%poro)
-        if (allocated(SE%bioirr))   deallocate(SE%bioirr)
+        if (allocated(SE%poro))       deallocate(SE%poro)
+        if (allocated(SE%porewat_thickness)) deallocate(SE%porewat_thickness)
+        if (allocated(SE%solid_thickness))  deallocate(SE%solid_thickness)
+        if (allocated(SE%bioirr))     deallocate(SE%bioirr)
 
         if (allocated(SE%poro_w))   deallocate(SE%poro_w)
-        if (allocated(SE%theta))    deallocate(SE%theta)
+        if (allocated(SE%theta2))   deallocate(SE%theta2)
         if (allocated(SE%bioturb))  deallocate(SE%bioturb)
         if (allocated(SE%bioirr_w)) deallocate(SE%bioirr_w)
 
@@ -559,6 +595,9 @@ contains
         if (allocated(SE%vel_solutes)) deallocate(SE%vel_solutes)
 
         if(allocated(SE%bulk_conc)) deallocate(SE%bulk_conc)
+        if(allocated(SE%diff_sed)) deallocate(SE%diff_sed)
+        if(allocated(SE%Db_eff_solids)) deallocate(SE%Db_eff_solids)
+        if(allocated(SE%swi_flux)) deallocate(SE%swi_flux)
 
         ! ---- Reset workspace ----
         call clear_tridiag(SE%sed_trid)
@@ -568,8 +607,5 @@ contains
         SE%is_init = .false.
         nullify(SE%grid)
     end subroutine clear_sediment_env
-
-
-
 
 end module sediment
