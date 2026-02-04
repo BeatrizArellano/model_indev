@@ -13,11 +13,14 @@ module bio_main
     use pressure,            only: compute_pressure 
     use precision_types,     only: rk, lk
     use read_config_yaml,    only: ConfigParams
-    use sediment,            only: init_sediment, clear_sediment_env, write_tracer_properties
+    use sediment,            only: init_sediment, clear_sediment_env, write_tracer_properties, &
+                                   phase_to_bulk, bulk_to_phase, phase_to_bulk_all, bulk_to_phase_all
+    use sediment_diffusion,  only: scalar_diffusion_sed
+    use sediment_exchange,   only: compute_solute_flux_swi, apply_particulate_deposition, apply_bioirrigation
     use time_types,          only: DateTime
     use tridiagonal,         only: init_tridiag, clear_tridiag
     use vertical_transport,  only: apply_vertical_transport, velocity_at_interfaces
-    use vertical_mixing,     only: scalar_diffusion
+    use vertical_mixing,     only: scalar_diffusion, BC_NEUMANN
     use variable_registry,   only: register_variable, output_all_variables
 
 
@@ -101,6 +104,12 @@ contains
                 if(allocated(BE%SED%bulk_conc)) deallocate(BE%SED%bulk_conc)
                 allocate(BE%SED%bulk_conc(BE%nsed, nint)) 
                 BE%SED%bulk_conc = 0._rk
+
+                ! Array to store sediment-water fluxes of solutes
+                if(allocated(BE%SED%swi_flux)) deallocate(BE%SED%swi_flux)
+                allocate(BE%SED%swi_flux(nint)) 
+                BE%SED%swi_flux = 0._rk
+                
             end if   
             do ivar = 1, nint
                 ! Point FABM to the current concentration state for biogeochemical tracers
@@ -200,7 +209,7 @@ contains
         ! Allocating working arrays        
         allocate(BE%tendency_int(nz,nint))                        ! Sources (dC/dt) 
         allocate(BE%velocity(nz,nint))                            ! Velocities
-        allocate(BE%vel_faces(0:nz,nint))                         ! Velocities at interfaces
+        allocate(BE%vel_faces(0:nz,nint))                       ! Velocities at interfaces for the water column
         allocate(BE%flux_sf(nint));    allocate(BE%flux_bt(nint)) ! Fluxes at the surface and bottom of interior variables 
 
         ! --- Bottom-only state variables ---
@@ -395,6 +404,7 @@ contains
         BE%need_ice_af  = BE%model%is_variable_used(BE%id_ice_af) .or. BE%model%variable_needs_values(BE%id_ice_af)
 
         if (BE%need_pres) BE%need_rho = .true.    ! if pressure is needed, then we need density too
+        if (BE%params%sediments_enabled) BE%need_rho = .true.    ! if sediments are enabled, then we need density
         
         ! Allocating environmental arrays for the full vertical column
         if (BE%need_temp) allocate(BE%BS%temp(nz))
@@ -405,7 +415,7 @@ contains
         if (BE%need_pres) then
             if (.not. allocated(BE%BS%pres)) allocate(BE%BS%pres(nz))
             call register_variable(BE%env_int_vars, name='env_pressure', &
-                                   long_name='Pressure', units='Pa',   &
+                                   long_name='Pressure', units='dbar',   &
                                    vert_coord='centre', n_space_dims=1, data_1d=BE%BS%pres)
         end if
         if (BE%need_par .and. .not. allocated(BE%BS%par)) then
@@ -536,7 +546,14 @@ contains
         integer  :: nz, ivar, k, nint, nsfc, nbtm
         real(rk) :: istep_rk, dt_main, dt_sub
         integer  :: nsub, isub, nsub_adv, nsub_diff, nsub_bio
-        integer  :: kwb, kws, ksb, kss, nwat, nfaces_wat
+        integer  :: kwb, kws, ksb, kss, kswi, nwat, nsed, nfaces_wat
+        real(rk) :: vel_swi, Fdep
+        real(rk) :: c_w, c_s, M_old, M_new
+        real(rk) :: D0, Deff, phi_swi
+        real(rk) :: swi_flux, swi_flux_max, flux_into_water, flux_into_sed
+        real(rk) :: tol
+        real(rk) :: Tbot, Sbot, Pbot
+        logical  :: enforce_nonneg
         integer  :: ierr          
 
         if (.not. BE%is_init) then
@@ -544,7 +561,7 @@ contains
             return
         end if
 
-        nz       = BE%grid%nz              ! Number of vertical layers       
+        nz       = BE%grid%nz              ! Total number of vertical layers       
         istep_rk = real(istep_main, rk)    ! Current time-step number in the main loop
         dt_main  = real(timestep, rk)
         nint     = BE%BS%n_interior        ! Number of interior tracers
@@ -557,7 +574,9 @@ contains
         ksb = BE%k_sed_btm                ! Index for sediment bottom layer
         kss = BE%k_sed_sfc                ! Index for sediment surface layer
         nwat = BE%nwat                    ! number of layers in water column
-        nfaces_wat = nwat + 1             ! Number of layer interfaces in water
+        nsed = BE%nsed                    ! number of layers in sediments
+        kswi = nsed                   ! Index for the sediment-water interface
+        nfaces_wat = nwat + 1             ! Number of layer interfaces in water        
 
 
         BE%BS%doy = doy_fraction
@@ -608,14 +627,16 @@ contains
         !------------------------------------------------------
         call BE%model%finalize_outputs()
 
-        call update_bio_diagnostics(BE)        
+        call update_bio_diagnostics(BE)    
 
         BE%velocity = 0.0_rk
         BE%vel_faces = 0._rk   
         call BE%model%get_vertical_movement(1,nz, BE%velocity)   ! Obtain vertical velocities from FABM
-        call velocity_at_interfaces(BE%velocity, BE%grid, BE%vel_faces)  ! Caluclate velocities at layer interfaces
 
-        ! Compute number of subcycles needed for numerical stabiluty
+        ! Caluclate velocities at layer interfaces only for the water column
+        call velocity_at_interfaces( BE%velocity(kwb:kws, :), BE%wat_grid, BE%vel_faces(kwb-1:kws, :))
+
+        ! Compute number of subcycles needed for numerical stabiluty in the water column
         call compute_bio_substeps(BE%vel_faces, BE%grid%dz, Kz=BE%BS%vert_diff,         &
                                   cnpar=BE%params%cnpar, BE=BE, dt_main=dt_main,        &
                                   frac_max=BE%params%frac_max, dt_min=BE%params%min_dt, &
@@ -623,51 +644,235 @@ contains
                                   nsub_bio=nsub_bio, nsub=nsub, dt_sub=dt_sub)
 
         ! Inner loop to maintain numerical stabilty
-        do isub=1, nsub
+        do isub=1, nsub            
+            !--------------------------------------------------------------
+            ! Vertical diffusivity and burial in the sediment (if enabled)
+            !--------------------------------------------------------------
+            if (BE%params%sediments_enabled) then
+                BE%SED%swi_flux(:) = 0.0_rk
+                ! Compute effective biodiffusivities for particulates
+                BE%SED%Db_eff_solids(0:nsed) = max(0.0_rk, (1.0_rk - BE%SED%poro_w(0:nsed)) * BE%SED%bioturb(0:nsed))
+
+                ! Bottom environmental scalars  
+                Tbot = BE%BS%temp(kwb)             ! bottom-water temperature [C]
+                Sbot = BE%BS%sal(kwb)              ! bottom-water salinity [psu]
+                Pbot = BE%BS%pres(kwb) * 0.1_rk    ! bottom-water pressure [bar] for viscosity calculation: dbar -> bar
+
+                !==============================================================================                       
+                ! Vertical diffusivity and exchange of solutes with the water column
+                !==============================================================================
+                do ivar=1, nint
+
+                    enforce_nonneg = .false.
+                    swi_flux        = 0.0_rk 
+                    if (BE%tracer_info(ivar)%disable_transport) cycle
+                    ! NOTE: diffusion of solutes in sediments is done on porewater concentrations 
+                    if (BE%tracer_info(ivar)%is_solute) then
+
+                        ! Water and sediment concentrations in PHASE-specific units for the SWI exchange
+                        c_w = BE%BS%interior_state(kwb, ivar)         ! bottom water [per water volume]
+                        c_s = BE%BS%interior_state(kss, ivar)         ! concentration per porewater at top sed layer
+                        phi_swi = BE%SED%poro_w(kswi)                 ! Porosity at the sediment-water interface
+                        ! Free-solution molecular diffusivity at in-situ conditions
+                        D0 = molecular_diffusivity(BE%tracer_info(ivar), Tbot, Sbot, Pbot)   ! [m2/s]
+                        ! Effective porewater diffusivity at sediment-water interface
+                        Deff = D0 / max(BE%SED%theta2(kswi), 1.0e-12_rk)   ! Dividing by tortuosity
+
+                        ! Build sediment interface diffusivity for BULK diffusion
+                        ! Canonical for solutes: only molecular diffusion with tortuosity + porosity factor in the bulk flux term:
+                        !    F = - phi_w * (D0/theta^2) * dC_pw/dz
+                        ! Here we approximate this in bulk form by using diff_sed = phi_w * D_eff
+                        do k = 0, nsed
+                            BE%SED%diff_sed(k) = BE%SED%poro_w(k) * D0 / max(BE%SED%theta2(k), 1.0e-12_rk)
+                        end do
+
+                        ! Exchange flux between sediment and water (positive upward into water)
+                        ! NOTE: swi_flux is per total horizontal area, NOT phase area.
+                        call compute_solute_flux_swi(c_w=c_w, c_s=c_s, phi_swi=phi_swi, u_taub=BE%BS%u_taub, z0b=BE%BS%z0b,   &
+                                                     Nz=BE%BS%Nz_btm, Kz=BE%BS%Kz_btm, D_sol=D0, D_eff=Deff, &
+                                                     dz_w=BE%wat_grid%dz(1), dz_sed=BE%sed_grid%dz(kss),     &
+                                                     swi_flux=swi_flux)                
+                                          
+
+                        if (swi_flux > 0._rk) then
+                            !---------------------------------------------------------
+                            ! Sediment is donor: applying Patankar on sediment only
+                            !---------------------------------------------------------
+                            swi_flux_max = (BE%SED%porewat_thickness(kss) * max(BE%BS%interior_state(kss,ivar), 0._rk)) / dt_sub ! Maximum physically possible export flux
+                            swi_flux = min(swi_flux, swi_flux_max)
+                            flux_into_water = swi_flux
+                            flux_into_sed = -swi_flux  ! Flux out of the sediments (negative in this case)
+  
+                            ! Total mass of solute in the sediment column
+                            M_old = sum(BE%BS%interior_state(1:nsed, ivar) * BE%SED%porewat_thickness(1:nsed))
+            
+                            enforce_nonneg = .true.   ! To apply a Patankar limitation 
+
+                            ! Applying diffusion to porewater solute concentration with Neumann BC at top = -swi_flux
+                            ! sediment top boundary flux INTO sediment is negative of upward flux into water
+                            ! Flux at the bottom is 0 consistent with the assumption of a zero gradient with deeper sediment. 
+                            call scalar_diffusion_sed(Var=BE%BS%interior_state(1:nsed, ivar), N=nsed, dt=dt_sub, &
+                                                      h=BE%sed_grid%dz, phase_thickness=BE%SED%porewat_thickness, &
+                                                      diff=BE%SED%diff_sed, cnpar=BE%params%cnpar, tricoef=BE%SED%sed_trid, ierr=ierr, &
+                                                      enforce_nonneg=enforce_nonneg, bc_top_type=BC_NEUMANN, bc_top_value=flux_into_sed, &
+                                                      bc_bot_type=BC_NEUMANN, bc_bot_value=0.0_rk)
+
+                            ! New mass of solute in the sediment column after mixing
+                            M_new = sum(BE%BS%interior_state(1:nsed, ivar) * BE%SED%porewat_thickness(1:nsed))
+
+                            ! Correction of the flux because it was limited by Patankar
+                            swi_flux = max(0._rk, (M_old - M_new) / dt_sub)
+                            tol = 1.0e-12_rk * max(1.0_rk, abs(swi_flux_max))
+                            if (abs(swi_flux) < tol) swi_flux = 0._rk
+
+                            flux_into_water = swi_flux
+
+                            !---------------------------------------------------------
+                            ! Water is receiver: no Patankar (using corrected flux)
+                            !---------------------------------------------------------
+                            call scalar_diffusion(Var=BE%BS%interior_state(kwb:kws,ivar), N=nwat, dt=dt_sub, h=BE%wat_grid%dz, &
+                                                  diff=BE%BS%vert_diff(kwb-1:kws), cnpar=BE%params%cnpar, tricoef=BE%wat_trid, ierr=ierr, &
+                                                  enforce_nonneg=.false., bc_bot_type=BC_NEUMANN, bc_bot_value=flux_into_water)
+
+                        else if (swi_flux < 0._rk) then
+                            !---------------------------------------------------------
+                            ! Water is donor: applying Patankar on water only
+                            !---------------------------------------------------------
+                            swi_flux_max = (BE%wat_grid%dz(1) * max(BE%BS%interior_state(kwb,ivar), 0._rk)) / dt_sub  ! Maximum physically possible export flux
+                            swi_flux = max(swi_flux, -swi_flux_max)   ! since swi_flux is negative
+                            flux_into_water = swi_flux   ! Flux out of the water (negative)
+                            flux_into_sed = -swi_flux    ! Flux into sediments (positive)
+
+                            M_old = sum(BE%BS%interior_state(kwb:kws, ivar) * BE%wat_grid%dz(1:nwat))
+                            enforce_nonneg = .true.   ! To apply a Patankar limitation 
+
+                            ! Diffusion in the water column
+                            call scalar_diffusion(Var=BE%BS%interior_state(kwb:kws,ivar), N=nwat, dt=dt_sub, h=BE%wat_grid%dz, &
+                                                  diff=BE%BS%vert_diff(kwb-1:kws), cnpar=BE%params%cnpar, tricoef=BE%wat_trid, ierr=ierr, &
+                                                  enforce_nonneg=enforce_nonneg, bc_bot_type=BC_NEUMANN, bc_bot_value=flux_into_water)
+
+                            M_new = sum(BE%BS%interior_state(kwb:kws, ivar) * BE%wat_grid%dz(1:nwat))
+                            ! Corrected flux going into the sediments. 
+                            swi_flux = - max(0._rk, (M_old - M_new) / dt_sub) ! Negative to keep sign consistency
+                            tol = 1.0e-12_rk * max(1.0_rk, abs(swi_flux_max))
+                            if (abs(swi_flux) < tol) swi_flux = 0._rk
+
+                            flux_into_sed = -swi_flux    ! Flux into sediments (positive)
+
+                            !---------------------------------------------------------
+                            ! Sediment is receiver: no Patankar (using corrected flux)
+                            !---------------------------------------------------------
+                            call scalar_diffusion_sed(Var=BE%BS%interior_state(1:nsed, ivar), N=nsed, dt=dt_sub,  &
+                                                      h=BE%sed_grid%dz, phase_thickness=BE%SED%porewat_thickness, &
+                                                      diff=BE%SED%diff_sed, cnpar=BE%params%cnpar, tricoef=BE%SED%sed_trid, ierr=ierr, &
+                                                      enforce_nonneg=.false., bc_top_type=BC_NEUMANN, bc_top_value=flux_into_sed, &
+                                                      bc_bot_type=BC_NEUMANN, bc_bot_value=0.0_rk)
+
+                        else 
+                            ! No exchange flux: just diffusing separately with zero Neumann flux
+                            ! Diffusion within the sediments
+                            call scalar_diffusion_sed(Var=BE%BS%interior_state(1:nsed, ivar), N=nsed, dt=dt_sub,   &
+                                                      h=BE%sed_grid%dz, phase_thickness=BE%SED%porewat_thickness, &
+                                                      diff=BE%SED%diff_sed, cnpar=BE%params%cnpar, tricoef=BE%SED%sed_trid, ierr=ierr)
+                            ! Diffusion within the water column
+                            call scalar_diffusion(Var=BE%BS%interior_state(kwb:kws,ivar), N=nwat, dt=dt_sub, h=BE%wat_grid%dz, &
+                                                  diff=BE%BS%vert_diff(kwb-1:kws), cnpar=BE%params%cnpar, tricoef=BE%wat_trid, ierr=ierr)
+
+                        end if
+                        BE%SED%swi_flux(ivar) = swi_flux    
+                        
+                        !-------------------------------------------------------------
+                        !  Bioirrigation (only for solutes)
+                        !-------------------------------------------------------------
+                        ! NOTE: bioirrigation of solutes is done on porewater concentrations 
+                        call apply_bioirrigation(dt=dt_sub, nsed=nsed, ntotal=nz, alpha=BE%SED%bioirr, &
+                                                 porewat_thickness=BE%SED%porewat_thickness, dz_wat_btm=BE%wat_grid%dz(1), &
+                                                 k_wat_btm=kwb, concentration=BE%BS%interior_state(:, ivar))
+
+                    end if
+
+                    !---------------------------------------------------------
+                    ! BIOTURBATION: only on particulate matter (solids)
+                    !----------------------------------------------------------
+                    if (BE%tracer_info(ivar)%is_particulate) then
+!                       ! NOTE: Bioturbation is modelled as a bioduiffusivity process on concentrations per solid volume
+                        call scalar_diffusion_sed(Var=BE%BS%interior_state(1:nsed, ivar), N=nsed, dt=dt_sub,   &
+                                                  h=BE%sed_grid%dz, phase_thickness=BE%SED%solid_thickness, &
+                                                  diff=BE%SED%Db_eff_solids, cnpar=BE%params%cnpar, tricoef=BE%SED%sed_trid, ierr=ierr)
+                    end if
+                end do
+
+                ! Convert from phase-specific concentrations to bulk-sediment volume concentrations
+                call phase_to_bulk_all(C_phase     = BE%BS%interior_state(1:kss, 1:nint), &
+                                       poro        = BE%SED%poro(1:kss), &
+                                       tracer_info = BE%tracer_info(1:nint), &
+                                       C_bulk      = BE%SED%bulk_conc(1:kss, 1:nint))
+                
+
+                !----------------------------------------------------------
+                !--- Particulate deposition at Sediment-water interface
+                !----------------------------------------------------------
+                do ivar=1, nint
+                    if (BE%tracer_info(ivar)%disable_transport) cycle
+                    if (BE%tracer_info(ivar)%is_particulate) then
+                        vel_swi = BE%velocity(kwb, ivar)
+                        call apply_particulate_deposition(Cw_bot        = BE%BS%interior_state(kwb, ivar), &
+                                                          dz_w_bot      = BE%wat_grid%dz(1), &
+                                                          vel_swi       = vel_swi, &
+                                                          dt            = dt_sub, &
+                                                          dz_sed_top    = BE%sed_grid%dz(nsed), &
+                                                          Cbulk_sed_top = BE%SED%bulk_conc(nsed, ivar))    
+                    end if
+                end do
+                !----------------------------------------------------------------
+                !-- Burial advection in the sediments (for porewater and solids)
+                !----------------------------------------------------------------
+                do ivar = 1, nint
+                    if (BE%tracer_info(ivar)%disable_transport) cycle
+                    if (BE%tracer_info(ivar)%is_solute) then
+                        ! Porewater burial
+                        call apply_vertical_transport(BE%SED%bulk_conc(:, ivar),BE%sed_grid, BE%SED%vel_solutes, &
+                                                      dt_sub, bottom_outflow_only = .true.)
+                    else
+                        ! Solids burial
+                        call apply_vertical_transport(BE%SED%bulk_conc(:, ivar), BE%sed_grid, BE%SED%vel_solids, &
+                                                      dt_sub, bottom_outflow_only = .true.)
+                    end if
+                end do
+                ! Update phase-specific concentrations from bulk-concentrations
+                call bulk_to_phase_all(C_bulk      = BE%SED%bulk_conc(1:kss, 1:nint), &
+                                       poro        = BE%SED%poro(1:kss), &
+                                       tracer_info = BE%tracer_info(1:nint), &
+                                       C_phase     = BE%BS%interior_state(1:kss, 1:nint))
+            end if
+
             !------------------------------------------------------------
             ! Apply vertical residual movement and mix tracers vertically in the water column only
             !------------------------------------------------------------
             if (nint>0) then                
                 do ivar=1, nint
+
+                    enforce_nonneg = .false.
                     if (.not. BE%tracer_info(ivar)%disable_transport) then
+
+                        ! Mix internal tracers vertically due to turbulent diffusion.
+                        if (.not. BE%params%sediments_enabled .or. BE%tracer_info(ivar)%is_particulate) then
+                            ! If sediments are enabled, diffusion of solutes within the water column is handled above
+                            call scalar_diffusion(Var=BE%BS%interior_state(kwb:kws,ivar), N=nwat, dt=dt_sub, h=BE%wat_grid%dz, &
+                                              diff=BE%BS%vert_diff(kwb-1:kws), cnpar=BE%params%cnpar, tricoef=BE%wat_trid, ierr=ierr)
+                        end if
+
                         if (any(BE%vel_faces(:, ivar) /= 0._rk)) then  
                             ! Only if the tracer has vertical motion
                             ! Move tracers due to sinking or floating 
                             call apply_vertical_transport(BE%BS%interior_state(kwb:kws,ivar), BE%wat_grid,&
-                                                        w_face=BE%vel_faces(kwb-1:kws,ivar), dt=dt_sub)
-                        end if
-                        ! Mix internal tracers vertically due to turbulent diffusion.
-                        call scalar_diffusion(Var=BE%BS%interior_state(kwb:kws,ivar), N=nwat, dt=dt_sub, h=BE%wat_grid%dz, &
-                                              Kz=BE%BS%vert_diff(kwb-1:kws), cnpar=BE%params%cnpar, tricoef=BE%wat_trid, ierr=ierr)
+                                                          w_face=BE%vel_faces(kwb-1:kws,ivar), dt=dt_sub)
+                        end if                       
+
                     end if
                 end do
-            end if  
+            end if             
             
-            !--------------------------------------------------------------
-            ! Vertical diffusivity and burial in the sediments (if enabled)
-            !--------------------------------------------------------------
-            if (BE%params%sediments_enabled) then
-                !--- Particulate deposition at Sediment-water interface
-                !do ivar=1, nint
-                !    if (BE%tracer_info(ivar)%disable_transport) cycle
-                !    if (BE%tracer_info(ivar)%is_particulate) then
-                !        ! Velocity exactly at the Sediment-water interface
-                !        vel_swi = BE%vel_faces(kwb-1, ivar)   
-!
-                !        ! Only downward movement deposits into sediments.
-                !        if (vel_swi < 0.0_rk) then
-                !            ! Flux out of bottom-water cell into sediments (amount m^-2 s^-1)
-                !            Fdep = (-vel_swi) * BE%BS%interior_state(kwb, ivar)
-!
-                !            ! Remove from bottom water layer
-                !            BE%BS%interior_state(kwb, ivar) = BE%BS%interior_state(kwb, ivar) - dt_sub * Fdep / BE%wat_grid%dz(1)
-!
-                !            ! Add to top sediment layer bulk inventory
-                !            BE%SED%bulk_conc(kss, ivar) = BE%SED%bulk_conc(kss, ivar) + dt_sub * Fdep / BE%sed_grid%dz(nsed)
-                !        end if
-                !    end if
-                !end do
-            end if
             
             !call BE%model%link_all_interior_state_data(BE%BS%interior_state)
 
@@ -758,6 +963,9 @@ contains
         if (allocated(BE%BS%par))       deallocate(BE%BS%par)
         if (allocated(BE%BS%vert_diff)) deallocate(BE%BS%vert_diff)
 
+        if (allocated(BE%vel_faces))   deallocate(BE%vel_faces)
+        if (allocated(BE%tracer_info)) deallocate(BE%tracer_info)
+
         !Clean variable Metadata
         ! Interior bio variables
         if (allocated(BE%int_vars)) then
@@ -825,6 +1033,13 @@ contains
         end if
         BE%n_conserved = 0
 
+        if (allocated(BE%env_int_vars)) then
+            do i = 1, size(BE%env_int_vars)
+                nullify(BE%env_int_vars(i)%data_0d)
+                nullify(BE%env_int_vars(i)%data_1d)
+            end do
+            deallocate(BE%env_int_vars)
+        end if
 
         ! Deallocate BioEnv working arrays
         if (allocated(BE%velocity))     deallocate(BE%velocity)
@@ -855,9 +1070,7 @@ contains
         BE%need_swr_sfc = .false.
         BE%need_cloud   = .false.
         BE%need_stressb = .false.
-        BE%need_co2     = .false.
-
-        
+        BE%need_co2     = .false.        
 
         BE%is_init = .false.
     end subroutine end_bio_fabm
@@ -921,10 +1134,17 @@ contains
 ! Change when we have a parameter for par_fraction
         BE%BS%par_sfc   = BE%BS%short_rad * 0.45_rk
 
+        ! Bottom scalars
+        BE%BS%u_taub  = PS%u_taub
+        BE%BS%z0b     = PS%z0b
+        BE%BS%Nz_btm  = PS%Nz(1)  ! Momentum viscosity just above the sediment-water interface
+        BE%BS%Kz_btm  = PS%Kz(1)  ! Eddy diffusivity just above the sediment-water interface
+
+
         ! ---- Pressure: compute on water only, then keep constant in sediments
         if (BE%need_pres) then
             ! compute water-only pressure into the water domain
-            call compute_pressure(BE%wat_grid%dz, BE%BS%rho(kwb:kws), BE%BS%pres(kwb:kws))
+            call compute_pressure(BE%wat_grid%dz, BE%BS%rho(kwb:kws), BE%BS%pres(kwb:kws))   ! [dbar]
             if (BE%params%sediments_enabled) then
                 Pbot = BE%BS%pres(kwb)
                 BE%BS%pres(1:nsed) = Pbot   ! Copy bottom-water pressure in sediment layers
@@ -1008,7 +1228,5 @@ contains
 
         if (.not. allocated(BE%env_int_vars))    allocate(BE%env_int_vars(0))
     end subroutine allocate_metadata_arrays
-
-
 
 end module bio_main
