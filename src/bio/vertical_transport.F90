@@ -31,15 +31,17 @@ contains
    !
    ! On exit, C is updated in place.
    !--------------------------------------------------------------------
-   subroutine apply_vertical_transport(C, grid, w_face, dt)
+   subroutine apply_vertical_transport(C, grid, w_face, dt, bottom_outflow_only)
       real(rk),           intent(inout) :: C(:)
       type(VerticalGrid), intent(in)    :: grid
       real(rk),           intent(in)    :: w_face(0:)
       real(rk),           intent(in)    :: dt
+      logical, optional,  intent(in)    :: bottom_outflow_only  ! Activate only outflow at the bottom boundary
 
       integer  :: N, k
       real(rk), allocatable :: F(:)   ! fluxes at interfaces 0..N
       real(rk), allocatable :: dC(:)  ! tendencies 1..N
+      logical :: l_bot_outflow
 
       N = grid%nz
 
@@ -52,12 +54,27 @@ contains
       end if
       if (dt <= 0._rk) return
 
-      allocate(F(0:N))
-      allocate(dC(N))
+      allocate(F(0:N));  F  = 0._rk
+      allocate(dC(N));   dC = 0._rk
 
-      
-      F(0) = 0._rk    ! No flux at bottom
-      F(N) = 0._rk    ! No flux at surface
+      l_bot_outflow = .false.
+      if (present(bottom_outflow_only))   l_bot_outflow = bottom_outflow_only
+
+      ! ----------------------------
+      ! Top boundary flux F(N): no-flux 
+      ! ----------------------------
+      F(N) = 0._rk
+
+      ! ----------------------------
+      ! Bottom boundary flux F(0)
+      ! ----------------------------
+      if (l_bot_outflow .and. w_face(0) < 0._rk) then
+         ! allow outflow (burial loss) only, no inflow from below
+         F(0) = w_face(0) * C(1)
+      else
+         ! No flux at the bottom
+         F(0) = 0._rk
+      end if      
 
       ! Compute fluxes at interior interfaces (first-order upwind)
       do k = 1, N-1
