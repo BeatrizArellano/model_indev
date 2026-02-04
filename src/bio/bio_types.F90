@@ -31,7 +31,7 @@ module bio_types
     real(rk),         allocatable :: surface_state(:)        ! State of surface variables
     ! Relevant Physical variables
     real(rk), allocatable :: temp(:), sal(:), rho(:)         ! temperature, salinity and density (From surface to bottom)
-    real(rk), allocatable :: pres(:)                         ! pressure [dbar]       (optional)
+    real(rk), allocatable :: pres(:)                         ! pressure [dbar]     (optional)
     real(rk), allocatable :: swr(:),  par(:)                 ! PAR profile [W/m2]  (optional)
     real(rk), allocatable :: vert_diff(:)                    ! vertical diffusivity
     ! Surface variables
@@ -43,6 +43,11 @@ module bio_types
     real(rk) :: cloud      = 0._rk                          ! cloud fraction [0-1], optional
     real(rk) :: stressb    = 0._rk                          ! bottom stress magnitude [Pa], optional
     real(rk) :: ice_af     = 0._rk                          ! Ice area fraction (Always 0 for now)
+    ! Bottom variables for the sediments
+    real(rk) :: u_taub     = 0._rk                          ! Friction velocity
+    real(rk) :: z0b        = 0._rk                          ! Bottom roughness length
+    real(rk) :: Nz_btm     = 0._rk                          ! momentum viscosity just above the bottom
+    real(rk) :: Kz_btm     = 0._rk                          ! Eddy diffusivity just above the bottom
     ! Number of days since the start of the year
     real(rk) :: doy        = 0._rk
   end type BioState
@@ -97,12 +102,14 @@ module bio_types
 
       integer :: nz = 0
       ! ---- Properties at layers' centres (1:nz)
-      real(rk), allocatable :: poro(:)     ! [-] porosity at centres
-      real(rk), allocatable :: bioirr(:)   ! [s-1] 
+      real(rk), allocatable :: poro(:)              ! [-] porosity at centres
+      real(rk), allocatable :: porewat_thickness(:) ! [m] Storage capacity of porewater per unit horizontal-area
+      real(rk), allocatable :: solid_thickness(:)   ! [m] Storage capacity of solids per unit horizontal area
+      real(rk), allocatable :: bioirr(:)            ! [s-1] 
 
       ! ---- Properties at layer interfaces (0:nz)
       real(rk), allocatable :: poro_w(:)     ! [-] porosity at interfaces
-      real(rk), allocatable :: theta(:)      ! [-] Diffusion tortuosity factor (Boudreau 1997), used as D_eff = D0 / theta2
+      real(rk), allocatable :: theta2(:)      ! [-] Diffusion tortuosity factor (Boudreau 1997), used as D_eff = D0 / theta2
       real(rk), allocatable :: bioturb(:)    ! [m2/s] particulate diffusivity    
       real(rk), allocatable :: bioirr_w(:)   ! [s-1] 
       ! --- Burial velocities
@@ -111,7 +118,9 @@ module bio_types
 
       ! ---- Working arrays
       real(rk), allocatable :: bulk_conc(:,:)      ! (nsed, n_interior) Bulk-sediment concentrations for mass-conservation
-      real(rk), allocatable :: tendency_sed(:,:)   ! (nsed, n_interior)
+      real(rk), allocatable :: diff_sed(:)         ! Array to store effective diffusivities scaled by tortuosity per tracer
+      real(rk), allocatable :: Db_eff_solids(:)           ! Array to store effective bioturbation diffusivity (scaled by 1-phi)
+      real(rk), allocatable :: swi_flux(:)         ! Flux of solutes at the sediment-water interface (tracer specific)
       ! Working space
     type(TridiagCoeff)      :: sed_trid            ! workspace for solving scalar diffusion
   end type SedimentEnv  
