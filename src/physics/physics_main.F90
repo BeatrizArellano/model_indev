@@ -38,6 +38,10 @@ module physics_main
   use phys_var_registry,   only: register_physics_variables
   use physics_types,       only: PhysicsState, PhysicsEnv
   use nan_checks,          only: check_nan_physics
+
+
+
+   use, intrinsic :: ieee_arithmetic, only: ieee_is_nan
   
   implicit none
   private
@@ -54,7 +58,7 @@ contains
       ! Receives from main: user config and location
       type(ConfigParams), intent(in)    :: cfg_params
       type(LocationInfo), intent(in)    :: location
-      type(VerticalGrid), intent(in)    :: grid
+      type(VerticalGrid), intent(in)    :: grid     ! water grid
       type(PhysicsEnv),   intent(inout) :: PE
 
       integer :: k
@@ -242,6 +246,13 @@ contains
           call scalar_diffusion(PE%PS%temp, N, dt_sub, PE%grid%dz, Kz_T, PE%params%cnpar, PE%trid, ierr)
           ! Recompute density after thermal mixing
           PE%PS%rho = eos_density(PE%PS%temp, PE%PS%sal)
+
+!!! DEBUG
+if (ieee_is_nan(PE%PS%velx(1))) then
+    write(*,'(A)') 'NaN after <KERNEL_NAME>'
+    stop
+end if
+!!!
 
           call check_nan_physics(PE%PS)
       end do
