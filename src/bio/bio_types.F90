@@ -119,7 +119,9 @@ module bio_types
       ! ---- Working arrays
       real(rk), allocatable :: bulk_conc(:,:)      ! (nsed, n_interior) Bulk-sediment concentrations for mass-conservation
       real(rk), allocatable :: diff_sed(:)         ! Array to store effective diffusivities scaled by tortuosity per tracer
-      real(rk), allocatable :: Db_eff_solids(:)           ! Array to store effective bioturbation diffusivity (scaled by 1-phi)
+      real(rk), allocatable :: diff_sed0(:)        ! Array to store free-solution diffusivities (not scaled)
+      real(rk), allocatable :: diff_sed_max(:)     ! Array to store maximum effective diffusivities scaled by tortuosity for all tracers
+      real(rk), allocatable :: Db_eff_solids(:)    ! Array to store effective bioturbation diffusivity (scaled by 1-phi)
       real(rk), allocatable :: swi_flux(:)         ! Flux of solutes at the sediment-water interface (tracer specific)
       ! Working space
     type(TridiagCoeff)      :: sed_trid            ! workspace for solving scalar diffusion
