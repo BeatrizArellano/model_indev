@@ -6,7 +6,7 @@ module bio_main
     use geo_utils,           only: LocationInfo
     use physics_types,       only: PhysicsState
     use forcing_manager,     only: ForcingSnapshot
-    use grids,               only: VerticalGrid, build_sediment_grid, build_full_grid, write_vertical_grid
+    use grids,               only: VerticalGrid
     use light,               only: compute_SW_profile, compute_PAR_profile
     use molecular_diffusion, only: molecular_diffusivity
     use numerical_stability, only: compute_bio_substeps
@@ -32,10 +32,12 @@ module bio_main
 
 contains
 
-    subroutine init_bio_fabm(cfg, location, grid, timestep, PS, FS, BE)
+    subroutine init_bio_fabm(cfg, location, wat_grid, sed_grid, full_grid, timestep, PS, FS, BE)
         type(ConfigParams),       intent(in) :: cfg
         type(LocationInfo),       intent(in) :: location
-        type(VerticalGrid),       intent(in) :: grid
+        type(VerticalGrid),       intent(in) :: wat_grid
+        type(VerticalGrid),       intent(in) :: sed_grid
+        type(VerticalGrid),       intent(in) :: full_grid
         integer(lk), intent(in)              :: timestep
         type(PhysicsState),       intent(in) :: PS
         type(ForcingSnapshot),    intent(in) :: FS
@@ -52,15 +54,13 @@ contains
         call read_bio_parameters(cfg,BE%params)
 
         dt_main     = real(timestep, rk)
-        BE%wat_grid = grid               ! Water grid
+        BE%wat_grid = wat_grid               ! Water grid
         BE%nwat     = BE%wat_grid%nz
+        BE%grid     = full_grid
+        BE%sed_grid = sed_grid
 
         if (BE%params%sediments_enabled) then
-            ! Build sediment grid and full column grid
-            write(*,'(A)') '  Building the combined water-sediment grid...'
-            call build_sediment_grid(cfg,BE%sed_grid)
-            call build_full_grid(BE%wat_grid, BE%sed_grid, BE%grid)
-            call write_vertical_grid(BE%grid, 'Vertical_grid.dat', n_sed=BE%sed_grid%nz)
+            if (full_grid%nz /= sed_grid%nz + wat_grid%nz) stop 'init_bio_fabm: full_grid size mismatch'
             write(*,'(A)') '  Computing profiles for sediment properties...'
             call init_sediment(cfg,BE%sed_grid, BE%SED)
             ! Number of sediment/water layers and useful indices
@@ -73,7 +73,6 @@ contains
                 write(*,'("  ✓ Sediments initialised successfully with ",I0," layers.")') BE%nsed
             end if
         else 
-            BE%grid = BE%wat_grid           ! The full grid corresponds to the water grid when sediments disabled
             BE%nsed = 0
             BE%k_sed_btm = 0
             BE%k_sed_sfc = 0
@@ -104,6 +103,11 @@ contains
                 if(allocated(BE%SED%bulk_conc)) deallocate(BE%SED%bulk_conc)
                 allocate(BE%SED%bulk_conc(BE%nsed, nint)) 
                 BE%SED%bulk_conc = 0._rk
+
+                ! Array to store free-solution molecular diffusivities in the sediment (unique per tracer)
+                if (allocated(BE%SED%diff_sed0)) deallocate(BE%SED%diff_sed0)
+                allocate(BE%SED%diff_sed0(nint)) 
+                BE%SED%diff_sed0 = 0.0_rk
 
                 ! Array to store sediment-water fluxes of solutes
                 if(allocated(BE%SED%swi_flux)) deallocate(BE%SED%swi_flux)
@@ -549,7 +553,7 @@ contains
         integer  :: kwb, kws, ksb, kss, kswi, nwat, nsed, nfaces_wat
         real(rk) :: vel_swi, Fdep
         real(rk) :: c_w, c_s, M_old, M_new
-        real(rk) :: D0, Deff, phi_swi
+        real(rk) :: D0, D0_max, Deff, phi_swi
         real(rk) :: swi_flux, swi_flux_max, flux_into_water, flux_into_sed
         real(rk) :: tol
         real(rk) :: Tbot, Sbot, Pbot
@@ -636,12 +640,38 @@ contains
         ! Caluclate velocities at layer interfaces only for the water column
         call velocity_at_interfaces( BE%velocity(kwb:kws, :), BE%wat_grid, BE%vel_faces(kwb-1:kws, :))
 
+
+        !----------------------------------------------------
+        ! Compute molecular diffusivities per tracer (sediments only)
+        !--------------------------------------------------
+        if (BE%params%sediments_enabled) then
+            ! Bottom environmental scalars  
+            Tbot = BE%BS%temp(kwb)             ! bottom-water temperature [C]
+            Sbot = BE%BS%sal(kwb)              ! bottom-water salinity [psu]
+            Pbot = BE%BS%pres(kwb) * 0.1_rk    ! bottom-water pressure [bar] for viscosity calculation: dbar -> bar
+            D0_max = 0._rk
+            do ivar=1, nint
+                if (BE%tracer_info(ivar)%is_solute .and. .not. BE%tracer_info(ivar)%disable_transport) then
+                    ! Free-solution molecular diffusivity at in-situ conditions
+                    D0 = molecular_diffusivity(BE%tracer_info(ivar), Tbot, Sbot, Pbot)   ! [m2/s]
+                    BE%SED%diff_sed0(ivar) = D0
+                    ! Maximum diffusivity from tracers (to compute substeps for stability)
+                    D0_max = max(D0_max, D0)
+                end if
+            end do
+            if (D0_max <= 0._rk) D0_max = 1.0e-9_rk   ! typical molecular D in seawater
+
+            do k = 0, BE%nsed
+                BE%SED%diff_sed_max(k) = BE%SED%poro_w(k) * D0_max / max(BE%SED%theta2(k), 1.0e-12_rk)
+            end do
+
+            ! Compute effective biodiffusivities for particulates
+            BE%SED%Db_eff_solids(0:nsed) = max(0.0_rk, (1.0_rk - BE%SED%poro_w(0:nsed)) * BE%SED%bioturb(0:nsed))
+        end if
+
         ! Compute number of subcycles needed for numerical stabiluty in the water column
-        call compute_bio_substeps(BE%vel_faces, BE%grid%dz, Kz=BE%BS%vert_diff,         &
-                                  cnpar=BE%params%cnpar, BE=BE, dt_main=dt_main,        &
-                                  frac_max=BE%params%frac_max, dt_min=BE%params%min_dt, &
-                                  nsub_adv=nsub_adv, nsub_diff=nsub_diff,               &
-                                  nsub_bio=nsub_bio, nsub=nsub, dt_sub=dt_sub)
+        call compute_bio_substeps(BE, dt_main, BE%params%frac_max, BE%params%min_dt, &
+                                  nsub_adv, nsub_diff, nsub_bio, nsub, dt_sub)
 
         ! Inner loop to maintain numerical stabilty
         do isub=1, nsub            
@@ -650,13 +680,6 @@ contains
             !--------------------------------------------------------------
             if (BE%params%sediments_enabled) then
                 BE%SED%swi_flux(:) = 0.0_rk
-                ! Compute effective biodiffusivities for particulates
-                BE%SED%Db_eff_solids(0:nsed) = max(0.0_rk, (1.0_rk - BE%SED%poro_w(0:nsed)) * BE%SED%bioturb(0:nsed))
-
-                ! Bottom environmental scalars  
-                Tbot = BE%BS%temp(kwb)             ! bottom-water temperature [C]
-                Sbot = BE%BS%sal(kwb)              ! bottom-water salinity [psu]
-                Pbot = BE%BS%pres(kwb) * 0.1_rk    ! bottom-water pressure [bar] for viscosity calculation: dbar -> bar
 
                 !==============================================================================                       
                 ! Vertical diffusivity and exchange of solutes with the water column
@@ -673,9 +696,8 @@ contains
                         c_w = BE%BS%interior_state(kwb, ivar)         ! bottom water [per water volume]
                         c_s = BE%BS%interior_state(kss, ivar)         ! concentration per porewater at top sed layer
                         phi_swi = BE%SED%poro_w(kswi)                 ! Porosity at the sediment-water interface
-                        ! Free-solution molecular diffusivity at in-situ conditions
-                        D0 = molecular_diffusivity(BE%tracer_info(ivar), Tbot, Sbot, Pbot)   ! [m2/s]
-                        ! Effective porewater diffusivity at sediment-water interface
+                                            ! Effective porewater diffusivity at sediment-water interface
+                        D0 = BE%SED%diff_sed0(ivar)
                         Deff = D0 / max(BE%SED%theta2(kswi), 1.0e-12_rk)   ! Dividing by tortuosity
 
                         ! Build sediment interface diffusivity for BULK diffusion
@@ -713,7 +735,7 @@ contains
                             ! Flux at the bottom is 0 consistent with the assumption of a zero gradient with deeper sediment. 
                             call scalar_diffusion_sed(Var=BE%BS%interior_state(1:nsed, ivar), N=nsed, dt=dt_sub, &
                                                       h=BE%sed_grid%dz, phase_thickness=BE%SED%porewat_thickness, &
-                                                      diff=BE%SED%diff_sed, cnpar=BE%params%cnpar, tricoef=BE%SED%sed_trid, ierr=ierr, &
+                                                      diff=BE%SED%diff_sed, cnpar=BE%SED%params_SI%cnpar_sed, tricoef=BE%SED%sed_trid, ierr=ierr, &
                                                       enforce_nonneg=enforce_nonneg, bc_top_type=BC_NEUMANN, bc_top_value=flux_into_sed, &
                                                       bc_bot_type=BC_NEUMANN, bc_bot_value=0.0_rk)
 
@@ -764,7 +786,7 @@ contains
                             !---------------------------------------------------------
                             call scalar_diffusion_sed(Var=BE%BS%interior_state(1:nsed, ivar), N=nsed, dt=dt_sub,  &
                                                       h=BE%sed_grid%dz, phase_thickness=BE%SED%porewat_thickness, &
-                                                      diff=BE%SED%diff_sed, cnpar=BE%params%cnpar, tricoef=BE%SED%sed_trid, ierr=ierr, &
+                                                      diff=BE%SED%diff_sed, cnpar=BE%SED%params_SI%cnpar_sed, tricoef=BE%SED%sed_trid, ierr=ierr, &
                                                       enforce_nonneg=.false., bc_top_type=BC_NEUMANN, bc_top_value=flux_into_sed, &
                                                       bc_bot_type=BC_NEUMANN, bc_bot_value=0.0_rk)
 
@@ -773,7 +795,7 @@ contains
                             ! Diffusion within the sediments
                             call scalar_diffusion_sed(Var=BE%BS%interior_state(1:nsed, ivar), N=nsed, dt=dt_sub,   &
                                                       h=BE%sed_grid%dz, phase_thickness=BE%SED%porewat_thickness, &
-                                                      diff=BE%SED%diff_sed, cnpar=BE%params%cnpar, tricoef=BE%SED%sed_trid, ierr=ierr)
+                                                      diff=BE%SED%diff_sed, cnpar=BE%SED%params_SI%cnpar_sed, tricoef=BE%SED%sed_trid, ierr=ierr)
                             ! Diffusion within the water column
                             call scalar_diffusion(Var=BE%BS%interior_state(kwb:kws,ivar), N=nwat, dt=dt_sub, h=BE%wat_grid%dz, &
                                                   diff=BE%BS%vert_diff(kwb-1:kws), cnpar=BE%params%cnpar, tricoef=BE%wat_trid, ierr=ierr)
@@ -798,7 +820,7 @@ contains
 !                       ! NOTE: Bioturbation is modelled as a bioduiffusivity process on concentrations per solid volume
                         call scalar_diffusion_sed(Var=BE%BS%interior_state(1:nsed, ivar), N=nsed, dt=dt_sub,   &
                                                   h=BE%sed_grid%dz, phase_thickness=BE%SED%solid_thickness, &
-                                                  diff=BE%SED%Db_eff_solids, cnpar=BE%params%cnpar, tricoef=BE%SED%sed_trid, ierr=ierr)
+                                                  diff=BE%SED%Db_eff_solids, cnpar=BE%SED%params_user%cnpar_sed, tricoef=BE%SED%sed_trid, ierr=ierr)
                     end if
                 end do
 
@@ -1119,7 +1141,7 @@ contains
 
         ! ---- Vertical diffusivity at layer interfaces
         if (BE%params%sediments_enabled .and. nsed > 0) then
-            BE%BS%vert_diff(0:nsed)      = 0.0_rk                      ! sediment interfaces Kz is zero in the sediments
+            BE%BS%vert_diff(0:nsed-1)      = 0.0_rk                      ! sediment interfaces Kz is zero in the sediments
             BE%BS%vert_diff(nsed:nz)     = PS%Kz(0:nwat) + mol_diff    ! Vertical eddy diffusivity
         else
             BE%BS%vert_diff(0:nz)        = PS%Kz(0:nwat) + mol_diff
