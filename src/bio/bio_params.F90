@@ -52,6 +52,8 @@ module bio_params
         !--- Bioirrigation
         real(rk) :: irr_sfc                ! Exchange rate at the sediment-water interface (user: 1/yr; SI: 1/s) (alpha0 in Aller's model)
         real(rk) :: irr_ez                 ! Decay depth for exponential attenuation of irrigation (user: cm; SI: m)
+        ! --- Numerics
+        real(rk) :: cnpar_sed              ! Crank-Nicholson parameter to solve diffusive mixing [default=0.9, min=0, max=1]
     end type SedParams
 
     real(rk), parameter :: mol_diff   = 1.0e-6_rk             ! Molecular diffusivity in the water column [m2 s-1]
@@ -76,6 +78,7 @@ module bio_params
     real(rk), parameter :: def_biot_ez    = 1.0_rk        ! Coefficient (decay depth) for exponential bioturbation decrease [cm]
     real(rk), parameter :: def_irr_sfc    = 200_rk        ! Irrigation rate at the sediment-water interface [yr-1]
     real(rk), parameter :: def_irr_ez     = 2.0_rk        ! Decay depth for exponential attenuation of irrigation [cm]
+    real(rk), parameter :: def_cnpar_sed  = 0.9_rk        ! Crank-Nicholson parameter to solve diffusive mixing [-]
     !-------------------------------------------------------------------------------------------------------------
 
 
@@ -133,6 +136,8 @@ contains
         !--------- Bioirrigation profile -------
         SedP%irr_sfc = cfg_params%get_param_num('biogeochemistry.sediments.irrigation_surface', default=def_irr_sfc, finite=.true., min=0.0_rk)
         SedP%irr_ez  = cfg_params%get_param_num('biogeochemistry.sediments.irrigation_decay_depth', default=def_irr_ez, finite=.true., positive=.true.)
+        !--------- Numerics---------------------
+        SedP%cnpar_sed  = cfg_params%get_param_num('biogeochemistry.sediments.cnpar_sed', default=def_cnpar_sed, finite=.true., min=0.0_rk, max=1._rk)
     end subroutine read_sed_parameters
 
 end module bio_params
