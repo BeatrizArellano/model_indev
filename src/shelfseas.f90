@@ -6,7 +6,7 @@ module shelfseas
   use time_types,       only: DateTime, CFCalendar
   use validation_utils, only: validate_input_dates, validate_location_input, print_header
   use sim_clocks,       only: init_clock, print_progress, simtime_to_datetime
-  use grids,            only: VerticalGrid, build_water_grid, write_vertical_grid
+  use grids,            only: VerticalGrid, build_grids
   use forcing_manager,  only: ForcingManager, ForcingSnapshot
   use physics_types,    only: PhysicsState, PhysicsEnv
   use physics_main,     only: init_physics, solve_physics, end_physics
@@ -28,7 +28,8 @@ module shelfseas
 
   
   character(len=20), public :: config_file = 'main.yaml'  
-  logical  :: is_bio_enabled         = .false.
+  logical  :: is_bio_enabled      = .false.
+  logical  :: is_sed_enabled      = .false.
   logical  :: is_main_initialized = .false.
   logical  :: stop_on_error = .true.                 ! Full stop on error  -> useful in the future when running multiple columns
   logical  :: ok = .false.
@@ -42,7 +43,7 @@ module shelfseas
   type(LocationInfo)    :: location
   type(DateTime)        :: start_datetime, end_datetime, current_datetime
   type(CFCalendar)      :: calendar
-  type(VerticalGrid)    :: wgrid, grid_out
+  type(VerticalGrid)    :: wat_grid, sed_grid, full_grid
   type(ForcingManager)  :: ForcMan
   type(ForcingSnapshot) :: ForcSnp
   type(PhysicsEnv)      :: PE
@@ -70,9 +71,14 @@ contains
         ! Print header for simulation
         call print_header(location,start_datetime,end_datetime) 
 
-        ! Builds vertical grid for the water column 
-        call build_water_grid(cfg_params, location%depth, wgrid)
-        call write_vertical_grid(wgrid, 'Vertical_grid.dat')
+        ! Verify if biogeochemistry is enabled
+        is_bio_enabled = cfg_params%get_param_logical('biogeochemistry.enabled', default=.false.)
+         if (is_bio_enabled) then
+            is_sed_enabled = cfg_params%get_param_logical('biogeochemistry.sediments.enabled', default=.false.)
+        end if
+
+        ! Build vertical grids: water, sediment (if enabled), and full grid
+        call build_grids(cfg_params, location%depth, is_bio_enabled, is_sed_enabled, wat_grid, sed_grid, full_grid)
 
         ! Verify and initialise forcing data
         call ForcMan%set_error_mode(stop_on_error)  
@@ -91,16 +97,13 @@ contains
         if (.not. ok) stop 'prepare_forcing failed: '//trim(msg)
 
         ! Initialise physics
-        call init_physics(cfg_params, location, wgrid, PE)
+        call init_physics(cfg_params, location, wat_grid, PE)
 
-        ! Verify if biogeochemistry is enabled, and initialise it if that's the case
-        is_bio_enabled = cfg_params%get_param_logical('biogeochemistry.enabled', default=.false.)
+        ! Initialise biogeochemistry if it's the case
         if (is_bio_enabled) then
-            call init_bio_fabm(cfg_params, location, wgrid, dt, PE%PS, ForcSnp, BE)
-            grid_out = BE%grid
+            call init_bio_fabm(cfg_params, location, wat_grid, sed_grid, full_grid, dt, PE%PS, ForcSnp, BE)
             nsed = BE%nsed
         else 
-            grid_out = PE%grid     ! water-only
             nsed = 0
             write(*,'(A)') 'Preparing a physics-only simulation (biogeochemistry is turned off).'
         end if
@@ -115,7 +118,7 @@ contains
         calname    = trim(calendar%name())
 
         ! Initialise output manager and output file
-        call OM%init(cfg_params, grid_out, dt_s=dt, time_units=time_units, calendar_name=calname, &
+        call OM%init(cfg_params, full_grid, dt_s=dt, time_units=time_units, calendar_name=calname, &
                     vars=all_vars, loc=location, n_sed=nsed)
 
         is_main_initialized = .true.     
