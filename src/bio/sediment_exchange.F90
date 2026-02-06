@@ -170,7 +170,7 @@ contains
         if (vel_swi < 0._rk) then
             ! Flux
             Fdep = (-vel_swi) * Cw_bot              ! [m/s]*[mass/m3]=[mass/m2/s]
-            !Fdep = min(Fdep, Cw_bot * dz_w_bot / dt)   ! prevents immediate negative 
+            Fdep = min(Fdep, Cw_bot * dz_w_bot / dt)   ! prevents immediate negative 
             ! Update concentration at the bottom layer of the water column (Forward Euler)
             Cw_bot = Cw_bot - dt * Fdep / dz_w_bot
             ! update sediment surface concentration (Forward Euler)
@@ -230,14 +230,7 @@ contains
         integer  :: k
         real(rk) :: Hpw, alpha_k
         real(rk) :: Cbw, Cs, dM, dMtot
-        real(rk) :: rmax, lambda
         real(rk), parameter :: eps = 1.0e-30_rk  
-
-        rmax    = maxval(alpha) * dt
-        lambda  = dt * sum(alpha * porewat_thickness) / max(dz_wat_btm, eps)
-        ! --- Stability / positivity checks for explicit Euler 
-        if (rmax   > 1._rk)  stop 'bioirrigation: alpha*dt > 1 (needs more global substeps)'
-        if (lambda > 1._rk)  stop 'bioirrigation: lambda > 1 (bottom water can go negative)'
 
         Cbw = concentration(k_wat_btm)
         dMtot = 0._rk
