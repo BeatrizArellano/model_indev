@@ -1,4 +1,5 @@
 module numerical_stability
+  use bio_types,       only: BioEnv
   use precision_types, only: rk
   use, intrinsic :: ieee_arithmetic, only: ieee_is_nan
 
@@ -93,80 +94,167 @@ contains
       ierr = 1
       errmsg = 'compute_phys_subcycles: internal time-step < 0.1 s;  Increase layer thickness in the vertical grid.'
     end if
+    if (.not. (dt_safe > 0._rk) .or. ieee_is_nan(dt_safe)) then
+      ierr = 2
+      errmsg = 'compute_phys_subcycles: dt_safe not positive (bad viscosity/diffusivity inputs).'
+      n_sub = 1
+      dt_sub = dt_main
+      return
+    end if
   end subroutine compute_phys_subcycles
 
 
   ! Computes the number of subcycles required while updating biogeochemistry, considering potential limiting factors for all processes. 
-  subroutine compute_bio_substeps(w_face, dz, Kz, cnpar, BE,                       &
-                                  dt_main, frac_max, dt_min,                       &
-                                  nsub_adv, nsub_diff, nsub_bio, nsub, dt_sub)
-      use bio_types,       only: BioEnv
-      implicit none
+  subroutine compute_bio_substeps(BE, dt_main, frac_max, dt_min, &
+                                  nsub_adv, nsub_diff, nsub_bio, &
+                                  nsub, dt_sub,                  &
+                                  nsub_burial, nsub_bioirr, nsub_dep, nsub_sed_diff)
 
-      !--- Inputs ---
-      real(rk),           intent(in)  :: w_face(0:,:)     ! (0:N, ntr)
-      real(rk),           intent(in)  :: dz(:)            ! (1:N)
-      real(rk),           intent(in)  :: Kz(0:)           ! (0:N)
-      real(rk),           intent(in)  :: cnpar
-      type(BioEnv),       intent(in)  :: BE
-      real(rk),           intent(in)  :: dt_main
-      real(rk),           intent(in)  :: frac_max         ! e.g. 0.25_rk for bio
-      real(rk),           intent(in)  :: dt_min           ! minimum allowed substep [s]
+    !--- Inputs ---
+    type(BioEnv), intent(in) :: BE
+    real(rk),     intent(in) :: dt_main
+    real(rk),     intent(in) :: frac_max
+    real(rk),     intent(in) :: dt_min
 
-      !--- Outputs ---
-      integer,            intent(out) :: nsub_adv, nsub_diff, nsub_bio
-      integer,            intent(out) :: nsub
-      real(rk),           intent(out) :: dt_sub
+    !--- Outputs (core) ---
+    integer,      intent(out) :: nsub_adv, nsub_diff, nsub_bio
+    integer,      intent(out) :: nsub
+    real(rk),     intent(out) :: dt_sub
 
-      !Locals
-      real(rk) :: cfl_adv
-      real(rk) :: dt_dummy_diff, dt_dummy_bio
-      real(rk) :: nsub_real_limit
-      integer  :: nsub_limit
+    !--- Optional extra diagnostics (useful for logging) ---
+    integer,      intent(out), optional :: nsub_burial, nsub_bioirr, nsub_dep, nsub_sed_diff
 
-      !-----------------------------
-      ! Substeps from vertical transport (sinking or rising)
-      !-----------------------------
-      call compute_transport_substeps(w_face, dz, dt_main, cfl_adv, nsub_adv)
+    !--- Locals ---
+    integer  :: kwb, kws, nwat, nsed
+    real(rk) :: cfl_adv, cfl_adv_sol, cfl_adv_sld
+    real(rk) :: dt_dummy
+    real(rk) :: nsub_real_limit
+    integer  :: nsub_limit
 
-      !-----------------------------
-      ! Substeps from diffusion
-      !-----------------------------
-      call compute_diffusion_substeps(Kz, dz, dt_main, cnpar, nsub_diff, dt_dummy_diff)
+    integer :: ns_burial, ns_bioirr, ns_dep, ns_sed_diff, ns_sed_biot, ns_burial_sol, ns_burial_sld
 
-      !-----------------------------
-      ! Substeps from integrating biogeochemistry
-      !-----------------------------
-      call compute_bioint_substeps(BE, BE%tendency_int, BE%tendency_sf, BE%tendency_bt,    &
-                                   dt_main, frac_max, nsub_bio, dt_dummy_bio)
 
-      !-----------------------------
-      ! Global number of substeps 
-      !-----------------------------
-      nsub = max(nsub_adv, max(nsub_diff, nsub_bio))
-      if (nsub < 1) nsub = 1
+    ! defaults
+    nsub_adv  = 1
+    nsub_diff = 1
+    nsub_bio  = 1
+    ns_burial   = 1
+    ns_bioirr   = 1
+    ns_dep      = 1
+    ns_sed_diff = 1
+    ns_sed_biot = 1
+    ns_burial_sol = 1
+    ns_burial_sld = 1
+    cfl_adv_sol   = 0._rk
+    cfl_adv_sld   = 0._rk
 
-      dt_sub = dt_main / real(nsub, rk)
 
-      !-----------------------------
-      ! dt_sub >= dt_min
-      !-----------------------------
-      if (dt_min > 0._rk .and. dt_sub < dt_min) then
-          ! maximum substeps allowed such that dt_sub >= dt_min
-          nsub_real_limit = dt_main / dt_min
-          nsub_limit      = int(nsub_real_limit)   ! floor
+    kwb  = BE%k_wat_btm
+    kws  = BE%k_wat_sfc
+    nwat = BE%nwat
+    nsed = BE%nsed
 
-          if (nsub_limit < 1) then
-              nsub   = 1
-              dt_sub = dt_main
-          else
-              if (nsub > nsub_limit) nsub = nsub_limit
-              if (nsub < 1) nsub = 1
-              dt_sub = dt_main / real(nsub, rk)
-          end if
+    !----------------------------------------------------------------
+    !  Substeps from vertical transport (sinking or rising)
+    !   Only in the Water-column 
+    !----------------------------------------------------------------
+    call compute_transport_substeps(BE%vel_faces(kwb-1:kws, :), BE%wat_grid%dz(1:nwat), &
+                                    dt_main, cfl_adv, nsub_adv)
+
+    !----------------------------------------------------------------
+    ! Water-column diffusion stability 
+    !----------------------------------------------------------------
+    call compute_diffusion_substeps(BE%BS%vert_diff(kwb-1:kws), BE%wat_grid%dz(1:nwat), &
+                                    dt_main, BE%params%cnpar, nsub_diff, dt_dummy)
+
+    !----------------------------------------------------------------
+    ! Reaction / source integration stability (explicit Euler)
+    !----------------------------------------------------------------
+    call compute_bioint_substeps(BE, BE%tendency_int, BE%tendency_sf, BE%tendency_bt, &
+                                 dt_main, frac_max, nsub_bio, dt_dummy)
+
+    !----------------------------------------------------------------
+    ! Sediment-related explicit operators (only if enabled)
+    !----------------------------------------------------------------
+    if (BE%params%sediments_enabled) then
+
+      ! Sediment burial CFL (solutes + solids velocities).
+      call compute_transport_substeps_sed(BE%SED%vel_solutes(0:nsed), BE%sed_grid%dz(1:nsed), &
+                                          dt_main, cfl_adv_sol, ns_burial_sol )
+
+      call compute_transport_substeps_sed(BE%SED%vel_solids(0:nsed), BE%sed_grid%dz(1:nsed), &
+                                          dt_main, cfl_adv_sld, ns_burial_sld )
+
+      ns_burial = max(ns_burial_sol, ns_burial_sld)
+
+
+      ! Bioirrigation explicit stability (rmax + lambda)
+      call compute_bioirrigation_substeps(alpha             = BE%SED%bioirr(1:nsed), &
+                                          porewat_thickness = BE%SED%porewat_thickness(1:nsed), &
+                                          dz_wat_btm        = BE%wat_grid%dz(1), &
+                                          dt_main           = dt_main, &
+                                          nsub              = ns_bioirr)
+
+      ! Particulate deposition explicit positivity
+      call compute_deposition_substeps(BE, kwb, BE%wat_grid%dz(1), dt_main, ns_dep)
+
+      ! Sediment diffusion CFL 
+      ! If cnpar_sed==1, this is unconditionally stable and can be ignored.
+      if (BE%SED%params_SI%cnpar_sed < 1.0_rk) then
+        call compute_diffusion_substeps_sed(BE%SED%diff_sed_max(0:nsed), BE%sed_grid%dz(1:nsed), BE%SED%porewat_thickness(1:nsed), &
+                                            dt_main, cnpar=BE%SED%params_SI%cnpar_sed,   &
+                                            nsub=ns_sed_diff, dt_sub=dt_dummy)
+
+        call compute_diffusion_substeps_sed(BE%SED%Db_eff_solids(0:nsed), BE%sed_grid%dz(1:nsed), BE%SED%solid_thickness(1:nsed), &
+                                            dt_main, cnpar=BE%SED%params_SI%cnpar_sed,   &
+                                            nsub=ns_sed_biot, dt_sub=dt_dummy)
+      else
+        ns_sed_diff = 1
+        ns_sed_biot = 1
       end if
 
+    end if
+
+    !----------------------------------------------------------------
+    ! Global number of substeps
+    !----------------------------------------------------------------
+    if (BE%params%sediments_enabled) then
+      nsub = max(nsub_adv, max(nsub_diff, nsub_bio) )
+      nsub = max(nsub, max(ns_burial, max(ns_bioirr, max(ns_dep, max(ns_sed_diff, ns_sed_biot)))) )
+    else
+      nsub = max(nsub_adv, max(nsub_diff, nsub_bio) )
+    end if
+
+    if (nsub < 1) nsub = 1
+    dt_sub = dt_main / real(nsub, rk)
+
+    !----------------------------------------------------------------
+    ! dt_sub >= dt_min (your existing clamp)
+    !----------------------------------------------------------------
+    if (dt_min > 0._rk .and. dt_sub < dt_min) then
+      nsub_real_limit = dt_main / dt_min
+      nsub_limit      = int(nsub_real_limit)  ! floor
+
+      if (nsub_limit < 1) then
+        nsub   = 1
+        dt_sub = dt_main
+      else
+        if (nsub > nsub_limit) nsub = nsub_limit
+        if (nsub < 1) nsub = 1
+        dt_sub = dt_main / real(nsub, rk)
+      end if
+    end if
+
+    !----------------------------------------------------------------
+    ! Optional diagnostics
+    !----------------------------------------------------------------
+    if (present(nsub_burial))   nsub_burial   = ns_burial
+    if (present(nsub_bioirr))   nsub_bioirr   = ns_bioirr
+    if (present(nsub_dep))      nsub_dep      = ns_dep
+    if (present(nsub_sed_diff)) nsub_sed_diff = max(ns_sed_diff, ns_sed_biot)
+
   end subroutine compute_bio_substeps
+
 
 
   !--------------------------------------------------------------------
@@ -202,6 +290,7 @@ contains
       nsubsteps = 1
 
       if (dt <= 0._rk .or. N <= 1 .or. ntr < 1) return
+      if (size(w_face,1) < N+1) return
 
       ! Computing the Courant stability condition for each layer and tracer
       do k = 1, N-1
@@ -345,5 +434,165 @@ contains
       dt_sub = dt_main / real(nsub, rk)
 
   end subroutine compute_bioint_substeps 
+
+
+  !====================================================
+  ! For Sediment processes
+  !====================================================
+
+
+  pure subroutine compute_bioirrigation_substeps(alpha, porewat_thickness, dz_wat_btm, dt_main, nsub)
+      real(rk), intent(in)  :: alpha(:)              ! (nsed)
+      real(rk), intent(in)  :: porewat_thickness(:)  ! (nsed) [m]
+      real(rk), intent(in)  :: dz_wat_btm            ! [m]
+      real(rk), intent(in)  :: dt_main               ! [s]
+      integer,  intent(out) :: nsub
+
+      real(rk), parameter :: r_target      = 0.9_rk
+      real(rk), parameter :: lambda_target = 0.9_rk
+      real(rk), parameter :: eps = 1.0e-30_rk
+
+      real(rk) :: rmax, lambda, req
+      real(rk) :: sum_exch
+
+      rmax = maxval(max(alpha, 0._rk)) * dt_main
+
+      sum_exch = sum(max(alpha, 0._rk) * max(porewat_thickness, 0._rk)) ! [m/s]
+      lambda = dt_main * sum_exch / max(dz_wat_btm, eps)
+
+      req = max(rmax / r_target, lambda / lambda_target)
+
+      if (req <= 1._rk) then
+        nsub = 1
+      else
+        nsub = ceiling(req)
+      end if
+  end subroutine compute_bioirrigation_substeps
+
+
+  pure subroutine compute_deposition_substeps(BE, kwb, dz_w_bot, dt_main, nsub)
+      type(BioEnv), intent(in) :: BE
+      integer,      intent(in) :: kwb
+      real(rk),     intent(in) :: dz_w_bot, dt_main
+      integer,      intent(out):: nsub
+
+      real(rk), parameter :: cfl_target = 0.9_rk
+      real(rk), parameter :: eps = 1.0e-30_rk
+      integer :: ivar, nint
+      real(rk) :: vdep_max, dt_safe
+
+      nint = BE%BS%n_interior
+      vdep_max = 0._rk
+
+      do ivar = 1, nint
+        if (BE%tracer_info(ivar)%disable_transport) cycle
+        if (.not. BE%tracer_info(ivar)%is_particulate) cycle
+
+        ! vel_swi is negative downward
+        vdep_max = max(vdep_max, max(0._rk, -BE%velocity(kwb, ivar)))
+      end do
+
+      if (vdep_max <= 0._rk) then
+        nsub = 1
+      else
+        dt_safe = cfl_target * dz_w_bot / max(vdep_max, eps)
+        nsub = max(1, ceiling(dt_main / dt_safe))
+      end if
+  end subroutine compute_deposition_substeps
+
+  pure subroutine compute_diffusion_substeps_sed(diff, dz, phase_thickness, dt, cnpar, nsub, dt_sub)
+      real(rk), intent(in)  :: diff(0:), dz(:), phase_thickness(:), dt, cnpar
+      integer,  intent(out) :: nsub
+      real(rk), intent(out) :: dt_sub
+
+      integer :: N, i
+      real(rk) :: a, c, cflD, cflD_max
+      real(rk), parameter :: eps = 1.0e-30_rk
+
+      N = size(dz)
+      cflD_max = 0._rk
+
+      if (N <= 1) then
+        nsub = 1; dt_sub = dt; return
+      end if
+      if (cnpar >= 1._rk) then
+        nsub = 1; dt_sub = dt; return
+      end if
+
+      do i = 2, N-1
+        if (phase_thickness(i) <= eps) cycle
+        a = 2._rk * max(diff(i-1),0._rk) / (dz(i)+dz(i-1)) / phase_thickness(i)
+        c = 2._rk * max(diff(i  ),0._rk) / (dz(i)+dz(i+1)) / phase_thickness(i)
+        cflD = (1._rk - cnpar) * dt * (a + c)
+        if (cflD > cflD_max) cflD_max = cflD
+      end do
+
+      if (cflD_max <= 1._rk) then
+        nsub = 1
+      else
+        nsub = int(cflD_max) + 1
+        if (nsub < 1) nsub = 1
+      end if
+
+      dt_sub = dt / real(nsub, rk)
+  end subroutine compute_diffusion_substeps_sed
+
+
+  !--------------------------------------------------------------------
+  ! Compute maximum vertical Courant number and numebr of substeps.
+  ! This guarantees that each tracer never moves more than one layer each substep
+  !
+  !  - w_face(0:N) : vertical velocity at interfaces [m s-1]
+  !  - dz(1:N)     : layer thickness [m]
+  !  - dt          : time step [s]
+  !
+  !  cfl_max = max_k |w_face(k)| * dt / h_eff(k),
+  !  with h_eff(k) = 0.5*(dz(k)+dz(k+1)) for k=1..N-1.
+  !
+  !  nsubsteps is chosen so each substep has CFL_sub <= 1 approximately:
+  !     nsubsteps = max(1, int(cfl_max) + 1)
+  !--------------------------------------------------------------------
+  pure subroutine compute_transport_substeps_sed(w_face, dz, dt, cfl_max, nsubsteps)
+      real(rk), intent(in)  :: w_face(0:)   ! (0:N)
+      real(rk), intent(in)  :: dz(:)         ! (1:N)
+      real(rk), intent(in)  :: dt
+      real(rk), intent(out) :: cfl_max
+      integer,  intent(out) :: nsubsteps
+
+      real(rk), parameter :: cfl_target = 0.9_rk   ! target CFL per substep
+
+      integer  :: N, k
+      real(rk) :: h_eff, cfl_local, nsub_real
+
+      N   = size(dz)
+      cfl_max = 0._rk
+      nsubsteps = 1
+
+      if (dt <= 0._rk .or. N <= 1) return
+      if (size(w_face) < N+1) return
+
+      ! Computing the Courant stability condition for each layer and tracer
+      do k = 1, N-1
+         h_eff = 0.5_rk * (dz(k) + dz(k+1))
+         if (h_eff > 0._rk) then            
+            cfl_local = abs(w_face(k)) * dt / h_eff
+            if (cfl_local > cfl_max) cfl_max = cfl_local
+         end if
+      end do
+
+      if (cfl_max <= 0._rk) then
+        nsubsteps = 1
+      else
+        nsub_real = cfl_max / cfl_target   ! desired CFL_sub ~ cfl_target
+
+        if (nsub_real <= 1._rk) then
+            ! CFL already below target 
+            nsubsteps = 1
+        else
+            nsubsteps = max(1, ceiling(nsub_real))
+            if (nsubsteps < 1) nsubsteps = 1
+        end if
+      end if
+   end subroutine compute_transport_substeps_sed
 
 end module numerical_stability
