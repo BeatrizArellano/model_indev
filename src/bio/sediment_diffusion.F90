@@ -32,7 +32,7 @@ module sediment_diffusion
 
 contains
 
-    ! ------ Vertical mixing parameterised as vertical diffusion -----------------
+    ! ------ Vertical diffusion -----------------
     !
     ! Solves vertical diffusion of a scalar variable (Var) on a layered water+sediment
     ! column using an implicit / semi-implicit scheme.
