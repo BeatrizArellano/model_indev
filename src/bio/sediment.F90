@@ -351,6 +351,8 @@ contains
 
         ! irr_sfc: 1/yr -> 1/s
         si%irr_sfc = user%irr_sfc / yr_to_s
+        ! Copy cnpar value
+        si%cnpar_sed = user%cnpar_sed
     end subroutine convert_units_to_SI
 
     ! Allocate arrays to store sediment properties
@@ -391,6 +393,12 @@ contains
         if (allocated(SE%diff_sed)) deallocate(SE%diff_sed)
         allocate(SE%diff_sed(0:nz)) 
         SE%diff_sed = 0.0_rk
+
+        ! Array to store maximum molecular diffusivities in the sediments 
+        if (allocated(SE%diff_sed_max)) deallocate(SE%diff_sed_max)
+        allocate(SE%diff_sed_max(0:nz)) 
+        SE%diff_sed_max = 0.0_rk
+
 
         if (allocated(SE%Db_eff_solids)) deallocate(SE%Db_eff_solids)
         allocate(SE%Db_eff_solids(0:nz)) 
@@ -596,6 +604,8 @@ contains
 
         if(allocated(SE%bulk_conc)) deallocate(SE%bulk_conc)
         if(allocated(SE%diff_sed)) deallocate(SE%diff_sed)
+        if(allocated(SE%diff_sed0)) deallocate(SE%diff_sed0)
+        if(allocated(SE%diff_sed_max)) deallocate(SE%diff_sed_max)
         if(allocated(SE%Db_eff_solids)) deallocate(SE%Db_eff_solids)
         if(allocated(SE%swi_flux)) deallocate(SE%swi_flux)
 
