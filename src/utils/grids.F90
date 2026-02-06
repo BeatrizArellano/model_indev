@@ -4,7 +4,7 @@ module grids
 
   implicit none
   private
-  public :: VerticalGrid, build_water_grid, build_sediment_grid, build_full_grid, write_vertical_grid
+  public :: VerticalGrid, build_grids, build_water_grid, build_sediment_grid, build_full_grid, write_vertical_grid
 
   type, public :: VerticalGrid
     integer               :: nz = 0             ! number of layers (bottom=1 ... surface=nz)
@@ -25,8 +25,81 @@ module grids
   real(rk), parameter :: sed_min_depth     = 3.0e-2_rk  ! Minimum depth for sediments [m] (3 cm)
   real(rk), parameter :: sed_default_dzmin = 1.0e-3_rk  ! default top layer [m]  (1 mm)
   real(rk), parameter :: sed_default_dzmax = 2.0e-2_rk  ! default max layer [m]  (2 cm)
+  real(rk), parameter :: btm_wat_min_dz    = 0.1_rk     ! minimum allowed thickness for the bottom water layer [m]
+  real(rk), parameter :: btm_wat_max_dz    = 1.0_rk     ! Maximum allowed thickness for the bottom water layer [m]
+  real(rk), parameter :: btm_wat_default_dz = 0.1_rk    ! Default thickness for the bottom water layer [m]
 
 contains
+
+    subroutine build_grids(cfg, depth, is_bio_enabled, is_sed_enabled, wat_grid, sed_grid, full_grid, ierr)
+        type(ConfigParams), intent(in)  :: cfg
+        real(rk),           intent(in)  :: depth         ! local depth [m], positive
+        logical,            intent(in)  :: is_bio_enabled
+        logical,            intent(in)  :: is_sed_enabled
+        type(VerticalGrid), intent(out) :: wat_grid
+        type(VerticalGrid), intent(out) :: sed_grid
+        type(VerticalGrid), intent(out) :: full_grid
+        integer,  optional, intent(out) :: ierr      ! 0 OK; >0 is an error
+        
+        integer :: ierr_loc
+        real(rk) :: dz_wat_btm      ! Thickness of the bottom water layer [m]
+
+        ierr_loc = 0
+        if (present(ierr)) ierr = 0
+
+        ! Always build water grid
+        call build_water_grid(cfg, depth, wat_grid, ierr_loc)
+        if (ierr_loc /= 0) then
+            call zero_grid(sed_grid)
+            call zero_grid(full_grid)
+            if (present(ierr)) ierr = ierr_loc
+            return
+        end if
+
+        if (is_bio_enabled .and. is_sed_enabled) then
+            write(*,'(A)') '  Building the combined water-sediment grid...'
+            ! Read new thickness for the bottom layer of the water column
+            dz_wat_btm = cfg%get_param_num('grid.sediments.dz_wat_btm', positive=.true., min=btm_wat_min_dz, &
+                                       max=btm_wat_max_dz, default=btm_wat_default_dz, finite=.true.)
+            
+            ! Adjusting thickness of the bottom water layer to satisfy the assumptions
+            ! of the near-bottom formulation used for sediment-water exchange.
+            ! In Umlauf et al. (2023), the bottom layer centre is assumed to lie
+            ! within the logarithmic layer or "log-law region". 
+            ! This typically requires O(0.1–1 m) vertical resolution near the seabed.
+            if (abs(dz_wat_btm - wat_grid%dz(1)) > 1.0e-12_rk) then
+                call adjust_bottom_water_layer(wat_grid, dz_wat_btm, ierr_loc)
+                if (ierr_loc /= 0) then
+                    call zero_grid(sed_grid)
+                    call zero_grid(full_grid)
+                    if (present(ierr)) ierr = ierr_loc
+                    return
+                end if
+            end if
+
+            call build_sediment_grid(cfg, sed_grid, ierr_loc)  
+            if (ierr_loc /= 0) then
+                call zero_grid(full_grid)
+                if (present(ierr)) ierr = ierr_loc
+                return
+            end if
+
+            call build_full_grid(wat_grid, sed_grid, full_grid, ierr_loc)
+            if (ierr_loc /= 0) then
+                call zero_grid(full_grid)
+                if (present(ierr)) ierr = ierr_loc
+                return
+            end if
+        else 
+            write(*,'(A)') '  Building the water grid...'
+            call zero_grid(sed_grid)
+            call copy_grid(wat_grid, full_grid)
+        end if
+
+        call write_vertical_grid(full_grid, 'Vertical_grid.dat', n_sed=sed_grid%nz, ierr=ierr_loc)        
+        if (present(ierr)) ierr = ierr_loc
+
+    end subroutine build_grids
 
     !------------------------------
     ! Build water grid
@@ -240,6 +313,108 @@ contains
     end subroutine build_sediment_grid
 
 
+    subroutine adjust_bottom_water_layer(grid, dz_btm_target, ierr)
+        type(VerticalGrid), intent(inout) :: grid
+        real(rk),           intent(in)    :: dz_btm_target
+        integer,  optional, intent(out)   :: ierr
+
+        real(rk) :: hb, h1, delta, remainder
+        real(rk) :: R, removable, take
+        type(VerticalGrid) :: tmp
+        integer :: nz_old, i, k
+
+        if (present(ierr)) ierr = 0
+
+        if (grid%nz < 2 .or. .not. allocated(grid%dz)) then
+            if (present(ierr)) then
+                ierr = 10
+                return
+            else
+                stop 'adjust_bottom_water_layer: grid not initialized or nz<2'
+            end if
+        end if
+
+        ! Set requested bottom thickness within valid range
+        hb = min(max(dz_btm_target, btm_wat_min_dz), btm_wat_max_dz)
+
+        h1 = grid%dz(1)
+        delta = hb - h1   ! Positive means bottom thickens (must remove from above)
+
+        if (abs(delta) <= 1.0e-12_rk) return
+
+        if (delta < 0._rk) then
+            !------------------------------------------------------------
+            ! Shrink bottom layer: split old bottom layer
+            !------------------------------------------------------------
+            remainder = h1 - hb   ! remainder thickness from old bottom layer
+
+            if (remainder >= min_dz) then
+                ! Insert a new layer above the bottom (nz -> nz+1)
+                nz_old = grid%nz
+                call allocate_grid(tmp, nz_old + 1)
+                tmp%depth = grid%depth
+
+                tmp%dz(1) = hb
+                tmp%dz(2) = remainder
+
+                do i = 2, nz_old
+                    tmp%dz(i+1) = grid%dz(i)
+                end do
+
+                call calculate_layer_depths(tmp)
+
+                call copy_grid(tmp, grid)
+                call zero_grid(tmp)
+            else
+                ! Fallback: add remainder thickness to layer 2 (still local)
+                grid%dz(1) = hb
+                grid%dz(2) = grid%dz(2) + remainder
+                call calculate_layer_depths(grid)
+            end if
+
+        else
+            !------------------------------------------------------------
+            ! Thicken bottom layer: remove thickness from layers 2..nz
+            ! (as many layers as needed), respecting min_dz
+            !------------------------------------------------------------
+            R = delta
+
+            do k = 2, grid%nz
+                removable = grid%dz(k) - min_dz
+                if (removable > 0._rk) then
+                    take = min(removable, R)
+                    grid%dz(k) = grid%dz(k) - take
+                    R = R - take
+                    if (R <= 0._rk) exit
+                end if
+            end do
+
+            if (R > 0._rk) then
+                if (present(ierr)) then
+                    ierr = 11
+                    return
+                else
+                    stop 'adjust_bottom_water_layer: cannot thicken bottom layer without violating min_dz in upper layers'
+                end if
+            end if
+
+            grid%dz(1) = hb
+
+            ! Safety: enforce minimum thickness everywhere
+            do k = 1, grid%nz
+                if (grid%dz(k) < min_dz) then
+                    if (present(ierr)) then
+                        ierr = 12
+                        return
+                    else
+                        stop 'adjust_bottom_water_layer: produced dz < min_dz'
+                    end if
+                end if
+            end do
+            call calculate_layer_depths(grid)
+        end if
+    end subroutine adjust_bottom_water_layer
+
     !------------------------------
     ! Build full (sediment + water) grid on one continuous depth axis
     !
@@ -395,6 +570,18 @@ contains
         g%depth  = 0._rk
     end subroutine zero_grid
 
+    subroutine copy_grid(orig, copy)
+        type(VerticalGrid), intent(in)  :: orig
+        type(VerticalGrid), intent(out) :: copy
+        integer :: nz
+        nz = orig%nz
+        call allocate_grid(copy, nz)
+        copy%depth = orig%depth
+        copy%dz    = orig%dz
+        copy%z     = orig%z
+        copy%z_w   = orig%z_w
+    end subroutine copy_grid
+
     ! Depth convention (bottom-first indexing):
     !   z_w(0)    = bottom interface depth (= depth > 0)
     !   z_w(nz)   = surface (0)
@@ -459,9 +646,9 @@ contains
     ! Read parameters from the sediment grid configuration
     subroutine read_sgrid_config(cfg, depth, dz_min, dz_max)
         type(ConfigParams), intent(in)  :: cfg
-        real(rk),           intent(out) :: depth   ! sediment depth [m]
-        real(rk),           intent(out) :: dz_min  ! min layer thickness at top [m]
-        real(rk),           intent(out) :: dz_max  ! max layer thickness [m]
+        real(rk),           intent(out) :: depth       ! sediment depth [m]
+        real(rk),           intent(out) :: dz_min      ! min layer thickness at top [m]
+        real(rk),           intent(out) :: dz_max      ! max layer thickness [m]
 
 
         depth = cfg%get_param_num('grid.sediments.depth', required=.true., positive=.true., &
@@ -472,6 +659,7 @@ contains
         
         dz_max = cfg%get_param_num('grid.sediments.dz_max', positive=.true., &
                                     min=sed_min_dz, default=sed_default_dzmax, finite=.true.)
+        
 
         if (dz_max < dz_min) then
             stop 'read_sgrid_config: dz_max must be >= dz_min in the sediment grid.'
