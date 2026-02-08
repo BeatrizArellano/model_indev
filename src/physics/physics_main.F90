@@ -23,14 +23,15 @@ module physics_main
   use geo_utils,           only: LocationInfo
   use grids,               only: VerticalGrid
   use tidal_readers,       only: read_tidal_parameters
-  use tidal,               only: TidalSet, create_tidal_set, tide_pressure_slopes
+  use tidal,               only: TidalSet, create_tidal_set, tide_pressure_accel
   use forcing_manager,     only: ForcingSnapshot
   use EOS_eqns,            only: eos_density
-  use momentum_eqns
+  use momentum_eqns,       only: EQN_PRESSURE, EQN_CORIOLIS, wind_stress_from_uv, &
+                                 update_surface_friction, compute_bottom_stress
   use turbulence,          only: TURBULENCE_ke, tke_min
   use freshwater_fluxes,   only: apply_surface_freshwater
   use heat_fluxes,         only: SURFACE_HEAT
-  use vertical_mixing,     only: scalar_diffusion
+  use vertical_mixing,     only: scalar_diffusion, BC_NEUMANN
   use numerical_stability, only: compute_phys_subcycles
   use tridiagonal,         only: init_tridiag, clear_tridiag
   use physics_params,      only: read_physics_parameters, &
@@ -140,40 +141,44 @@ contains
     !               It has an inner loop for numerical stability
     !==================================================================================
     subroutine solve_physics(PE, FS, dt_main, elapsed_time, is_first_step, ierr, errmsg)
-      type(PhysicsEnv), intent(inout) :: PE
-      type(ForcingSnapshot), intent(in)  :: FS
-      integer(lk),        intent(in)  :: dt_main, elapsed_time
-      logical,            intent(in)  :: is_first_step
-      integer,           intent(out), optional :: ierr
-      character(len=*),  intent(out), optional :: errmsg    
+        type(PhysicsEnv), intent(inout) :: PE
+        type(ForcingSnapshot), intent(in)  :: FS
+        integer(lk),        intent(in)  :: dt_main, elapsed_time
+        logical,            intent(in)  :: is_first_step
+        integer,           intent(out), optional :: ierr
+        character(len=*),  intent(out), optional :: errmsg    
 
-      integer :: ierr_l
-      character(len=256) :: errmsg_l
+        ! Locals
+        integer  :: N, ti, n_sub
+        real(rk) :: dtm, dt_sub, t_sub
+        real(rk) :: Pxsum, Pysum  
+        real(rk) :: tau_bx, tau_by
+        integer :: ierr_l
+        character(len=256) :: errmsg_l
 
-      integer  :: N, ti, n_sub
-      real(rk) :: dtm, dt_sub, t_sub
-      real(rk) :: Pxsum, Pysum  
+        ierr_l = 0
+        errmsg_l = ''
 
-      ierr_l = 0
-      errmsg_l = ''
+        dtm = real(dt_main, kind=rk)
 
-      dtm = real(dt_main, kind=rk)
+        N = PE%PS%N                          ! Number of layers in the vertical grid
 
-      N = PE%PS%N                          ! Number of layers in the vertical grid
+        ! Initialising them with current state
+        PE%u_old = PE%PS%velx;  PE%v_old = PE%PS%vely
 
-      ! Initialising them with current state
-      PE%u_old = PE%PS%velx;  PE%v_old = PE%PS%vely
+        
+        ! Calculating wind stress from wind-speed and direction
+        call wind_stress_from_uv(FS%wind_u10, FS%wind_v10, PE%PS%wind_speed, PE%PS%tau_x, PE%PS%tau_y)
 
-      
-      ! Calculating wind stress from wind-speed and direction
-      call wind_stress_from_uv(FS%wind_u10, FS%wind_v10, PE%PS%wind_speed, PE%PS%tau_x, PE%PS%tau_y)
+        ! Initial calculation for surface friction velocity and roughness length
+        call update_surface_friction(tau_x=PE%PS%tau_x, tau_y=PE%PS%tau_y,              &
+                                    rho_surf=PE%PS%rho(N), charnock=PE%params%charnock, &
+                                    u_taus=PE%PS%u_taus, z0s=PE%PS%z0s)
 
-      ! Initial calculation for surface friction velocity and roughness length
-      call update_surface_friction(tau_x=PE%PS%tau_x, tau_y=PE%PS%tau_y,              &
-                                       rho_surf=PE%PS%rho(N), charnock=PE%params%charnock, &
-                                       u_taus=PE%PS%u_taus, z0s=PE%PS%z0s)
+        ! Update density
+        PE%PS%rho  = eos_density(PE%PS%temp, PE%PS%sal)
 
-      ! Turbulence: once per main step     
+        ! Turbulence: once per main step     
         ! Solves turbulence using the Canuto k-eps closure scheme and calculates Kz and Nz
         call TURBULENCE_ke(N, dtm, PE%params, PE%grid%dz,                          &
                           density = PE%PS%rho, velx = PE%u_old, vely = PE%v_old,         &
@@ -187,73 +192,69 @@ contains
         PE%Nz_tot = PE%PS%Nz + mol_nu
         PE%Kz_T   = PE%PS%Kz + mol_diff_T 
 
-      ! Calculates the optimum size of the time-steps  for the inner loop
-      ! by obtaining the stability condition so that vertical diffusion of momentum is stable
-      call compute_phys_subcycles(PE%grid%dz, PE%Nz_tot, PE%Kz_T, PE%params%vismax, dtm, n_sub, dt_sub, ierr_l, errmsg_l)    
+        ! Calculates the optimum size of the time-steps  for the inner loop
+        ! by obtaining the stability condition so that vertical diffusion of momentum is stable
+        call compute_phys_subcycles(PE%grid%dz, PE%Nz_tot, PE%Kz_T, PE%params%vismax, dtm, n_sub, dt_sub, ierr_l, errmsg_l)    
 
-      ! Inner subcycle to maintain numeriacl stability
-      do ti = 1, n_sub
-          t_sub = real(elapsed_time,rk) + (real(ti,rk) - 0.5_rk)*dt_sub   ! Elapsed time for each substep
-  
-          call SURFACE_HEAT(temp = PE%PS%temp, dz = PE%grid%dz, N = N, dt=dt_sub, &
-                           rsds=FS%short_rad, rlds_down=FS%long_rad, wind_speed=PE%PS%wind_speed,     &
-                           airT=FS%air_temp, rh=FS%rel_hum, airP=FS%slp,                      &
-                           lw_skin_penetration=PE%params%lw_skin_penetration,      &
-                           lambda=PE%params%lambda)
-          
-          ! Update density
-          PE%PS%rho  = eos_density(PE%PS%temp, PE%PS%sal)
+        ! Inner subcycle to maintain numeriacl stability
+        do ti = 1, n_sub
+            t_sub = real(elapsed_time,rk) + (real(ti,rk) - 0.5_rk)*dt_sub   ! Elapsed time for each substep
+    
+            call SURFACE_HEAT(temp = PE%PS%temp, dz = PE%grid%dz, N = N, dt=dt_sub, &
+                            rsds=FS%short_rad, rlds_down=FS%long_rad, wind_speed=PE%PS%wind_speed,     &
+                            airT=FS%air_temp, rh=FS%rel_hum, airP=FS%slp,                      &
+                            lw_skin_penetration=PE%params%lw_skin_penetration,      &
+                            lambda=PE%params%lambda)
 
-          if (PE%params%compute_salinity) then
-            call apply_surface_freshwater(salt=PE%PS%sal, dz=PE%grid%dz, precip=FS%precip, evap=FS%evap, runoff=FS%runoff)
+            ! Then mix the vertical thermal structure with semi-implicit scalar scheme      
+            call scalar_diffusion(PE%PS%temp, N, dt_sub, PE%grid%dz, PE%Kz_T, PE%params%cnpar, PE%trid, ierr_l)
+            ! Recompute density after thermal mixing
+            PE%PS%rho = eos_density(PE%PS%temp, PE%PS%sal)
+            
             ! Update density
             !PE%PS%rho  = eos_density(PE%PS%temp, PE%PS%sal)
-            ! Then mix freshwater in the water column
-            !call scalar_diffusion(PE%PS%salt, N, dt_sub, PE%grid%dz, PE%Kz_T, PE%params%cnpar, PE%trid, ierr)
-          end if 
-          
 
-  
-          ! Calculate current profile from tidal currents
-          call tide_pressure_slopes(PE%Tides, t_sub, Pxsum, Pysum)             ! Pressure-gradient slopes from tidal constituents at this time
-  
-          ! Accelerate by pressure gradients (x and y components)
-          call EQN_PRESSURE(dt_sub, Pxsum, PE%u_old)  ! Already updates u_old inplace
-          call EQN_PRESSURE(dt_sub, Pysum, PE%v_old)
-  
-          ! Apply surface/bottom stresses and vertical viscosity (x component)
-          call EQN_FRICTION( vel_comp_old = PE%u_old, vel_comp_new = PE%u_new,                &
-                             vel_comp2_bottom = PE%v_old(1), Nz=PE%Nz_tot, h=PE%grid%dz,      &
-                             dt=dt_sub, h0b=PE%params%h0b, density=PE%PS%rho,           &
-                             tau_surf=PE%PS%tau_x,                                      &
-                             u_taub=PE%PS%u_taub, z0b=PE%PS%z0b, stressb=PE%PS%stressb)
+            if (PE%params%compute_salinity) then
+              call apply_surface_freshwater(salt=PE%PS%sal, dz=PE%grid%dz, precip=FS%precip, evap=FS%evap, runoff=FS%runoff)
+              ! Update density
+              !PE%PS%rho  = eos_density(PE%PS%temp, PE%PS%sal)
+              ! Then mix freshwater in the water column
+              !call scalar_diffusion(PE%PS%salt, N, dt_sub, PE%grid%dz, PE%Kz_T, PE%params%cnpar, PE%trid, ierr)
+            end if            
 
-  
-          ! Apply surface/bottom stresses and vertical viscosity (y component)
-          call EQN_FRICTION( vel_comp_old = PE%v_old, vel_comp_new = PE%v_new,                &
-                             vel_comp2_bottom = PE%u_old(1), Nz=PE%Nz_tot, h=PE%grid%dz,      &
-                             dt=dt_sub, h0b=PE%params%h0b, density=PE%PS%rho,           &
-                             tau_surf=PE%PS%tau_y,                                      &
-                             u_taub=PE%PS%u_taub, z0b=PE%PS%z0b, stressb=PE%PS%stressb)
+    
+            ! Calculate current profile from tidal currents
+            call tide_pressure_accel(PE%Tides, t_sub, Pxsum, Pysum)             ! Pressure-gradient accelerations from tidal constituents at this time
+    
+            ! Accelerate by pressure gradients (x and y components)
+            call EQN_PRESSURE(dt_sub, Pxsum, Pysum, PE%u_old, PE%v_old) ! Already updates u_old inplace
 
+            ! Compute bed stress components (N/m^2) with your chosen drag law
+            call compute_bottom_stress(PE%u_old, PE%v_old, PE%grid%dz(1), PE%PS%rho(1), PE%params%h0b, &
+                                      tau_bx, tau_by, PE%PS%u_taub, PE%PS%z0b, PE%PS%stressb)
 
-          ! Update olds for next substep
-          PE%u_old = PE%u_new;  PE%v_old = PE%v_new
-  
-          ! Rotate velocities due to the Coriolis force
-          call EQN_CORIOLIS(PE%u_old, PE%v_old, dt_sub, PE%Tides%f0)
-  
-          ! Update the state of velocities
-          PE%PS%velx = PE%u_old
-          PE%PS%vely = PE%v_old
-  
-          ! Then mix the vertical thermal structure with semi-implicit scalar scheme      
-          call scalar_diffusion(PE%PS%temp, N, dt_sub, PE%grid%dz, PE%Kz_T, PE%params%cnpar, PE%trid, ierr_l)
-          ! Recompute density after thermal mixing
-          PE%PS%rho = eos_density(PE%PS%temp, PE%PS%sal)
+            ! Apply surface/bottom stresses and vertical diffusivity of momentum 
+            ! u_old and v_old are updated inplace
+            call scalar_diffusion(PE%u_old, N, dt_sub, PE%grid%dz, PE%Nz_tot, PE%params%cnpar, PE%trid, ierr_l, &
+                                  bc_bot_type=BC_NEUMANN, bc_bot_value=tau_bx/PE%PS%rho(1), &
+                                  bc_top_type=BC_NEUMANN, bc_top_value=PE%PS%tau_x/PE%PS%rho(N))
 
-          call check_nan_physics(PE%PS)
-      end do
+            call scalar_diffusion(PE%v_old, N, dt_sub, PE%grid%dz, PE%Nz_tot, PE%params%cnpar, PE%trid, ierr_l, &
+                                  bc_bot_type=BC_NEUMANN, bc_bot_value=tau_by/PE%PS%rho(1), &
+                                  bc_top_type=BC_NEUMANN, bc_top_value=PE%PS%tau_y/PE%PS%rho(N))
+
+            PE%u_new = PE%u_old
+            PE%v_new = PE%v_old
+    
+            ! Rotate velocities due to the Coriolis force
+            call EQN_CORIOLIS(PE%u_old, PE%v_old, dt_sub, PE%Tides%f0)
+    
+            ! Update the state of velocities
+            PE%PS%velx = PE%u_old
+            PE%PS%vely = PE%v_old  
+
+            call check_nan_physics(PE%PS)
+        end do
 
       if (present(ierr))   ierr = ierr_l
       if (present(errmsg)) errmsg = trim(errmsg_l)
