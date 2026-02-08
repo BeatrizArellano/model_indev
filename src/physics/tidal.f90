@@ -24,7 +24,7 @@ module tidal
   implicit none
   private
   public :: TidalConstituent, TidalSet 
-  public :: create_tidal_set, tide_pressure_slopes
+  public :: create_tidal_set, tide_pressure_accel
   
 
   type :: TidalConstituent
@@ -109,7 +109,7 @@ contains
     end subroutine create_tidal_set
 
 
-    subroutine tide_pressure_slopes(S, time, Pxsum, Pysum)
+    subroutine tide_pressure_accel(S, time, Pxsum, Pysum)
       !! Sum barotropic pressure-gradient accelerations from all tidal constituents.
       type(TidalSet),       intent(in)  :: S
       real(rk),             intent(in)  :: time       ! model time since simulation start [s] 
@@ -133,7 +133,7 @@ contains
         Pxsum = Pxsum + ((S%C(i)%ctheta * sx) - (S%C(i)%stheta * sy)) ! rotate by ellipse orientation to the East
         Pysum = Pysum + ((S%C(i)%stheta * sx) + (S%C(i)%ctheta * sy)) ! rotate by theta to the North
       end do
-    end subroutine  
+    end subroutine tide_pressure_accel
 
   !--------------------------------------------------------------
   !----------- TidalSet Method to access each constituent values
