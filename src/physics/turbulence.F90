@@ -87,7 +87,7 @@ contains
         end do
 
         ! boundaries
-        SS(0) = SS(1);   NN(0) = NN(1);   P(0) = P(1);   B(0) = B(1)
+        SS(0) = SS(1);   NN(0) = 0.0_rk;   P(0) = P(1);   B(0) = B(1)
         SS(N) = SS(N-1); NN(N) = 0.0_rk; Ri(N) = 0.0_rk; Ri(0) = NN(0)/max(SS(0), 1.0e-10_rk)        
 
         tkeold = tke  
