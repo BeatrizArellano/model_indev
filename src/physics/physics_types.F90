@@ -51,6 +51,9 @@ module physics_types
     type(TridiagCoeff)   :: trid        ! workspace for implicit solves
     type(VarMetadata), allocatable :: phys_vars(:)   ! Metadata for Physics variables
     logical              :: is_init = .false. ! Flag to indicate that the physics is initialised for this water column
+    !--- Working arrays
+    real(rk), allocatable :: u_old(:), u_new(:), v_old(:), v_new(:)
+    real(rk), allocatable :: Kz_T(:), Nz_tot(:)
   end type PhysicsEnv
 
 end module physics_types

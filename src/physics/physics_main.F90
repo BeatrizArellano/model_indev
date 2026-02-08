@@ -61,7 +61,7 @@ contains
       type(VerticalGrid), intent(in)    :: grid     ! water grid
       type(PhysicsEnv),   intent(inout) :: PE
 
-      integer :: k
+      integer :: k, N
       real(rk), allocatable :: height(:)
       real(rk) :: depth, zeta
 
@@ -76,6 +76,7 @@ contains
 
       PE%grid = grid
 
+      N       = PE%grid%nz
       PE%PS%N = PE%grid%nz                    ! Number of layers in the water column, inside physics state    
       ! ---------- Allocating arrays and setting initial state --------------------------
       ! --- Arrays for prognostic variables (1..N) ---
@@ -96,6 +97,12 @@ contains
       PE%PS%tke = tke_min
       PE%PS%eps = 5.0e-10_rk
       PE%PS%cmue1 = 0.0_rk
+
+      !--- Allocate working arrays
+      if (allocated(PE%u_old)) deallocate(PE%u_old, PE%u_new, PE%v_old, PE%v_new)
+      allocate(PE%u_old(N), PE%u_new(N), PE%v_old(N), PE%v_new(N))
+      if (allocated(PE%Nz_tot)) deallocate(PE%Nz_tot, PE%Kz_T)   
+      allocate(PE%Nz_tot(0:N), PE%Kz_T(0:N))  ! Arrays for viscosity and diffusivity plus molecular values
   
       ! --- A sensible initial length-scale (S2P3) ---
       depth = PE%grid%depth
@@ -140,24 +147,22 @@ contains
       integer,           intent(out), optional :: ierr
       character(len=*),  intent(out), optional :: errmsg    
 
+      integer :: ierr_l
+      character(len=256) :: errmsg_l
+
       integer  :: N, ti, n_sub
       real(rk) :: dtm, dt_sub, t_sub
       real(rk) :: Pxsum, Pysum  
-      
-      ! --- Local Arrays ---
-      real(rk), allocatable :: u_old(:), u_new(:), v_old(:), v_new(:)
-      real(rk), allocatable :: Kz_T(:), Nz_tot(:)
+
+      ierr_l = 0
+      errmsg_l = ''
 
       dtm = real(dt_main, kind=rk)
 
       N = PE%PS%N                          ! Number of layers in the vertical grid
-      if (allocated(u_old)) deallocate(u_old, u_new, v_old, v_new)
-      allocate(u_old(N), u_new(N), v_old(N), v_new(N))
-      if (allocated(Nz_tot)) deallocate(Nz_tot, Kz_T)   
-      allocate(Nz_tot(0:N), Kz_T(0:N))  ! Arrays for viscosity and diffusivity plus molecular values
 
       ! Initialising them with current state
-      u_old = PE%PS%velx;  v_old = PE%PS%vely
+      PE%u_old = PE%PS%velx;  PE%v_old = PE%PS%vely
 
       
       ! Calculating wind stress from wind-speed and direction
@@ -171,7 +176,7 @@ contains
       ! Turbulence: once per main step     
         ! Solves turbulence using the Canuto k-eps closure scheme and calculates Kz and Nz
         call TURBULENCE_ke(N, dtm, PE%params, PE%grid%dz,                          &
-                          density = PE%PS%rho, velx = u_old, vely = v_old,         &
+                          density = PE%PS%rho, velx = PE%u_old, vely = PE%v_old,         &
                           u_taus = PE%PS%u_taus, u_taub = PE%PS%u_taub,            &
                           z0s = PE%PS%z0s, z0b = PE%PS%z0b,                        &
                           Kz = PE%PS%Kz, Nz = PE%PS%Nz, tke = PE%PS%tke,           &
@@ -179,12 +184,12 @@ contains
                           NN=PE%PS%NN, SS=PE%PS%SS, Ri=PE%PS%Ri,                   &
                           cmue1=PE%PS%cmue1, trid=PE%trid, is_first_step=is_first_step)
 
-        Nz_tot = PE%PS%Nz + mol_nu
-        Kz_T   = PE%PS%Kz + mol_diff_T 
+        PE%Nz_tot = PE%PS%Nz + mol_nu
+        PE%Kz_T   = PE%PS%Kz + mol_diff_T 
 
       ! Calculates the optimum size of the time-steps  for the inner loop
       ! by obtaining the stability condition so that vertical diffusion of momentum is stable
-      call compute_phys_subcycles(PE%grid%dz, Nz_tot, Kz_T, PE%params%vismax, dtm, n_sub, dt_sub, ierr, errmsg)    
+      call compute_phys_subcycles(PE%grid%dz, PE%Nz_tot, PE%Kz_T, PE%params%vismax, dtm, n_sub, dt_sub, ierr_l, errmsg_l)    
 
       ! Inner subcycle to maintain numeriacl stability
       do ti = 1, n_sub
@@ -204,7 +209,7 @@ contains
             ! Update density
             !PE%PS%rho  = eos_density(PE%PS%temp, PE%PS%sal)
             ! Then mix freshwater in the water column
-            !call scalar_diffusion(PE%PS%salt, N, dt_sub, PE%grid%dz, Kz_T, PE%params%cnpar, PE%trid, ierr)
+            !call scalar_diffusion(PE%PS%salt, N, dt_sub, PE%grid%dz, PE%Kz_T, PE%params%cnpar, PE%trid, ierr)
           end if 
           
 
@@ -213,52 +218,46 @@ contains
           call tide_pressure_slopes(PE%Tides, t_sub, Pxsum, Pysum)             ! Pressure-gradient slopes from tidal constituents at this time
   
           ! Accelerate by pressure gradients (x and y components)
-          call EQN_PRESSURE(dt_sub, Pxsum, u_old)  ! Already updates u_old inplace
-          call EQN_PRESSURE(dt_sub, Pysum, v_old)
+          call EQN_PRESSURE(dt_sub, Pxsum, PE%u_old)  ! Already updates u_old inplace
+          call EQN_PRESSURE(dt_sub, Pysum, PE%v_old)
   
           ! Apply surface/bottom stresses and vertical viscosity (x component)
-          call EQN_FRICTION( vel_comp_old = u_old, vel_comp_new = u_new,                &
-                             vel_comp2_bottom = v_old(1), Nz=Nz_tot, h=PE%grid%dz,      &
+          call EQN_FRICTION( vel_comp_old = PE%u_old, vel_comp_new = PE%u_new,                &
+                             vel_comp2_bottom = PE%v_old(1), Nz=PE%Nz_tot, h=PE%grid%dz,      &
                              dt=dt_sub, h0b=PE%params%h0b, density=PE%PS%rho,           &
                              tau_surf=PE%PS%tau_x,                                      &
                              u_taub=PE%PS%u_taub, z0b=PE%PS%z0b, stressb=PE%PS%stressb)
 
   
           ! Apply surface/bottom stresses and vertical viscosity (y component)
-          call EQN_FRICTION( vel_comp_old = v_old, vel_comp_new = v_new,                &
-                             vel_comp2_bottom = u_old(1), Nz=Nz_tot, h=PE%grid%dz,      &
+          call EQN_FRICTION( vel_comp_old = PE%v_old, vel_comp_new = PE%v_new,                &
+                             vel_comp2_bottom = PE%u_old(1), Nz=PE%Nz_tot, h=PE%grid%dz,      &
                              dt=dt_sub, h0b=PE%params%h0b, density=PE%PS%rho,           &
                              tau_surf=PE%PS%tau_y,                                      &
                              u_taub=PE%PS%u_taub, z0b=PE%PS%z0b, stressb=PE%PS%stressb)
 
 
           ! Update olds for next substep
-          u_old = u_new;  v_old = v_new
+          PE%u_old = PE%u_new;  PE%v_old = PE%v_new
   
           ! Rotate velocities due to the Coriolis force
-          call EQN_CORIOLIS(u_old, v_old, dt_sub, PE%Tides%f0)
+          call EQN_CORIOLIS(PE%u_old, PE%v_old, dt_sub, PE%Tides%f0)
   
           ! Update the state of velocities
-          PE%PS%velx = u_old
-          PE%PS%vely = v_old
+          PE%PS%velx = PE%u_old
+          PE%PS%vely = PE%v_old
   
           ! Then mix the vertical thermal structure with semi-implicit scalar scheme      
-          call scalar_diffusion(PE%PS%temp, N, dt_sub, PE%grid%dz, Kz_T, PE%params%cnpar, PE%trid, ierr)
+          call scalar_diffusion(PE%PS%temp, N, dt_sub, PE%grid%dz, PE%Kz_T, PE%params%cnpar, PE%trid, ierr_l)
           ! Recompute density after thermal mixing
           PE%PS%rho = eos_density(PE%PS%temp, PE%PS%sal)
-
-!!! DEBUG
-if (ieee_is_nan(PE%PS%velx(1))) then
-    write(*,'(A)') 'NaN after <KERNEL_NAME>'
-    stop
-end if
-!!!
 
           call check_nan_physics(PE%PS)
       end do
 
-!write(*,*) 'u_taub=', PE%PS%u_taub, ' Kz(B)=', PE%PS%Kz(0), ' tke=', PE%PS%tke(0)
-      deallocate(u_old, u_new, v_old, v_new)
+      if (present(ierr))   ierr = ierr_l
+      if (present(errmsg)) errmsg = trim(errmsg_l)
+
     end subroutine solve_physics  
   
     !==============================
@@ -273,6 +272,8 @@ end if
       if (allocated(PE%PS%Kz))     deallocate(PE%PS%Kz, PE%PS%Nz, PE%PS%tke, PE%PS%eps)
       if (allocated(PE%PS%Lscale)) deallocate(PE%PS%Lscale)
       if (allocated(PE%PS%cmue1))  deallocate(PE%PS%cmue1)
+      if (allocated(PE%u_old)) deallocate(PE%u_old, PE%u_new, PE%v_old, PE%v_new)
+      if (allocated(PE%Nz_tot)) deallocate(PE%Nz_tot, PE%Kz_T)   
       PE%PS%N = 0
       if (allocated(PE%phys_vars)) then
         do i = 1, size(PE%phys_vars)
