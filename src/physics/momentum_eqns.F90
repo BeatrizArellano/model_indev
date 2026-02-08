@@ -23,17 +23,21 @@ module momentum_eqns
     implicit none
     private
 
-    public :: EQN_PRESSURE, EQN_CORIOLIS, wind_stress_from_uv, EQN_FRICTION, update_surface_friction
+    public :: EQN_PRESSURE, EQN_CORIOLIS, wind_stress_from_uv, update_surface_friction
+    public :: compute_bottom_stress
 
 contains
+
     ! Equation of motion - pressure term
     ! Uniform barotropic pressure-gradient acceleration applied to all levels
-    pure subroutine EQN_PRESSURE(dt, Pgrad, u)
-        real(rk), intent(in)    :: dt          ! time step [s]
-        real(rk), intent(in)    :: Pgrad       ! acceleration [m s-2] (x or y component)
-        real(rk), intent(inout) :: u(:)        ! velocity profile for the given component [m s-1]
-        ! Equivalent to S2P3 loop: u(i) = u(i) + dt * Pgrad for i=1..N
-        u = u + dt * Pgrad
+    pure subroutine EQN_PRESSURE(dt, Pgrad_x, Pgrad_y, u, v)
+        real(rk), intent(in)    :: dt                   ! time step [s]
+        real(rk), intent(in)    :: Pgrad_x, Pgrad_y     ! acceleration [m s-2] (x or y component)
+        real(rk), intent(inout) :: u(:), v(:)           ! velocity profile for the given component [m s-1]
+
+
+        u = u + dt * Pgrad_x
+        v = v + dt * Pgrad_y
     end subroutine EQN_PRESSURE
 
     !**********************************************************
@@ -115,11 +119,77 @@ contains
 
 
 
+    subroutine compute_bottom_stress(u, v, dz_btm, rho_bed, h0b, tau_bx, tau_by, u_taub, z0b, stressb)
+        ! Inputs
+        real(rk), intent(in)  :: u(:), v(:)      ! velocity profiles (bottom-to-top)
+        real(rk), intent(in)  :: dz_btm          ! bottom layer thickness [m]
+        real(rk), intent(in)  :: rho_bed         ! density at bottom cell [kg/m3]
+        real(rk), intent(in)  :: h0b             ! Nikuradse roughness height k_s [m]
+
+        ! Outputs
+        real(rk), intent(out) :: tau_bx, tau_by  ! bed stress components [N/m2]
+        real(rk), intent(out) :: u_taub          ! bed friction velocity [m/s]
+        real(rk), intent(out) :: z0b             ! effective roughness length [m]
+        real(rk), intent(out) :: stressb         ! bed stress magnitude [N/m2]
+
+        ! Locals
+        real(rk) :: zc, Uc, logarg
+        real(rk) :: z0r, rb, z0sm, z0new
+        integer  :: it
+
+        ! Default outputs
+        tau_bx  = 0.0_rk
+        tau_by  = 0.0_rk
+        u_taub  = 0.0_rk
+        stressb = 0.0_rk
+
+        ! Sampling height at centre of bottom layer
+        zc = 0.5_rk * dz_btm
+
+        ! Convert Nikuradse height (h0b) to roughness length (approx k_s/33).
+        z0r = 0.03_rk * h0b
+        z0b = max(z0r, 1.0e-9_rk)
+
+        ! Speed magnitude at bottom cell centre
+        Uc = sqrt(u(1)*u(1) + v(1)*v(1))
+
+        if (Uc <= 1.0e-10_rk) then
+            ! essentially no flow so no quadratic stress
+            return
+        end if
+
+        ! iterate a few times because z0sm (smooth term) depends on ustar via rb*Uc, both terms depend on each other
+        do it=1,3
+            ! log-law factor at the actual sampling height zc = h(1)/2 and keeping it out of the viscous sublayer (10*z0b)
+            logarg = log((z0b + zc) / z0b)                     ! Log part
+            if (logarg <= 1.0e-12_rk) error stop "compute_bottom_stress: invalid logarg"
+            rb     = kappa / logarg                            ! rb = ustar/U(z) = kappa/ln(z/z0)                    
+            u_taub= rb * Uc                                    ! shear velocity from log-law
+            if (mol_nu>0.0_rk .and. u_taub>0.0_rk) then
+                z0sm = 0.1_rk * mol_nu/max(mol_nu, u_taub)
+            else
+                z0sm = 0.0_rk
+            end if
+            ! updated roughness length 
+            z0new = max(z0sm + z0r, 1.0e-9_rk)    
+            z0b = z0new
+        end do
+
+        ! stress magnitude
+        stressb = rho_bed * u_taub * u_taub
+
+        ! direction: oppose the flow
+        tau_bx = -stressb * (u(1) / Uc)
+        tau_by = -stressb * (v(1) / Uc)
+
+    end subroutine compute_bottom_stress
+
+
     !**********************************************************
     !       Equation of motion subroutine - friction term
     !**********************************************************
-    pure subroutine EQN_FRICTION(vel_comp_old, vel_comp_new, vel_comp2_bottom, Nz, h, dt, h0b, density, &
-                                 tau_surf, u_taub, z0b, stressb)
+    subroutine EQN_FRICTION(u_old, v_old, u_new, v_new, Nz, h, dt, h0b, density,  &
+                                 tau_x, tau_y, u_taub, z0b, stressb)
         !  vel_comp_old,     [in ] real(:)  bottom-to-top component to update (u or v) at layers' centres [m s-1]
         !  vel_comp_new,     [out] real(:)  updated component after diffusion + bottom drag + surface stress [m s-1]
         !  vel_comp2_bottom  [in ] real     other component at i=1 (bottom-layer centre) used to form |U| [m s-1]
@@ -134,20 +204,24 @@ contains
 
         implicit none
         ! Inputs
-        real(rk), intent(in)  :: vel_comp_old(:), vel_comp2_bottom, Nz(:), h(:), density(:), dt, h0b, tau_surf
-        ! Outputs
-        real(rk), intent(out) :: vel_comp_new(size(vel_comp_old)), u_taub, z0b, stressb
+        real(rk), intent(in)  :: u_old(:), v_old(:)
+        real(rk), intent(in)  :: Nz(:), h(:), density(:)
+        real(rk), intent(in)  :: dt, h0b, tau_x, tau_y
+        real(rk), intent(out) :: u_new(size(u_old)), v_new(size(v_old))
+        real(rk), intent(out) :: u_taub, z0b, stressb
 
-        integer  :: i, N
-        real(rk) :: dz_imh, dz_iph, flux_dn, flux_up, dv
-        real(rk) :: zc, Uc, rb, ustar_b, z0r, z0sm, z0new, tau_mag, logarg
-        real(rk) :: rho_bed
-        integer  :: it
+        integer  :: i, N, it
+        real(rk) :: dz_imh, dz_iph, flux_dn_u, flux_up_u, flux_dn_v, flux_up_v
+        real(rk) :: dv_u, dv_v
+        real(rk) :: zc, Uc, rb, ustar_b, z0r, z0sm, z0new, logarg
+        real(rk) :: rho_bed, rho_surf
 
-        N     = size(vel_comp_old); vel_comp_new = vel_comp_old
-        zc    = 0.5_rk*h(1)
+        N = size(u_old)
+        u_new = u_old
+        v_new = v_old
 
         rho_bed  = density(1)
+        rho_surf = density(N)
 
         ! ---- Interior diffusion of horizontal momentum
         do i = 2, N-1
@@ -157,12 +231,16 @@ contains
 
             ! fluxes (flux_up - flux_dn)
             ! flux leaving cell i downward into cell i−1
-            flux_dn = Nz(i-1) * (vel_comp_old(i)   - vel_comp_old(i-1)) / dz_imh   ! at i-1/2
+            flux_dn_u = Nz(i-1) * (u_old(i)   - u_old(i-1)) / dz_imh   ! at i-1/2
+            flux_dn_v = Nz(i-1) * (v_old(i)   - v_old(i-1)) / dz_imh
             ! flux leaving cell i upward into cell i+1
-            flux_up = Nz(i  ) * (vel_comp_old(i+1) - vel_comp_old(i  )) / dz_iph   ! at i+1/2
+            flux_up_u = Nz(i  ) * (u_old(i+1) - u_old(i  )) / dz_iph   ! at i+1/2            
+            flux_up_v = Nz(i  ) * (v_old(i+1) - v_old(i  )) / dz_iph
 
-            dv = dt * ((flux_up - flux_dn) / h(i))   ! tendency
-            vel_comp_new(i) = vel_comp_old(i) + dv
+            dv_u = dt * ((flux_up_u - flux_dn_u) / h(i))   ! tendency
+            dv_v = dt * ((flux_up_v - flux_dn_v) / h(i))
+            u_new(i) = u_old(i) + dv_u
+            v_new(i) = v_old(i) + dv_v
         end do
 
 
@@ -176,16 +254,18 @@ contains
         !   U(z) is the mean velocity at height z above the bed.
         !   It assumes we are in the logarithmic region of the velocity profile, but at a height larger than z0. 
         !     zc = h1/2. The momentum sink still enters the bottom cell like in S2P3.
-        z0r = 0.03_rk*h0b           ! converts Nikuradse height (h0b) to roughness length (approx k_s/33).
-        z0b = max(z0r, 1.0e-6_rk)   ! initial roughness (rough limit only to start)
+        zc  = 0.5_rk*h(1)
+        ! Magnitude of speed at the centre of bottom layer
+        Uc  = sqrt(u_old(1)*u_old(1) + v_old(1)*v_old(1))
+
+        z0r = 0.03_rk * h0b           ! converts Nikuradse height (h0b) to roughness length (approx k_s/33).
+        z0b = max(z0r, 1.0e-6_rk)     ! initial roughness (rough limit only to start)
 
         ! iterate a few times because z0sm (smooth term) depends on ustar via rb*Uc, both terms depend on each other
-        do it=1,3
+       do it=1,3
             ! log-law factor at the actual sampling height zc = h(1)/2 and keeping it out of the viscous sublayer (10*z0b)
             logarg = log(max(zc, 10.0_rk*z0b) / z0b)           ! Log part
-            rb     = kappa / logarg                            ! rb = ustar/U(z) = kappa/ln(z/z0)
-            ! Magnitude of speed at the centre of bottom layer
-            Uc     = sqrt(vel_comp_old(1)*vel_comp_old(1) + vel_comp2_bottom*vel_comp2_bottom)            
+            rb     = kappa / logarg                            ! rb = ustar/U(z) = kappa/ln(z/z0)                    
             ustar_b= rb * Uc                                   ! shear velocity from log-law
             if (mol_nu>0.0_rk .and. ustar_b>0.0_rk) then
                 z0sm = 0.1_rk*mol_nu/ustar_b
@@ -195,30 +275,36 @@ contains
             ! updated roughness length 
             z0new = max(z0sm + z0r, 1.0e-6_rk)    
             z0b = z0new
-        end do
+       end do
 
         ! diffusive flux from layer 2 across the bottom face (1/2), using centre-to-centre distance
-        flux_up = 0.0_rk
+        flux_up_u = 0.0_rk
+        flux_up_v = 0.0_rk
         if (N >= 2) then
-            dz_iph  = 0.5_rk*(h(1) + h(2))                                
-            flux_up = Nz(1) * (vel_comp_old(2) - vel_comp_old(1)) / dz_iph          ! upward diffusive flux
+            dz_iph  = 0.5_rk*(h(1) + h(2))                         
+            flux_up_u = Nz(1) * (u_old(2) - u_old(1)) / dz_iph          ! upward diffusive flux
+            flux_up_v = Nz(1) * (v_old(2) - v_old(1)) / dz_iph
         end if
         ! quadratic bottom sink with height-consistent coefficient rb^2
-        vel_comp_new(1) = vel_comp_old(1) + dt * (flux_up / h(1) - (rb*rb/h(1))*Uc*vel_comp_old(1))
+        u_new(1) = u_old(1) + dt * (flux_up_u / h(1) - (rb*rb/h(1)) * Uc * u_old(1))
+        v_new(1) = v_old(1) + dt * (flux_up_v / h(1) - (rb*rb/h(1)) * Uc * v_old(1))
 
         ! Bottom stress boundary conditiosn
         stressb    = rho_bed * ustar_b * ustar_b
         u_taub     = ustar_b
 
+
         ! ---- Surface: wind stress
-        flux_dn = 0.0_rk
+        flux_dn_u = 0.0_rk
+        flux_dn_v = 0.0_rk
         if (N >= 2) then
             dz_imh  = 0.5_rk*(h(N-1) + h(N))                 ! face N-1/2 spacing
-            flux_dn = Nz(N-1) * (vel_comp_old(N) - vel_comp_old(N-1)) / dz_imh
+            flux_dn_u = Nz(N-1) * (u_old(N) - u_old(N-1)) / dz_imh
+            flux_dn_v = Nz(N-1) * (v_old(N) - v_old(N-1)) / dz_imh
         end if
-        dv = dt * (-flux_dn / h(N) + tau_surf/(rho0*h(N)))  ! -> rho0 or density at the surface?
-        vel_comp_new(N) = vel_comp_old(N) + dv
-
+        ! -> rho0 or density at the surface?
+        u_new(N) = u_old(N) + dt * (-flux_dn_u/ h(N) + tau_x/(rho_surf*h(N)))
+        v_new(N) = v_old(N) + dt * (-flux_dn_v/ h(N) + tau_y/(rho_surf*h(N)))
     end subroutine EQN_FRICTION
     
 end module momentum_eqns
