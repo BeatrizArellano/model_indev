@@ -33,11 +33,13 @@ contains
   subroutine solve_tridiag(fi, lt, coeff, values)
       integer,            intent(in)  :: fi, lt
       type(TridiagCoeff), intent(inout) :: coeff
-      real(rk),           intent(out) :: values(:)
+      real(rk),           intent(inout) :: values(:)
 
       integer :: i
       real(rk) :: denom
       real(rk), parameter :: eps = 1.0e-30_rk
+
+      if (fi >= lt) error stop "solve_tridiag: fi must be < lt"
 
       ! Forward sweep
       coeff%ru(lt) = coeff%au(lt) / coeff%bu(lt)
