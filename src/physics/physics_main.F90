@@ -16,33 +16,28 @@
 !       Halloran et al. (2021), GMD 14, 6177–6195.
 !
 !=======================================================================================
-module physics_main
-  use iso_fortran_env,     only: error_unit
-  use precision_types,     only: rk, lk
-  use read_config_yaml,    only: ConfigParams
+module physics_main  
+  use EOS_eqns,            only: eos_density
+  use forcing_manager,     only: ForcingSnapshot
+  use freshwater_fluxes,   only: apply_surface_freshwater
   use geo_utils,           only: LocationInfo
   use grids,               only: VerticalGrid
+  use heat_fluxes,         only: compute_heat_tendency, apply_temperature_tendency
+  use momentum_eqns,       only: EQN_PRESSURE, EQN_CORIOLIS,   &
+                                 compute_surface_stress, compute_bottom_stress
+  use nan_checks,          only: check_nan_physics                               
+  use numerical_stability, only: compute_phys_substeps
+  use physics_params,      only: read_physics_parameters, &
+                                 gravity, kappa, mol_nu, mol_diff_T, rho0
+  use physics_types,       only: PhysicsState, PhysicsEnv       
+  use phys_var_registry,   only: register_physics_variables    
+  use precision_types,     only: rk, lk                   
+  use read_config_yaml,    only: ConfigParams 
   use tidal_readers,       only: read_tidal_parameters
   use tidal,               only: TidalSet, create_tidal_set, tide_pressure_accel
-  use forcing_manager,     only: ForcingSnapshot
-  use EOS_eqns,            only: eos_density
-  use momentum_eqns,       only: EQN_PRESSURE, EQN_CORIOLIS, wind_stress_from_uv, &
-                                 update_surface_friction, compute_bottom_stress
-  use turbulence,          only: TURBULENCE_ke, tke_min
-  use freshwater_fluxes,   only: apply_surface_freshwater
-  use heat_fluxes,         only: SURFACE_HEAT
-  use vertical_mixing,     only: scalar_diffusion, BC_NEUMANN
-  use numerical_stability, only: compute_phys_subcycles
   use tridiagonal,         only: init_tridiag, clear_tridiag
-  use physics_params,      only: read_physics_parameters, &
-                                 gravity, z0s_min, kappa, mol_nu, mol_diff_T
-  use phys_var_registry,   only: register_physics_variables
-  use physics_types,       only: PhysicsState, PhysicsEnv
-  use nan_checks,          only: check_nan_physics
-
-
-
-   use, intrinsic :: ieee_arithmetic, only: ieee_is_nan
+  use turbulence,          only: TURBULENCE_ke, tke_min
+  use vertical_mixing,     only: scalar_diffusion, BC_NEUMANN  
   
   implicit none
   private
@@ -104,6 +99,9 @@ contains
       allocate(PE%u_old(N), PE%u_new(N), PE%v_old(N), PE%v_new(N))
       if (allocated(PE%Nz_tot)) deallocate(PE%Nz_tot, PE%Kz_T)   
       allocate(PE%Nz_tot(0:N), PE%Kz_T(0:N))  ! Arrays for viscosity and diffusivity plus molecular values
+      if (allocated(PE%dTdt_heat)) deallocate(PE%dTdt_heat)   
+      allocate(PE%dTdt_heat(N))               ! Arrays for temperature tendencies computed from heat fluxes
+      
   
       ! --- A sensible initial length-scale (S2P3) ---
       depth = PE%grid%depth
@@ -152,7 +150,9 @@ contains
         integer  :: N, ti, n_sub
         real(rk) :: dtm, dt_sub, t_sub
         real(rk) :: Pxsum, Pysum  
-        real(rk) :: tau_bx, tau_by
+        real(rk) :: flux_u_bot, flux_v_bot
+        real(rk) :: flux_u_sfc, flux_v_sfc
+
         integer :: ierr_l
         character(len=256) :: errmsg_l
 
@@ -166,55 +166,60 @@ contains
         ! Initialising them with current state
         PE%u_old = PE%PS%velx;  PE%v_old = PE%PS%vely
 
-        
-        ! Calculating wind stress from wind-speed and direction
-        call wind_stress_from_uv(FS%wind_u10, FS%wind_v10, PE%PS%wind_speed, PE%PS%tau_x, PE%PS%tau_y)
-
-        ! Initial calculation for surface friction velocity and roughness length
-        call update_surface_friction(tau_x=PE%PS%tau_x, tau_y=PE%PS%tau_y,              &
-                                    rho_surf=PE%PS%rho(N), charnock=PE%params%charnock, &
-                                    u_taus=PE%PS%u_taus, z0s=PE%PS%z0s)
-
+        ! Calculating wind stress, surface friction velocity and roughness length
+        call compute_surface_stress(u10= FS%wind_u10, v10= FS%wind_v10, charnock= PE%params%charnock,   &
+                                     tau_x= PE%PS%tau_x, tau_y= PE%PS%tau_y, u_taus= PE%PS%u_taus,      &
+                                     z0s= PE%PS%z0s, windspeed = PE%PS%wind_speed)   
+    
         ! Update density
         PE%PS%rho  = eos_density(PE%PS%temp, PE%PS%sal)
 
+        call compute_heat_tendency(temp=PE%PS%temp, dz=PE%grid%dz, N=N,                                   &
+                                   rsds=FS%short_rad, rlds_down=FS%long_rad, wind_speed=PE%PS%wind_speed, &
+                                   airT=FS%air_temp, rh=FS%rel_hum, airP=FS%slp,                          &
+                                   lw_skin_penetration=PE%params%lw_skin_penetration, lambda=PE%params%lambda, &
+                                   dTdt_heat=PE%dTdt_heat, Q_net_surf=PE%PS%Q_net_surf, max_abs_dTdt=PE%max_abs_dTdt)
+ 
         ! Turbulence: once per main step     
         ! Solves turbulence using the Canuto k-eps closure scheme and calculates Kz and Nz
-        call TURBULENCE_ke(N, dtm, PE%params, PE%grid%dz,                          &
+        call TURBULENCE_ke(N, dtm, PE%params, PE%grid%dz,                                &
                           density = PE%PS%rho, velx = PE%u_old, vely = PE%v_old,         &
-                          u_taus = PE%PS%u_taus, u_taub = PE%PS%u_taub,            &
-                          z0s = PE%PS%z0s, z0b = PE%PS%z0b,                        &
-                          Kz = PE%PS%Kz, Nz = PE%PS%Nz, tke = PE%PS%tke,           &
-                          eps = PE%PS%eps, Lscale=PE%PS%Lscale,                    &
-                          NN=PE%PS%NN, SS=PE%PS%SS, Ri=PE%PS%Ri,                   &
+                          u_taus = PE%PS%u_taus, u_taub = PE%PS%u_taub,                  &
+                          z0s = PE%PS%z0s, z0b = PE%PS%z0b,                              &
+                          Kz = PE%PS%Kz, Nz = PE%PS%Nz, tke = PE%PS%tke,                 &
+                          eps = PE%PS%eps, Lscale=PE%PS%Lscale,                          &
+                          NN=PE%PS%NN, SS=PE%PS%SS, Ri=PE%PS%Ri,                         &
                           cmue1=PE%PS%cmue1, trid=PE%trid, is_first_step=is_first_step)
 
         PE%Nz_tot = PE%PS%Nz + mol_nu
         PE%Kz_T   = PE%PS%Kz + mol_diff_T 
 
+        ! Compute bed stress components (N/m^2) 
+        call compute_bottom_stress(u=PE%u_old, v=PE%v_old, dz_btm=PE%grid%dz(1), h0b=PE%params%h0b, &
+                                  tau_bx=PE%PS%tau_bx, tau_by=PE%PS%tau_by, u_taub=PE%PS%u_taub, z0b=PE%PS%z0b, stressb=PE%PS%stressb)
+
         ! Calculates the optimum size of the time-steps  for the inner loop
-        ! by obtaining the stability condition so that vertical diffusion of momentum is stable
-        call compute_phys_subcycles(PE%grid%dz, PE%Nz_tot, PE%Kz_T, PE%params%vismax, dtm, n_sub, dt_sub, ierr_l, errmsg_l)    
+        ! by obtaining the stability condition so that diffusion of properties and heat tendencies are stable
+        call compute_phys_substeps(dz=PE%grid%dz, Nz=PE%Nz_tot, Kz=PE%Kz_T,                          &
+                                  cnpar=PE%params%cnpar, dt_main=dtm,  max_abs_dTdt=PE%max_abs_dTdt, &
+                                  tau_bx=PE%PS%tau_bx, tau_by=PE%PS%tau_by, tau_x=PE%PS%tau_x,       &        
+                                  tau_y=PE%PS%tau_y, n_sub=n_sub,dt_sub=dt_sub,                      &                          
+                                  ierr=ierr_l, errmsg= errmsg_l)
 
         ! Inner subcycle to maintain numeriacl stability
         do ti = 1, n_sub
-            t_sub = real(elapsed_time,rk) + (real(ti,rk) - 0.5_rk)*dt_sub   ! Elapsed time for each substep
-    
-            call SURFACE_HEAT(temp = PE%PS%temp, dz = PE%grid%dz, N = N, dt=dt_sub, &
-                            rsds=FS%short_rad, rlds_down=FS%long_rad, wind_speed=PE%PS%wind_speed,     &
-                            airT=FS%air_temp, rh=FS%rel_hum, airP=FS%slp,                      &
-                            lw_skin_penetration=PE%params%lw_skin_penetration,      &
-                            lambda=PE%params%lambda)
+            t_sub = real(elapsed_time,rk) + (real(ti,rk) - 0.5_rk)*dt_sub   ! Elapsed time for each substep   
+
+            call apply_temperature_tendency(PE%PS%temp, N, dt_sub, PE%dTdt_heat)
 
             ! Then mix the vertical thermal structure with semi-implicit scalar scheme      
             call scalar_diffusion(PE%PS%temp, N, dt_sub, PE%grid%dz, PE%Kz_T, PE%params%cnpar, PE%trid, ierr_l)
+
             ! Recompute density after thermal mixing
             PE%PS%rho = eos_density(PE%PS%temp, PE%PS%sal)
-            
-            ! Update density
-            !PE%PS%rho  = eos_density(PE%PS%temp, PE%PS%sal)
 
             if (PE%params%compute_salinity) then
+              ! Doing nothing at the moment
               call apply_surface_freshwater(salt=PE%PS%sal, dz=PE%grid%dz, precip=FS%precip, evap=FS%evap, runoff=FS%runoff)
               ! Update density
               !PE%PS%rho  = eos_density(PE%PS%temp, PE%PS%sal)
@@ -229,19 +234,24 @@ contains
             ! Accelerate by pressure gradients (x and y components)
             call EQN_PRESSURE(dt_sub, Pxsum, Pysum, PE%u_old, PE%v_old) ! Already updates u_old inplace
 
-            ! Compute bed stress components (N/m^2) with your chosen drag law
-            call compute_bottom_stress(PE%u_old, PE%v_old, PE%grid%dz(1), PE%PS%rho(1), PE%params%h0b, &
-                                      tau_bx, tau_by, PE%PS%u_taub, PE%PS%z0b, PE%PS%stressb)
+            ! Compute bed stress components (N/m^2) 
+            call compute_bottom_stress(u=PE%u_old, v=PE%v_old, dz_btm=PE%grid%dz(1), h0b=PE%params%h0b, &
+                                       tau_bx=PE%PS%tau_bx, tau_by=PE%PS%tau_by, u_taub=PE%PS%u_taub, z0b=PE%PS%z0b, stressb=PE%PS%stressb)
 
-            ! Apply surface/bottom stresses and vertical diffusivity of momentum 
+            ! Convert dynamic stresses (Pa) to kinematic momentum fluxes (m^2 s^-2)
+            ! to use as Neumann boundary conditions in the momentum diffusion scheme
+            flux_u_bot = PE%PS%tau_bx / rho0; flux_v_bot = PE%PS%tau_by / rho0
+            flux_u_sfc  = PE%PS%tau_x  / rho0; flux_v_sfc  = PE%PS%tau_y  / rho0
+
+            ! Apply surface/bottom stresses and vertical diffusivity of momentum (using a semi-implicit scheme)
             ! u_old and v_old are updated inplace
             call scalar_diffusion(PE%u_old, N, dt_sub, PE%grid%dz, PE%Nz_tot, PE%params%cnpar, PE%trid, ierr_l, &
-                                  bc_bot_type=BC_NEUMANN, bc_bot_value=tau_bx/PE%PS%rho(1), &
-                                  bc_top_type=BC_NEUMANN, bc_top_value=PE%PS%tau_x/PE%PS%rho(N))
+                                  bc_bot_type=BC_NEUMANN, bc_bot_value=flux_u_bot, &
+                                  bc_top_type=BC_NEUMANN, bc_top_value=flux_u_sfc)
 
             call scalar_diffusion(PE%v_old, N, dt_sub, PE%grid%dz, PE%Nz_tot, PE%params%cnpar, PE%trid, ierr_l, &
-                                  bc_bot_type=BC_NEUMANN, bc_bot_value=tau_by/PE%PS%rho(1), &
-                                  bc_top_type=BC_NEUMANN, bc_top_value=PE%PS%tau_y/PE%PS%rho(N))
+                                  bc_bot_type=BC_NEUMANN, bc_bot_value=flux_v_bot, &
+                                  bc_top_type=BC_NEUMANN, bc_top_value=flux_v_sfc)
 
             PE%u_new = PE%u_old
             PE%v_new = PE%v_old
@@ -268,14 +278,35 @@ contains
       type(PhysicsEnv),   intent(inout) :: PE
 
       integer :: i
-      if (allocated(PE%PS%temp))   deallocate(PE%PS%temp, PE%PS%sal, PE%PS%rho)
-      if (allocated(PE%PS%velx))   deallocate(PE%PS%velx, PE%PS%vely)
-      if (allocated(PE%PS%Kz))     deallocate(PE%PS%Kz, PE%PS%Nz, PE%PS%tke, PE%PS%eps)
+      if (allocated(PE%PS%temp))   deallocate(PE%PS%temp)
+      if (allocated(PE%PS%sal))    deallocate(PE%PS%sal)
+      if (allocated(PE%PS%rho))    deallocate(PE%PS%rho)
+
+      if (allocated(PE%PS%velx))   deallocate(PE%PS%velx)
+      if (allocated(PE%PS%vely))   deallocate(PE%PS%vely)
+
+      if (allocated(PE%PS%Kz))     deallocate(PE%PS%Kz)
+      if (allocated(PE%PS%Nz))     deallocate(PE%PS%Nz)
+      if (allocated(PE%PS%tke))    deallocate(PE%PS%tke)
+      if (allocated(PE%PS%eps))    deallocate(PE%PS%eps)
+      if (allocated(PE%PS%NN))     deallocate(PE%PS%NN)   ! <-- missing before
+      if (allocated(PE%PS%SS))     deallocate(PE%PS%SS)   ! <-- missing before
+      if (allocated(PE%PS%Ri))     deallocate(PE%PS%Ri)   ! <-- missing before
+
       if (allocated(PE%PS%Lscale)) deallocate(PE%PS%Lscale)
       if (allocated(PE%PS%cmue1))  deallocate(PE%PS%cmue1)
-      if (allocated(PE%u_old)) deallocate(PE%u_old, PE%u_new, PE%v_old, PE%v_new)
-      if (allocated(PE%Nz_tot)) deallocate(PE%Nz_tot, PE%Kz_T)   
+
+      if (allocated(PE%u_old)) deallocate(PE%u_old)
+      if (allocated(PE%u_new)) deallocate(PE%u_new)
+      if (allocated(PE%v_old)) deallocate(PE%v_old)
+      if (allocated(PE%v_new)) deallocate(PE%v_new)
+
+      if (allocated(PE%Nz_tot))    deallocate(PE%Nz_tot)
+      if (allocated(PE%Kz_T))      deallocate(PE%Kz_T)
+      if (allocated(PE%dTdt_heat)) deallocate(PE%dTdt_heat)
+
       PE%PS%N = 0
+
       if (allocated(PE%phys_vars)) then
         do i = 1, size(PE%phys_vars)
           nullify(PE%phys_vars(i)%data_0d)
@@ -283,9 +314,10 @@ contains
         end do
         deallocate(PE%phys_vars)
       end if
-      ! reset tides 
+
       PE%Tides = TidalSet()
-      call clear_tridiag(PE%trid)    
+      call clear_tridiag(PE%trid)
+   
 
       PE%is_init = .false.        
    end subroutine end_physics
