@@ -1,107 +1,224 @@
 module numerical_stability
   use bio_types,       only: BioEnv
-  use precision_types, only: rk
+  use physics_params,  only: rho0
+  use precision_types, only: rk  
   use, intrinsic :: ieee_arithmetic, only: ieee_is_nan
+
 
   implicit none
   private
-  public :: compute_phys_subcycles, compute_bio_substeps
+  public :: compute_phys_substeps, compute_bio_substeps
 
 
 
 contains
 
+  !===============================================================================
+  ! compute_phys_substeps
+  !
+  ! Determines the number of inner substeps (n_sub) and corresponding substep
+  ! size (dt_sub) required to advance the physics over one main time step (dt_main)
+  ! in a numerically stable way.
+  !
+  ! The routine combines independent stability and accuracy constraints:
+  !
+  !   1) Vertical diffusion of momentum and tracers
+  !      ------------------------------------------------
+  !      Vertical mixing is solved with a θ-scheme
+  !      (cnpar = 0 explicit, 0.5 Crank–Nicolson, 1 fully implicit).
+  !
+  !      - The explicitly treated fraction (1 − cnpar) imposes a classical
+  !        parabolic CFL constraint on the time step:
+  !
+  !            CFL_D = (1 − cnpar) * dt * (2K / Δz^2) ≤ CFL_TARGET
+  !
+  !        where K is the interface diffusivity/viscosity and Δz an effective
+  !        layer spacing. This condition is evaluated separately for:
+  !          – momentum viscosity (Nz)
+  !          – scalar diffusivity (Kz)
+  !
+  !      - The largest number of substeps required to satisfy this diffusion
+  !        stability condition is retained.
+  !
+  !   2) Diffusion accuracy / monotonicity limiter
+  !      ------------------------------------------------
+  !      Even when diffusion is implicit (cnpar ≥ 0.5), very large time steps can
+  !      produce unphysical oscillations or overly abrupt smoothing.
+  !
+  !      To avoid this, an additional accuracy constraint is imposed by limiting
+  !      the non-dimensional diffusion number per substep:
+  !
+  !            μ = K * dt / Δz² ≤ MU_MAX
+  !
+  !      This does not enforce stability (which is already guaranteed by the
+  !      implicit scheme), but improves robustness by adding a safety limit.
+  !
+  !   3) Explicit surface heat flux application
+  !      ------------------------------------------------
+  !      Surface heat fluxes and shortwave penetration are applied explicitly
+  !      as temperature tendencies dT/dt. To prevent excessively large temperature
+  !      jumps in a single substep, the time step is limited so that:
+  !
+  !            |ΔT| ≤ DTEMP_MAX
+  !
+  !      where DTEMP_MAX is a user-defined maximum temperature change per substep
+  !      (e.g. 0.05 K). The limiting rate max_abs_dTdt is provided by the heat
+  !      tendency computation.
+  !
+  !   4) Explicit surface/bottom stress forcing (Neumann momentum fluxes)
+  !      ------------------------------------------------
+  !      Surface and bottom stresses are applied as Neumann boundary fluxes in the
+  !      momentum diffusion step. In the boundary cells, the stress contribution
+  !      enters as an explicit tendency:
+  !
+  !          Δu ≈ dt * (τ/ρ0) / Δz
+  !
+  !      where τ/ρ0 is the kinematic stress (m² s⁻²) and Δz is the thickness of the
+  !      boundary cell (dz(1) at the bottom, dz(N) at the surface). Very thin
+  !      boundary layers (e.g. dz(1) ≲ 0.2 m) therefore require additional subcycling
+  !      even when diffusion itself is stable.
+  !
+  !      To prevent excessive velocity jumps in a single substep, we impose:
+  !
+  !          |Δu| ≤ DU_MAX
+  !
+  !      using the stress magnitudes inferred from (tau_bx,tau_by) and (tau_x,tau_y).
+  !      A safety factor F_TAU inflates the stresses to allow for moderate stress
+  !      changes within one outer step. 
+  !
+  ! The final number of substeps is chosen as the maximum required by all three
+  ! constraints. The resulting dt_sub = dt_main / n_sub is then used consistently
+  ! for all inner-loop physics updates.
+  !
+  ! Inputs
+  ! ------
+  ! dz(:)           Layer thicknesses [m], indices 1..N (bottom to surface)
+  ! Nz(0:)          Momentum viscosity at interfaces [m2 s-1], indices 0..N
+  ! Kz(0:)          Scalar diffusivity at interfaces [m2 s-1], indices 0..N
+  ! cnpar           Implicitness parameter of diffusion scheme (θ)
+  ! dt_main         Main physics time step [s]
+  ! max_abs_dTdt    Maximum absolute explicit temperature tendency [K s⁻¹]
+  !
+  ! Outputs
+  ! -------
+  ! n_sub           Number of inner substeps
+  ! dt_sub          Size of each inner substep [s]
+  ! ierr            Error flag (0 = OK)
+  ! errmsg          Diagnostic message if ierr ≠ 0
+  !
+  ! Tunable parameters
+  ! ------------------
+  ! DTEMP_MAX   Maximum allowed explicit temperature change per substep [K]
+  ! MU_MAX      Maximum allowed diffusion Courant number per substep
+  ! DT_MIN      Hard lower bound on dt_sub to prevent pathological subcycling
+  ! DU_MAX      Maximum allowed velocity change per substep in boundary cells [m s⁻¹]
+  ! F_TAU       Safety factor on stress used for substep estimation (accounts for stress growth)
+  ! FLUX_MIN    Lower bound on kinematic stress magnitude used to avoid division by ~0
+  !
+  ! Notes
+  ! -----
+  ! - This routine is called once per main physics step, after turbulence
+  !   and surface heat tendencies have been evaluated.
+  ! - The resulting n_sub and dt_sub are deterministic and guarantee that
+  !   no instability or excessive explicit jump occurs within the inner loop.
+  ! - The stress-based limiter is most relevant when the bottom or surface layer is thin,
+  !   because the Neumann flux contribution scales as dt_sub / dz at the boundary cells.
+  !===============================================================================
+  pure subroutine compute_phys_substeps(dz, Nz, Kz, cnpar, dt_main, max_abs_dTdt, &
+                                        tau_bx, tau_by, tau_x, tau_y,  &
+                                        n_sub, dt_sub, ierr, errmsg)
+      ! Inputs
+      real(rk), intent(in)  :: dz(:)                         ! layer thickness [m], 1..N
+      real(rk), intent(in)  :: Nz(:)                         ! viscosity [m2/s], 0..N (N+1)
+      real(rk), intent(in)  :: Kz(:)                         ! diffusivity [m2/s], 0..N (N+1)
+      real(rk), intent(in)  :: cnpar                         ! theta for diffusion
+      real(rk), intent(in)  :: dt_main                       ! [s]
+      real(rk), intent(in)  :: max_abs_dTdt                  ! [K/s] from compute_heat_tendency
+      real(rk), intent(in)  :: tau_bx, tau_by, tau_x, tau_y  ! Bottom and surface stress components
 
-  pure subroutine compute_phys_subcycles(h, Nz, Kz, vismax, dt_main, n_sub, dt_sub, ierr, errmsg)
-    !   Calculates an integer number of substeps (n_sub) and the substep size (dt_sub)
-    !   so explicit vertical diffusion of MOMENTUM is stable over dt_sub.
-    !   This is done by calculating the stability condition (CFL)
-    !   so that CFL: v*dt_sub/Δz^2 ≤ 1/2 everywhere.
-    !
-    ! Arrays:
-    !   h(1..N)      : layer thickness [m]
-    !   Nz(0..N)     : momentum viscosity at interfaces [m2/s]
-    !   Kz(0..N)     : scalar diffusivity at interfaces [m2/s]
-    !
-    !   vismax       : maximum viscosity or diffusivity allowed int he model
-    !
-    ! Time:
-    !   dt_main      : outer step [s]
-    !
-    ! Outputs:
-    !   n_sub      : number of substeps
-    !   dt_sub    : inner time-step
-    !
-    real(rk), intent(in)  :: h(:), Nz(:), Kz(:)
-    real(rk), intent(in)  :: dt_main, vismax
-    integer,  intent(out) :: n_sub
-    real(rk), intent(out) :: dt_sub
-    integer,  intent(out) :: ierr
-    character(len=*), intent(out) :: errmsg
+      ! Outputs
+      integer,  intent(out) :: n_sub
+      real(rk), intent(out) :: dt_sub
+      integer,  intent(out) :: ierr
+      character(len=*), intent(out) :: errmsg
 
-    real(rk), parameter :: SAFETY      = 0.49_rk      ! inside parabolic limit with momentum diffusion explicit and Nz fixed over the subcycle
-    real(rk), parameter :: DT_MIN      = 0.1_rk       ! [s] Stop below this time-step (Physics)
-    real(rk), parameter :: D_MIN       = 1.0e-12_rk   ! Minimum value for eddy coefficients so we don't divide by zero
-    real(rk), parameter :: BOOST = 15._rk, FRAC_vismax = 0.7_rk
+      ! Tunables
+      real(rk), parameter :: DT_MIN    = 0.1_rk
+      real(rk), parameter :: DTEMP_MAX = 0.05_rk    ! [K] max explicit T change per substep
+      real(rk), parameter :: MU_MAX    = 10._rk     ! Maximum allowed diffusion Courant number per substep (prevents huge implicit jumps)
+      real(rk), parameter :: DU_MAX    = 0.05_rk    ! [m/s] max velocity change per substep in boundary cells
+      real(rk), parameter :: F_TAU     = 1.2_rk     ! Safety factor accounting for possible stress increase within one outer step.
+      real(rk), parameter :: FLUX_MIN  = 1.0e-12_rk
 
-    integer  :: N, i
-    real(rk) :: dz, nz_sens, kz_sens
-    real(rk) :: dtmin_mom, dtmin_sca, dt_safe
-
-    N = size(h)
-    if (size(Nz) /= N+1 .or. size(Kz) /= N+1) then
-      ierr = 3; errmsg = 'compute_phys_subcycles: Nz and Kz size must be 0..N (N+1).'
-      n_sub = 1; dt_sub = dt_main
-      return
-    end if
+      integer  :: nsub_nz, nsub_kz, nsub_diff
+      integer  :: nsub_heat, nsub_acc, nsub_tau
+      real(rk) :: dt_heat, dt_acc, dt_dummy
+      real(rk) :: dt_tau, dt_tau_bot, dt_tau_sfc
+      real(rk) :: flux_bot_mag, flux_sfc_mag
 
 
-    ! Find explicit diffusion limits on interfaces (1..N-1)
-    dtmin_mom = huge(1.0_rk)
-    dtmin_sca = huge(1.0_rk)
+      ierr = 0
+      errmsg = ''
 
+      ! -----------------------
+      ! Diffusion-based limits (theta-scheme explicit fraction handled inside)
+      ! -----------------------
+      call compute_diffusion_substeps(Nz, dz, dt_main, cnpar, nsub_nz, dt_dummy)  ! 
+      call compute_diffusion_substeps(Kz, dz, dt_main, cnpar, nsub_kz, dt_dummy)
+      nsub_diff = max(nsub_nz, nsub_kz)
 
+      ! --- Diffusion accuracy limit (prevents huge implicit jumps) ---
+      ! dt_acc = MU_MAX * dz^2 / Kmax  -> uses most restrictive interface
+      dt_acc = huge(1.0_rk)
+      call compute_diffusion_accuracy_dt(Nz, dz, MU_MAX, dt_acc)
+      call compute_diffusion_accuracy_dt(Kz, dz, MU_MAX, dt_acc)
+      nsub_acc = max(1, ceiling(dt_main / dt_acc))
 
-    do i = 1, N-1
-      dz = 0.5_rk * (h(i) + h(i+1))
-      nz_sens = max(D_MIN,Nz(i))
-      kz_sens = max(D_MIN,Kz(i))
+      !---------------------------------------------------
+      ! kinematic stress magnitudes [m^2/s^2] - used as boundary Neumann fluxes for diffusion of momentum
+      !-----------------------------------------------------
+      flux_bot_mag = F_TAU * sqrt( (tau_bx/rho0)**2 + (tau_by/rho0)**2 )
+      flux_sfc_mag = F_TAU * sqrt( (tau_x /rho0)**2 + (tau_y /rho0)**2 )
+      dt_tau = huge(1.0_rk)
 
-      if (nz_sens <= FRAC_vismax *vismax) then
-         nz_sens = min(BOOST * nz_sens, vismax)
-      else 
-         nz_sens = vismax
+      if (flux_bot_mag > FLUX_MIN) then
+        dt_tau_bot = DU_MAX * dz(1) / flux_bot_mag
+        dt_tau = min(dt_tau, dt_tau_bot)
       end if
-      if (kz_sens <= FRAC_vismax *vismax) then
-         kz_sens = min(BOOST*kz_sens, vismax)
+
+      if (flux_sfc_mag > FLUX_MIN) then
+        dt_tau_sfc = DU_MAX * dz(size(dz)) / flux_sfc_mag
+        dt_tau = min(dt_tau, dt_tau_sfc)
+      end if
+
+      if (dt_tau < huge(1.0_rk)) then
+        nsub_tau = max(1, ceiling(dt_main / dt_tau))
       else
-        kz_sens = vismax
+        nsub_tau = 1
       end if
 
-      dtmin_mom = min(dtmin_mom, (dz*dz) / (2.0_rk * nz_sens)) 
-      dtmin_sca = min(dtmin_sca, (dz*dz) / (2.0_rk * kz_sens))
-    end do
+      ! -----------------------
+      ! Heat limiter (explicit heating)
+      ! -----------------------
+      if (max_abs_dTdt > 0._rk .and. .not.ieee_is_nan(max_abs_dTdt)) then
+        dt_heat = DTEMP_MAX / max_abs_dTdt
+        nsub_heat = max(1, ceiling(dt_main / dt_heat))
+      else
+        nsub_heat = 1
+      end if
 
-    ! Strictest limit across momentum & scalar
-    dt_safe = SAFETY * min(dtmin_mom, dtmin_sca)
+      ! -----------------------
+      ! Choose strictest dt
+      ! -----------------------
+      n_sub  = max(1, nsub_diff, nsub_heat, nsub_acc, nsub_tau)
+      dt_sub = dt_main / real(n_sub, rk)
 
-    ! Integer subcycles so each substep <= dt_safe
-    n_sub  = max(1, ceiling(dt_main / dt_safe))
-    dt_sub = dt_main / real(n_sub, rk)
+      if (dt_sub < DT_MIN) then
+        ierr = 1
+        errmsg = 'compute_phys_subcycles: dt_sub < DT_MIN; increase layer thickness or relax limits.'
+      end if
 
-    ierr = 0; errmsg = ''
-    if (dt_sub < DT_MIN) then
-      ierr = 1
-      errmsg = 'compute_phys_subcycles: internal time-step < 0.1 s;  Increase layer thickness in the vertical grid.'
-    end if
-    if (.not. (dt_safe > 0._rk) .or. ieee_is_nan(dt_safe)) then
-      ierr = 2
-      errmsg = 'compute_phys_subcycles: dt_safe not positive (bad viscosity/diffusivity inputs).'
-      n_sub = 1
-      dt_sub = dt_main
-      return
-    end if
-  end subroutine compute_phys_subcycles
+  end subroutine compute_phys_substeps
 
 
   ! Computes the number of subcycles required while updating biogeochemistry, considering potential limiting factors for all processes. 
@@ -256,6 +373,65 @@ contains
   end subroutine compute_bio_substeps
 
 
+  !===============================================================================
+  ! compute_diffusion_accuracy_dt
+  !
+  ! Computes an upper bound on the time step imposed by an accuracy (not stability)
+  ! constraint for vertical diffusion.
+  !
+  ! Even when vertical diffusion is treated implicitly or semi-implicitly
+  ! (e.g. Crank–Nicolson or backward Euler), arbitrarily large time steps can lead
+  ! to unphysical behaviour such as excessive smoothing when sharp gradients are present.
+  !
+  ! To mitigate this, this routine limits the non-dimensional diffusion number
+  ! per substep:
+  !
+  !     μ = K * Δt / Δz² ≤ μ_max
+  !
+  ! where:
+  !   - K     is the diffusivity (or viscosity) at layer interfaces,
+  !   - Δz    is an effective layer thickness,
+  !   - μ_max is a user-defined upper bound controlling accuracy.
+  !
+  ! The routine scans all interior interfaces and updates dt_acc to the most
+  ! restrictive value consistent with μ ≤ μ_max:
+  !
+  !     Δt ≤ μ_max * Δz² / K
+  !
+  ! This constraint does NOT enforce numerical stability, but improves robustness 
+  ! by preventing excessively large implicit diffusion jumps.
+  !
+  ! Inputs
+  ! ------
+  ! Kz(0:)      Diffusivity or viscosity at interfaces [m² s⁻¹], indices 0..N
+  ! dz(:)       Layer thicknesses [m], indices 1..N
+  ! mu_max      Maximum allowed diffusion number per substep (dimensionless)
+  !
+  ! Input / Output
+  ! --------------
+  ! dt_acc      On entry: current upper bound on the time step [s]
+  !             On exit : updated upper bound including diffusion accuracy limit
+  !===============================================================================
+  pure subroutine compute_diffusion_accuracy_dt(Kz, dz, mu_max, dt_acc)
+      real(rk), intent(in)    :: Kz(0:), dz(:), mu_max
+      real(rk), intent(inout) :: dt_acc
+
+      integer :: N, k
+      real(rk) :: Kloc, denom, alpha, beta, rate, dt_here
+
+      N = size(dz)
+      do k = 1, N-1
+        Kloc  = max(Kz(k), 0._rk)
+        denom = dz(k) + dz(k+1)
+        if (Kloc > 0._rk .and. dz(k) > 0._rk .and. dz(k+1) > 0._rk .and. denom > 0._rk) then
+          alpha = 2._rk*Kloc / (denom * dz(k))
+          beta  = 2._rk*Kloc / (denom * dz(k+1))
+          rate  = max(alpha, beta)                    ! [1/s] diffusion coupling strength
+          dt_here = mu_max / rate                     ! [s]
+          dt_acc  = min(dt_acc, dt_here)
+        end if
+      end do
+  end subroutine compute_diffusion_accuracy_dt
 
   !--------------------------------------------------------------------
   ! Compute maximum vertical Courant number and numebr of substeps.
@@ -318,38 +494,96 @@ contains
       end if
    end subroutine compute_transport_substeps
 
-  ! Compute the number of substeps needed for vertical mixing depending on the cnpar value
+  !===============================================================================
+  ! compute_diffusion_substeps
+  !
+  ! Computes the number of substeps required to satisfy the diffusion stability
+  ! constraint associated with the explicitly treated fraction of a θ-scheme
+  ! (cnpar) for vertical diffusion.
+  !
+  ! Vertical diffusion is advanced using a θ-method:
+  !   cnpar = 0.0  - fully explicit
+  !   cnpar = 0.5  - Crank–Nicolson
+  !   cnpar = 1.0  - fully implicit
+  !
+  ! Only the explicitly treated fraction (1-cnpar) contributes to the classical
+  ! parabolic CFL stability constraint. This routine evaluates the maximum
+  ! diffusion CFL number across the column:
+  !
+  !     CFL_D = (1 − cnpar) * dt * (2K / Δz_eff^2)
+  !
+  ! where:
+  !   - K        is the diffusivity or viscosity at a layer interface,
+  !   - Δz_eff   is the effective vertical spacing between adjacent layers,
+  !   - dt       is the main time step.
+  !
+  ! The number of substeps nsub is chosen such that the CFL per substep satisfies:
+  !
+  !     CFL_D / nsub ≤ CFL_TARGET
+  !
+  ! where CFL_TARGET is a defined safety margin (typically < 1).
+  !
+  ! Inputs
+  ! ------
+  ! Kz(0:)        Diffusivity or viscosity at interfaces [m² s⁻¹], indices 0..N
+  ! dz(:)         Layer thicknesses [m], indices 1..N
+  ! dt            Main time step [s]
+  ! cnpar         Implicitness parameter of the diffusion scheme (θ)
+  !
+  ! Outputs
+  ! -------
+  ! nsub          Number of substeps required for diffusion stability
+  ! dt_sub        Resulting substep size (dt / nsub) [s]
+  !
+  ! Parameters
+  ! ----------
+  ! CFL_TARGET    Target maximum diffusion CFL number per substep.
+  !               Values < 1 provide a safety margin; typical values are 0.5–0.9.
+  !
+  ! Notes
+  ! -----
+  ! - If cnpar ≥ 0.5, the diffusion scheme is linearly stable; this routine then
+  !   primarily acts as a safeguard against overly aggressive explicit fractions.
+  !===============================================================================
   pure subroutine compute_diffusion_substeps(Kz, dz, dt, cnpar, nsub, dt_sub)
-    real(rk), intent(in)  :: Kz(0:), dz(:), dt, cnpar
-    integer,  intent(out) :: nsub
-    real(rk), intent(out) :: dt_sub
+      real(rk), intent(in)  :: Kz(0:), dz(:), dt, cnpar
+      integer,  intent(out) :: nsub
+      real(rk), intent(out) :: dt_sub
 
-    integer  :: N, k
-    real(rk) :: h_eff, Kloc, cflD, cflD_max
+      integer  :: N, k
+      real(rk) :: h_eff, Kloc, cflD, cflD_max
+      real(rk) :: denom, alpha, beta
 
-    N = size(dz)
-    cflD_max = 0._rk
+      real(rk), parameter :: CFL_TARGET = 0.7_rk
 
-    do k = 1, N-1
-        h_eff = 0.5_rk*(dz(k) + dz(k+1))
-        Kloc  = max(Kz(k), 0._rk)
+      N = size(dz)
+      cflD_max = 0._rk
 
-        if (h_eff > 0._rk .and. Kloc > 0._rk) then
-            ! Diffusion CFL = (explicit fraction)*(dt)*(2K / h_eff^2)
-            cflD = (1._rk - cnpar)*dt * 2._rk*Kloc / (h_eff*h_eff)
-            if (cflD > cflD_max) cflD_max = cflD
+      do k = 1, N-1
+        Kloc = max(Kz(k), 0._rk)
+        denom = dz(k) + dz(k+1)
+
+        if (Kloc > 0._rk .and. dz(k) > 0._rk .and. dz(k+1) > 0._rk .and. denom > 0._rk) then
+          ! Matches scalar_diffusion coefficients:
+          ! c_lower = 2*dt*K / ((dz_k+dz_k+1)*dz_k)
+          ! c_upper = 2*dt*K / ((dz_k+dz_k+1)*dz_k+1)
+          alpha = 2._rk*Kloc / (denom * dz(k))
+          beta  = 2._rk*Kloc / (denom * dz(k+1))
+
+          cflD = (1._rk - cnpar) * dt * max(alpha, beta)
+          cflD_max = max(cflD_max, cflD)
         end if
-    end do
+      end do
 
-    if (cflD_max <= 1._rk) then
-        nsub = 1
-        dt_sub = dt
-    else
-        ! We want cflD_sub = cflD_max / nsub ≤ 1, so nsub ≥ cflD_max
-        nsub = int(cflD_max) + 1
-        if (nsub < 1) nsub = 1
-        dt_sub = dt / real(nsub, rk)
-    end if
+      if (cflD_max <= CFL_TARGET) then
+          nsub = 1
+          dt_sub = dt
+      else
+          ! We want cflD_sub = cflD_max / nsub ≤ 1, so nsub ≥ cflD_max
+          nsub = int(cflD_max / CFL_TARGET) + 1
+          if (nsub < 1) nsub = 1
+          dt_sub = dt / real(nsub, rk)
+      end if
   end subroutine compute_diffusion_substeps
 
 
@@ -594,5 +828,100 @@ contains
         end if
       end if
    end subroutine compute_transport_substeps_sed
+
+
+   !**********************************************************
+   ! Legacy subroutine - when diffusion of momentum was explicit
+   !************************************************************
+   pure subroutine compute_phys_substeps_prev(h, Nz, Kz, vismax, dt_main, n_sub, dt_sub, ierr, errmsg)
+      !   Calculates an integer number of substeps (n_sub) and the substep size (dt_sub)
+      !   so explicit vertical diffusion of MOMENTUM is stable over dt_sub.
+      !   This is done by calculating the stability condition (CFL)
+      !   so that CFL: v*dt_sub/Δz^2 ≤ 1/2 everywhere.
+      !
+      ! Arrays:
+      !   h(1..N)      : layer thickness [m]
+      !   Nz(0..N)     : momentum viscosity at interfaces [m2/s]
+      !   Kz(0..N)     : scalar diffusivity at interfaces [m2/s]
+      !
+      !   vismax       : maximum viscosity or diffusivity allowed int he model
+      !
+      ! Time:
+      !   dt_main      : outer step [s]
+      !
+      ! Outputs:
+      !   n_sub      : number of substeps
+      !   dt_sub    : inner time-step
+      !
+      real(rk), intent(in)  :: h(:), Nz(:), Kz(:)
+      real(rk), intent(in)  :: dt_main, vismax
+      integer,  intent(out) :: n_sub
+      real(rk), intent(out) :: dt_sub
+      integer,  intent(out) :: ierr
+      character(len=*), intent(out) :: errmsg
+
+      real(rk), parameter :: SAFETY      = 0.49_rk      ! inside parabolic limit with momentum diffusion explicit and Nz fixed over the subcycle
+      real(rk), parameter :: DT_MIN      = 0.1_rk       ! [s] Stop below this time-step (Physics)
+      real(rk), parameter :: D_MIN       = 1.0e-12_rk   ! Minimum value for eddy coefficients so we don't divide by zero
+      real(rk), parameter :: BOOST = 15._rk, FRAC_vismax = 0.7_rk
+
+      integer  :: N, i
+      real(rk) :: dz, nz_sens, kz_sens
+      real(rk) :: dtmin_mom, dtmin_sca, dt_safe
+
+      N = size(h)
+      if (size(Nz) /= N+1 .or. size(Kz) /= N+1) then
+        ierr = 3; errmsg = 'compute_phys_substeps: Nz and Kz size must be 0..N (N+1).'
+        n_sub = 1; dt_sub = dt_main
+        return
+      end if
+
+
+      ! Find explicit diffusion limits on interfaces (1..N-1)
+      dtmin_mom = huge(1.0_rk)
+      dtmin_sca = huge(1.0_rk)
+
+
+
+      do i = 1, N-1
+        dz = 0.5_rk * (h(i) + h(i+1))
+        nz_sens = max(D_MIN,Nz(i))
+        kz_sens = max(D_MIN,Kz(i))
+
+        if (nz_sens <= FRAC_vismax *vismax) then
+          nz_sens = min(BOOST * nz_sens, vismax)
+        else 
+          nz_sens = vismax
+        end if
+        if (kz_sens <= FRAC_vismax *vismax) then
+          kz_sens = min(BOOST*kz_sens, vismax)
+        else
+          kz_sens = vismax
+        end if
+
+        dtmin_mom = min(dtmin_mom, (dz*dz) / (2.0_rk * nz_sens)) 
+        dtmin_sca = min(dtmin_sca, (dz*dz) / (2.0_rk * kz_sens))
+      end do
+
+      ! Strictest limit across momentum & scalar
+      dt_safe = SAFETY * min(dtmin_mom, dtmin_sca)
+
+      ! Integer subcycles so each substep <= dt_safe
+      n_sub  = max(1, ceiling(dt_main / dt_safe))
+      dt_sub = dt_main / real(n_sub, rk)
+
+      ierr = 0; errmsg = ''
+      if (dt_sub < DT_MIN) then
+        ierr = 1
+        errmsg = 'compute_phys_substeps: internal time-step < 0.1 s;  Increase layer thickness in the vertical grid.'
+      end if
+      if (.not. (dt_safe > 0._rk) .or. ieee_is_nan(dt_safe)) then
+        ierr = 2
+        errmsg = 'compute_phys_substeps: dt_safe not positive (bad viscosity/diffusivity inputs).'
+        n_sub = 1
+        dt_sub = dt_main
+        return
+      end if
+  end subroutine compute_phys_substeps_prev
 
 end module numerical_stability
