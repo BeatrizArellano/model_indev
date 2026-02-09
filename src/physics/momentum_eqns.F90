@@ -17,14 +17,14 @@
 !=======================================================================================
 
 module momentum_eqns
-    use precision_types, only: rk
     use physics_params,  only: rho_air, rho0, kappa, mol_nu, gravity, z0s_min
+    use precision_types, only: rk    
     use trigonometrics,  only: deg2rad
     implicit none
     private
 
-    public :: EQN_PRESSURE, EQN_CORIOLIS, wind_stress_from_uv, update_surface_friction
-    public :: compute_bottom_stress
+    public :: EQN_PRESSURE, EQN_CORIOLIS
+    public :: compute_surface_stress, compute_bottom_stress
 
 contains
 
@@ -58,72 +58,53 @@ contains
         v  = alf1 * (-alf*u0 + alf2*v0)
     end subroutine EQN_CORIOLIS
 
-
-    pure subroutine wind_stress_from_speed_dir(windspeed, wind_direction, stressx, stressy)
-        implicit none
-        real(rk), intent(in)  :: windspeed, wind_direction
-        real(rk), intent(out) :: stressx, stressy      ! surface stress [N m^-2]
-        real(rk) :: th, Cd, u10, v10, fac
-
-        th   =  deg2rad(wind_direction)
-        u10  = -windspeed * sin(th)      ! East component
-        v10  = -windspeed * cos(th)      ! north
-        ! Smith & Banke (1975): Cd = (0.63 + 0.066*wind_speed)×1e-3 (In Simon and Sharples)
-        Cd = (0.63_rk + 0.066_rk*windspeed) * 1e-3_rk 
-          ! Stress τ = rho_air * Cd * |ws| * u (or v)
-        fac   = rho_air * Cd * windspeed
-        stressx = fac * u10
-        stressy = fac * v10
-        ! w_stress=sqrt(stressx*stressx + stressy*stressy) ! also called stresss in S2P3 not needed for the calculations
-    end subroutine wind_stress_from_speed_dir
-
-    pure subroutine wind_stress_from_uv(u10, v10, windspeed, stressx, stressy)
+    pure subroutine compute_surface_stress(u10, v10, charnock, tau_x, tau_y, u_taus, z0s, windspeed)
+                                            
         implicit none
         real(rk), intent(in)     :: u10, v10           ! 10m wind components [m s-1]
-        real(rk), intent(out)    :: stressx, stressy   ! surface stress [N m-2]
-        real(rk), intent(out)    :: windspeed          ! optional: return |U10|
-        real(rk) :: Cd, fac
+        real(rk), intent(in)     :: charnock
+        real(rk), intent(out)    :: tau_x, tau_y       ! surface stress [N m-2]
+        real(rk), intent(out)    :: u_taus, z0s
+        real(rk), intent(out)    :: windspeed          ! optional: return |U10|     
+        
 
+        ! Locals
+        real(rk) :: tau_mag, Cd, fac  
+        
         ! Magnitude of 10m windspeed
         windspeed = sqrt(u10*u10 + v10*v10)
 
+        ! Defaults (important for intent(out))
+        tau_x  = 0._rk
+        tau_y  = 0._rk
+        u_taus = 0._rk
+        z0s    = z0s_min
+
         ! Calm case
-        if (windspeed <= 0._rk) then
-            stressx = 0._rk
-            stressy = 0._rk
-            return
-        end if
+        if (windspeed <= 1.0e-10_rk) return
+
         ! Smith & Banke (1975): Cd = (0.63 + 0.066*wind_speed)×1e-3 (In Simon and Sharples)
         Cd  = (0.63_rk + 0.066_rk*windspeed) * 1e-3_rk
+
+        ! Air-side stress exerted on ocean:
         ! Stress τ = rho_air * Cd * |ws| * u (or v)
         fac    = rho_air * Cd * windspeed
-        stressx = fac * u10
-        stressy = fac * v10
-    end subroutine wind_stress_from_uv
-
-    pure subroutine update_surface_friction(tau_x, tau_y, rho_surf, charnock, u_taus, z0s)
-        !  u_taus,           [out] real     friction velocity at the surface u_* [m s-1]
-        !  z0s               [out] real     effective surface roughness length  [m]
-        implicit none
-        real(rk), intent(in)  :: tau_x, tau_y, rho_surf, charnock
-        real(rk), intent(out) :: u_taus, z0s
-        real(rk) :: tau_mag
+        tau_x = fac * u10
+        tau_y = fac * v10
 
         !	surface stress boundary conditions...   
         tau_mag = sqrt(tau_x*tau_x + tau_y*tau_y)
         !u_taus: water-side friction velocity or shear velocity
-        u_taus  = sqrt(tau_mag / rho_surf)
+        u_taus  = sqrt(tau_mag / rho0)
         ! water-side roughness length -> Formulations from NEMO have found a charnock value of 1400 is appropriate (e.g. Alari et al., 2016)
-        z0s     = max(charnock * (u_taus*u_taus) / gravity, z0s_min)
-    end subroutine update_surface_friction
+        z0s     = max(charnock * (u_taus*u_taus) / gravity, z0s_min)    
+    end subroutine compute_surface_stress
 
 
-
-    subroutine compute_bottom_stress(u, v, dz_btm, rho_bed, h0b, tau_bx, tau_by, u_taub, z0b, stressb)
+    subroutine compute_bottom_stress(u, v, dz_btm, h0b, tau_bx, tau_by, u_taub, z0b, stressb)
         ! Inputs
         real(rk), intent(in)  :: u(:), v(:)      ! velocity profiles (bottom-to-top)
         real(rk), intent(in)  :: dz_btm          ! bottom layer thickness [m]
-        real(rk), intent(in)  :: rho_bed         ! density at bottom cell [kg/m3]
         real(rk), intent(in)  :: h0b             ! Nikuradse roughness height k_s [m]
 
         ! Outputs
@@ -158,6 +139,7 @@ contains
             return
         end if
 
+        ! ---- Bottom friction: using law-of-the-wall to compute friction velocity
         ! iterate a few times because z0sm (smooth term) depends on ustar via rb*Uc, both terms depend on each other
         do it=1,3
             ! log-law factor at the actual sampling height zc = h(1)/2 and keeping it out of the viscous sublayer (10*z0b)
@@ -166,7 +148,7 @@ contains
             rb     = kappa / logarg                            ! rb = ustar/U(z) = kappa/ln(z/z0)                    
             u_taub= rb * Uc                                    ! shear velocity from log-law
             if (mol_nu>0.0_rk .and. u_taub>0.0_rk) then
-                z0sm = 0.1_rk * mol_nu/max(mol_nu, u_taub)
+                z0sm = 0.11_rk * mol_nu/max(1.0e-7_rk, u_taub)
             else
                 z0sm = 0.0_rk
             end if
@@ -176,13 +158,33 @@ contains
         end do
 
         ! stress magnitude
-        stressb = rho_bed * u_taub * u_taub
+        stressb = rho0 * u_taub * u_taub  ! Using rho0 to keep a Boussinesq-style
 
         ! direction: oppose the flow
         tau_bx = -stressb * (u(1) / Uc)
         tau_by = -stressb * (v(1) / Uc)
 
     end subroutine compute_bottom_stress
+
+    !----------------------------------------------------------------------------------
+    ! -------- Legacy subroutines
+    pure subroutine wind_stress_from_speed_dir(windspeed, wind_direction, stressx, stressy)
+        implicit none
+        real(rk), intent(in)  :: windspeed, wind_direction
+        real(rk), intent(out) :: stressx, stressy      ! surface stress [N m^-2]
+        real(rk) :: th, Cd, u10, v10, fac
+
+        th   =  deg2rad(wind_direction)
+        u10  = -windspeed * sin(th)      ! East component
+        v10  = -windspeed * cos(th)      ! north
+        ! Smith & Banke (1975): Cd = (0.63 + 0.066*wind_speed)×1e-3 (In Simon and Sharples)
+        Cd = (0.63_rk + 0.066_rk*windspeed) * 1e-3_rk 
+          ! Stress τ = rho_air * Cd * |ws| * u (or v)
+        fac   = rho_air * Cd * windspeed
+        stressx = fac * u10
+        stressy = fac * v10
+        ! w_stress=sqrt(stressx*stressx + stressy*stressy) ! also called stresss in S2P3 not needed for the calculations
+    end subroutine wind_stress_from_speed_dir
 
 
     !**********************************************************
@@ -292,7 +294,6 @@ contains
         ! Bottom stress boundary conditiosn
         stressb    = rho_bed * ustar_b * ustar_b
         u_taub     = ustar_b
-
 
         ! ---- Surface: wind stress
         flux_dn_u = 0.0_rk
