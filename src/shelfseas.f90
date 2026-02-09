@@ -1,22 +1,20 @@
 ! src/physics/shelfseas.F90
 module shelfseas
-  use precision_types,  only: rk, lk
-  use read_config_yaml, only: ConfigParams
-  use geo_utils,        only: LocationInfo
-  use time_types,       only: DateTime, CFCalendar
-  use validation_utils, only: validate_input_dates, validate_location_input, print_header
-  use sim_clocks,       only: init_clock, print_progress, simtime_to_datetime
-  use grids,            only: VerticalGrid, build_grids
-  use forcing_manager,  only: ForcingManager, ForcingSnapshot
-  use physics_types,    only: PhysicsState, PhysicsEnv
-  use physics_main,     only: init_physics, solve_physics, end_physics
-  use output_manager,   only: OutputManager
-  use bio_types,        only: BioEnv
-  use bio_main,         only: init_bio_fabm, integrate_bio_fabm, end_bio_fabm
-  use variable_registry, only: VarMetadata
-
-  !Dev
-  use time_utils, only:   datetime_to_str
+  use bio_main,          only: init_bio_fabm, integrate_bio_fabm, end_bio_fabm
+  use bio_types,         only: BioEnv
+  use forcing_manager,   only: ForcingManager, ForcingSnapshot
+  use geo_utils,         only: LocationInfo
+  use grids,             only: VerticalGrid, build_grids
+  use output_manager,    only: OutputManager
+  use physics_main,      only: init_physics, solve_physics, end_physics
+  use physics_types,     only: PhysicsState, PhysicsEnv
+  use precision_types,   only: rk, lk
+  use read_config_yaml,  only: ConfigParams
+  use sim_clocks,        only: init_clock, print_progress, simtime_to_datetime
+  use time_types,        only: DateTime, CFCalendar
+  use time_utils,        only: datetime_to_str
+  use validation_utils,  only: validate_input_dates, validate_location_input, print_header
+  use variable_registry, only: VarMetadata 
 
   implicit none
   private
