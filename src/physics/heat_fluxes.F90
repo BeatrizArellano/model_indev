@@ -16,14 +16,149 @@
 !
 !=======================================================================================
 module heat_fluxes
-  use precision_types, only: rk
-  use physics_params,  only: rho0, rho_air, cp_sw, cp_air, sigma_SB
   use forcing_manager, only: ForcingSnapshot
+  use physics_params,  only: rho0, rho_air, cp_sw, cp_air, sigma_SB
+  use precision_types, only: rk  
+
   implicit none
   private
-  public :: SURFACE_HEAT
+  
+  public :: compute_heat_tendency, apply_temperature_tendency
 
 contains
+
+  !---------------------------------------------------------------------------
+  ! Compute explicit temperature tendency from surface heat + shortwave penetration
+  !
+  ! Outputs:
+  !   dTdt_heat(1:N) : [K/s] explicit heating tendency for each layer (1=bottom, N=surface)
+  !
+  ! Optional diagnostics (all [W/m2], positive INTO ocean):
+  !   Q_net_surf : net heat flux into the surface cell (nonSW + sw_absorbed_in_top)
+  !   max_abs_dTdt : max over layers of abs(dTdt_heat)
+  !---------------------------------------------------------------------------
+  subroutine compute_heat_tendency(temp, dz, N,                                 &
+                                           rsds, rlds_down, wind_speed, airT, rh, airP, &
+                                           lw_skin_penetration, lambda,                 &
+                                           dTdt_heat,                                   &
+                                           Q_net_surf, max_abs_dTdt,                    &
+                                           heat_shade, chl)
+
+      real(rk), intent(in)  :: temp(:)
+      real(rk), intent(in)  :: dz(:)
+      integer,  intent(in)  :: N
+      real(rk), intent(in)  :: rsds, rlds_down, wind_speed, airT, rh, airP
+      real(rk), intent(in)  :: lambda, lw_skin_penetration
+
+      real(rk), intent(out) :: dTdt_heat(1:N)
+
+      real(rk), intent(out), optional :: Q_net_surf
+      real(rk), intent(out), optional :: max_abs_dTdt
+
+      real(rk), intent(in),  optional :: heat_shade
+      real(rk), intent(in),  optional :: chl(:)
+
+      ! Parameters (same as your existing SURFACE_HEAT)
+      real(rk), parameter :: eps_sfc = 0.98_rk
+      real(rk), parameter :: Cd_h    = 1.45e-3_rk
+      real(rk), parameter :: Ce_e    = 1.50e-3_rk
+
+      integer  :: i
+      real(rk) :: shade, chl_i
+      real(rk) :: surf_temp
+      real(rk) :: sat_vap, vap, spec_hum1, spec_hum2
+      real(rk) :: q_up_lw, q_down_lw_eff
+      real(rk) :: q_lw_out, q_sensible_out, q_latent_out
+      real(rk) :: q_nonSW_in
+      real(rk) :: k_top
+      real(rk) :: q_sw_top, q_sw_rest
+      real(rk) :: Iin, Iout, atten, flux
+      real(rk) :: inv_rho_cp
+      real(rk) :: dTdt, maxrate
+
+      ! Initialise tendency arrays
+      dTdt_heat(:) = 0.0_rk
+      maxrate = 0.0_rk
+
+      shade = 0.012_rk
+      if (present(heat_shade)) shade = heat_shade
+
+      chl_i = 0.0_rk
+      if (present(chl)) chl_i = chl(N)
+
+      ! --- Surface temperature in Kelvin for Stefan–Boltzmann 
+      surf_temp = temp(N) + 273.15_rk
+
+      ! --- Moisture terms ---
+      sat_vap = 10.0_rk**((0.7859_rk + 0.03477_rk*temp(N)) / (1.0_rk + 0.00412_rk*temp(N)))  ! mbar
+      vap     = max(0.0_rk, 0.01_rk*rh*sat_vap)                                              ! mbar
+
+      spec_hum1 = 0.62_rk*sat_vap/(airP - 0.38_rk*sat_vap)  ! specific humidity at surface 
+      spec_hum2 = 0.62_rk*vap/(airP - 0.38_rk*vap)          ! specific humidity of air 
+
+      ! --- Longwave, sensible, latent: positive out of the sea (S2P3)  ---
+      q_up_lw       = eps_sfc * sigma_SB * surf_temp**4
+      q_down_lw_eff = lw_skin_penetration * rlds_down
+      q_lw_out      = q_up_lw - q_down_lw_eff
+
+      ! --- Sensible/latent (positive OUT of sea) ---
+      q_sensible_out = Cd_h * rho_air * cp_air * wind_speed * (temp(N) - airT)
+      q_latent_out   = Ce_e * rho_air * wind_speed * (spec_hum1 - spec_hum2) * (2.5e6_rk - 2.3e3_rk*temp(N))
+
+      ! Convert to "positive INTO ocean"
+      q_nonSW_in = -(q_lw_out + q_sensible_out + q_latent_out)   ! this equals your rad_out
+
+      ! --- Shortwave split: sw_top_fraction to top layer, remainder decays with Beer–Lambert ---
+      k_top   = max(0.0_rk, lambda + shade*chl_i)
+      q_sw_top  = rsds * (1.0_rk - exp(-k_top * dz(N)))
+      q_sw_rest = rsds - q_sw_top
+
+      inv_rho_cp = 1.0_rk / (rho0 * cp_sw)
+
+      ! --- Surface cell tendency: (nonSW + sw absorbed in top) / (rho*cp*dz) ---
+      dTdt = (q_nonSW_in + q_sw_top) * inv_rho_cp / dz(N)
+      dTdt_heat(N) = dTdt
+      maxrate = max(maxrate, abs(dTdt))
+
+      if (present(Q_net_surf)) Q_net_surf = q_nonSW_in + q_sw_top
+
+      ! --- Distribute remaining SW downwards with Beer–Lambert ---
+      Iin = q_sw_rest
+      do i = N-1, 1, -1
+        if (present(chl)) chl_i = chl(i)           ! <-- use chl if provided, else 0
+        atten = max(0.0_rk, lambda + shade*chl_i)
+
+        Iout = Iin * exp(-atten * dz(i))
+        flux = (Iin - Iout)   ! W/m2 absorbed in layer i
+
+        dTdt = flux * inv_rho_cp / dz(i)
+        dTdt_heat(i) = dTdt
+        maxrate = max(maxrate, abs(dTdt))
+
+        Iin = Iout
+      end do
+
+      ! Any residue below bottom goes to the bottom layer
+      if (Iin > 0.0_rk) then
+        dTdt = Iin * inv_rho_cp / dz(1)
+        dTdt_heat(1) = dTdt_heat(1) + dTdt
+        maxrate = max(maxrate, abs(dTdt_heat(1)))
+      end if
+
+      if (present(max_abs_dTdt)) max_abs_dTdt = maxrate
+
+  end subroutine compute_heat_tendency
+
+
+  subroutine apply_temperature_tendency(temp, N, dt, dTdt_heat)
+      real(rk), intent(inout) :: temp(1:N)
+      integer,  intent(in)    :: N
+      real(rk), intent(in)    :: dt
+      real(rk), intent(in)    :: dTdt_heat(1:N)
+
+      temp(1:N) = temp(1:N) + dt * dTdt_heat(1:N)
+  end subroutine apply_temperature_tendency
+
 
   !---------------------------------------------------------------------------
   ! SURFACE_HEAT
@@ -143,6 +278,5 @@ contains
     end if
 
   end subroutine SURFACE_HEAT
-
 
 end module heat_fluxes
