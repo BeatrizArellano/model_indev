@@ -36,9 +36,11 @@ module physics_types
     real(rk) :: tau_x = 0.0_rk, tau_y = 0.0_rk        ! wind stress components [N m-2]
     real(rk) :: u_taus = 0.0_rk, u_taub = 0.0_rk      ! friction velocities at surface and bottom [m s-1]
     real(rk) :: z0s    = z0s_min, z0b  = 0.01_rk      ! surface and bottom roughness lengths [m]
+    real(rk) :: tau_bx = 0.0_rk, tau_by = 0.0_rk      ! Bottom stress components [N m-2]
     real(rk) :: stressb = 0.0_rk                      ! Bottom stress [Pa]
 
     ! --- Heat fluxes 
+    real(rk)              :: Q_net_surf = 0._rk
     !real(rk) :: Q_sw_net = 0.0_rk, Q_lw_net = 0.0_rk, Q_lat = 0.0_rk, Q_sens = 0.0_rk, Q_net = 0.0_rk
   end type PhysicsState
 
@@ -54,6 +56,9 @@ module physics_types
     !--- Working arrays
     real(rk), allocatable :: u_old(:), u_new(:), v_old(:), v_new(:)
     real(rk), allocatable :: Kz_T(:), Nz_tot(:)
+    real(rk), allocatable :: dTdt_heat(:)             ! Temperature tendencies from heat fluxes
+    !--- Auxiliary variables
+    real(rk) :: max_abs_dTdt = 0._rk
   end type PhysicsEnv
 
 end module physics_types
