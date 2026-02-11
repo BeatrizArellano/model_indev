@@ -30,7 +30,7 @@ module bio_types
     real(rk),         allocatable :: bottom_state(:)         ! State of bottom variables
     real(rk),         allocatable :: surface_state(:)        ! State of surface variables
     ! Relevant Physical variables
-    real(rk), allocatable :: temp(:), sal(:), rho(:)         ! temperature, salinity and density (From surface to bottom)
+    real(rk), allocatable :: temp(:), sal(:), rho(:)         ! temperature, salinity and density (From bottom to surface)
     real(rk), allocatable :: pres(:)                         ! pressure [dbar]     (optional)
     real(rk), allocatable :: swr(:),  par(:)                 ! PAR profile [W/m2]  (optional)
     real(rk), allocatable :: vert_diff(:)                    ! vertical diffusivity
