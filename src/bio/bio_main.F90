@@ -1,15 +1,15 @@
-module bio_main
-    use fabm
+module bio_main    
     use bio_params,          only: read_bio_parameters, mol_diff
     use bio_types,           only: BioEnv, DIFF_NONE, DIFF_O2CO2_AB, DIFF_ION_LINEAR, &
                                    DIFF_ARRHENIUS, DIFF_WILKE_CHANG, DIFF_STOKES_EINSTEIN
-    use geo_utils,           only: LocationInfo
-    use physics_types,       only: PhysicsState
+    use fabm
     use forcing_manager,     only: ForcingSnapshot
+    use geo_utils,           only: LocationInfo    
     use grids,               only: VerticalGrid
     use light,               only: compute_SW_profile, compute_PAR_profile
     use molecular_diffusion, only: molecular_diffusivity
     use numerical_stability, only: compute_bio_substeps
+    use physics_types,       only: PhysicsState
     use pressure,            only: compute_pressure 
     use precision_types,     only: rk, lk
     use read_config_yaml,    only: ConfigParams
@@ -19,10 +19,9 @@ module bio_main
     use sediment_exchange,   only: compute_solute_flux_swi, apply_particulate_deposition, apply_bioirrigation
     use time_types,          only: DateTime
     use tridiagonal,         only: init_tridiag, clear_tridiag
-    use vertical_transport,  only: apply_vertical_transport, velocity_at_interfaces
-    use vertical_mixing,     only: scalar_diffusion, BC_NEUMANN
     use variable_registry,   only: register_variable, output_all_variables
-
+    use vertical_transport,  only: apply_vertical_transport, velocity_at_interfaces
+    use vertical_mixing,     only: scalar_diffusion, BC_NEUMANN 
 
   implicit none
   private
@@ -213,7 +212,7 @@ contains
         ! Allocating working arrays        
         allocate(BE%tendency_int(nz,nint))                        ! Sources (dC/dt) 
         allocate(BE%velocity(nz,nint))                            ! Velocities
-        allocate(BE%vel_faces(0:nz,nint))                       ! Velocities at interfaces for the water column
+        allocate(BE%vel_faces(0:nz,nint))                         ! Velocities at interfaces for the water column
         allocate(BE%flux_sf(nint));    allocate(BE%flux_bt(nint)) ! Fluxes at the surface and bottom of interior variables 
 
         ! --- Bottom-only state variables ---
@@ -408,15 +407,22 @@ contains
         BE%need_ice_af  = BE%model%is_variable_used(BE%id_ice_af) .or. BE%model%variable_needs_values(BE%id_ice_af)
 
         if (BE%need_pres) BE%need_rho = .true.    ! if pressure is needed, then we need density too
-        if (BE%params%sediments_enabled) BE%need_rho = .true.    ! if sediments are enabled, then we need density
+
+        if (BE%params%sediments_enabled) then
+            BE%need_temp = .true.
+            BE%need_salt = .true.
+            BE%need_pres = .true.   ! because you use P for viscosity/Deff
+            BE%need_rho  = .true.   ! pressure needs rho anyway
+        end if
         
         ! Allocating environmental arrays for the full vertical column
         if (BE%need_temp) allocate(BE%BS%temp(nz))
         if (BE%need_salt) allocate(BE%BS%sal(nz))
         if (BE%need_rho)  allocate(BE%BS%rho(nz))
+
         allocate(BE%BS%vert_diff(0:nz))
 
-        if (BE%need_pres) then
+        if (BE%need_pres .or. BE%params%sediments_enabled) then
             if (.not. allocated(BE%BS%pres)) allocate(BE%BS%pres(nz))
             call register_variable(BE%env_int_vars, name='env_pressure', &
                                    long_name='Pressure', units='dbar',   &
@@ -445,12 +451,12 @@ contains
             stop 1
         end if       
 
-! DEBUG block
-!if (BE%need_temp) call register_variable(BE%env_int_vars, name='env_temp',     long_name='Temperature provided to FABM', units='degC', vert_coord='centre', n_space_dims=1, data_1d=BE%BS%temp)
-!if (BE%need_salt) call register_variable(BE%env_int_vars, name='env_sal',      long_name='Practical salinity provided to FABM', units='1e-3', vert_coord='centre', n_space_dims=1, data_1d=BE%BS%sal)
-!if (BE%need_rho ) call register_variable(BE%env_int_vars, name='env_rho',      long_name='Density provided to FABM', units='kg m-3', vert_coord='centre', n_space_dims=1, data_1d=BE%BS%rho)
-
         if (allocated(BE%env_int_vars)) call output_all_variables(BE%env_int_vars)
+
+        if (allocated(BE%BS%temp)) BE%BS%temp = 0._rk
+        if (allocated(BE%BS%sal)) BE%BS%sal   = 0._rk
+        if (allocated(BE%BS%rho)) BE%BS%rho   = 0._rk
+        if (allocated(BE%BS%pres)) BE%BS%pres = 0._rk
 
         ! Point FABM to environmental data  
         if (BE%need_temp) call BE%model%link_interior_data(BE%id_temp, BE%BS%temp)
@@ -579,7 +585,7 @@ contains
         kss = BE%k_sed_sfc                ! Index for sediment surface layer
         nwat = BE%nwat                    ! number of layers in water column
         nsed = BE%nsed                    ! number of layers in sediments
-        kswi = nsed                   ! Index for the sediment-water interface
+        kswi = nsed                       ! Index for the sediment-water interface
         nfaces_wat = nwat + 1             ! Number of layer interfaces in water        
 
 
@@ -631,7 +637,7 @@ contains
         !------------------------------------------------------
         call BE%model%finalize_outputs()
 
-        call update_bio_diagnostics(BE)    
+        call update_bio_diagnostics(BE)   
 
         BE%velocity = 0.0_rk
         BE%vel_faces = 0._rk   
@@ -664,11 +670,9 @@ contains
             do k = 0, BE%nsed
                 BE%SED%diff_sed_max(k) = BE%SED%poro_w(k) * D0_max / max(BE%SED%theta2(k), 1.0e-12_rk)
             end do
-
             ! Compute effective biodiffusivities for particulates
             BE%SED%Db_eff_solids(0:nsed) = max(0.0_rk, (1.0_rk - BE%SED%poro_w(0:nsed)) * BE%SED%bioturb(0:nsed))
         end if
-
         ! Compute number of subcycles needed for numerical stabiluty in the water column
         call compute_bio_substeps(BE, dt_main, BE%params%frac_max, BE%params%min_dt, &
                                   nsub_adv, nsub_diff, nsub_bio, nsub, dt_sub)
@@ -820,7 +824,7 @@ contains
 !                       ! NOTE: Bioturbation is modelled as a bioduiffusivity process on concentrations per solid volume
                         call scalar_diffusion_sed(Var=BE%BS%interior_state(1:nsed, ivar), N=nsed, dt=dt_sub,   &
                                                   h=BE%sed_grid%dz, phase_thickness=BE%SED%solid_thickness, &
-                                                  diff=BE%SED%Db_eff_solids, cnpar=BE%SED%params_user%cnpar_sed, tricoef=BE%SED%sed_trid, ierr=ierr)
+                                                  diff=BE%SED%Db_eff_solids, cnpar=BE%SED%params_SI%cnpar_sed, tricoef=BE%SED%sed_trid, ierr=ierr)
                     end if
                 end do
 
@@ -856,9 +860,9 @@ contains
                         call apply_vertical_transport(BE%SED%bulk_conc(:, ivar),BE%sed_grid, BE%SED%vel_solutes, &
                                                       dt_sub, bottom_outflow_only = .true.)
                     else
-                        ! Solids burial
+                        ! Solids burial                        
                         call apply_vertical_transport(BE%SED%bulk_conc(:, ivar), BE%sed_grid, BE%SED%vel_solids, &
-                                                      dt_sub, bottom_outflow_only = .true.)
+                                                      dt_sub, bottom_outflow_only = .true.)                      
                     end if
                 end do
                 ! Update phase-specific concentrations from bulk-concentrations
@@ -894,9 +898,6 @@ contains
                     end if
                 end do
             end if             
-            
-            
-            !call BE%model%link_all_interior_state_data(BE%BS%interior_state)
 
             !-----------------------------------------------------------------------------
             ! Repir state for interior tracers after vertical redistribution of tracers
@@ -1142,7 +1143,7 @@ contains
         ! ---- Vertical diffusivity at layer interfaces
         if (BE%params%sediments_enabled .and. nsed > 0) then
             BE%BS%vert_diff(0:nsed-1)      = 0.0_rk                      ! sediment interfaces Kz is zero in the sediments
-            BE%BS%vert_diff(nsed:nz)     = PS%Kz(0:nwat) + mol_diff    ! Vertical eddy diffusivity
+            BE%BS%vert_diff(nsed:nz)     = PS%Kz(0:nwat) + mol_diff      ! Vertical eddy diffusivity
         else
             BE%BS%vert_diff(0:nz)        = PS%Kz(0:nwat) + mol_diff
         end if
