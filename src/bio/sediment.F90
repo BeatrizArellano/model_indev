@@ -250,7 +250,7 @@ contains
         type(VerticalGrid), intent(in)  :: grid
         real(rk),           intent(in)  :: alpha0          ! [s-1]
         real(rk),           intent(in)  :: z_decay         ! [m]
-        real(rk),           intent(out) :: alpha(grid%nz)  ! [s-1] (1:nz)
+        real(rk),           intent(out) :: alpha(1:grid%nz)  ! [s-1] (1:nz)
         real(rk),           intent(out) :: alpha_w(0:grid%nz)  ! [s-1] (1:nz)
 
         integer :: k, nz
@@ -442,18 +442,6 @@ contains
             end if
         end if
 
-        ! Size checks (avoid silent mismatch)
-        if (size(SE%poro_w)      /= nz+1 .or. size(SE%theta2)      /= nz+1 .or. &
-            size(SE%bioturb)     /= nz+1 .or. size(SE%bioirr_w)   /= nz+1 .or. &
-            size(SE%vel_solids)  /= nz+1 .or. size(SE%vel_solutes)/= nz+1) then
-            if (present(ierr)) then
-                ierr = 3
-                return
-            else
-                error stop "write_sediment_profiles: Array size mismatch (expected 0:nz)"
-            end if
-        end if
-
         open(newunit=u, file=trim(filename), status='replace', action='write', form='formatted')
 
         write(u,'(A)') '# Sediment interface profiles'
@@ -464,7 +452,7 @@ contains
         ! Print from SWI downward for readability (k = nz .. 0)
         do k = nz, 0, -1
             write(u,fmt_row) k, grid%z_w(k), SE%poro_w(k), SE%theta2(k), SE%bioturb(k), SE%bioirr_w(k), &
-                             SE%vel_solids(k), SE%vel_solutes(k)
+                   SE%vel_solids(k), SE%vel_solutes(k)
         end do
 
         close(u)
@@ -472,7 +460,7 @@ contains
 
 
     ! Writes a file with the tracer properties
-    subroutine write_tracer_properties(BE, filename) 
+    subroutine write_tracer_properties(BE, filename)
         type(BioEnv),     intent(in) :: BE
         character(len=*), intent(in) :: filename
 
@@ -481,9 +469,9 @@ contains
         character(len=11) :: phase
         character(len=24) :: dm
 
-        ! Use strings for NA / numeric columns to avoid needing NaN helpers.
-        character(len=11) :: s_ads
-        character(len=9)  :: sA, sB, sm0, sm1, sA0, sEa, sVb, sDref, sTref
+        ! Strings for NA / numeric columns
+        character(len=16) :: s_ads
+        character(len=16) :: sA, sB, sm0, sm1, sA0, sEa, sVb, sDref, sTref
 
         if (.not. allocated(BE%tracer_info)) then
             write(*,*) 'write_tracer_properties: tracer_info not allocated.'
@@ -497,8 +485,13 @@ contains
 
         write(iu,'(a)') '# idx name phase adsorp diff_method A B m0 m1 A0 Ea Vb Dref Tref'
         write(iu,'(a)') '# NA = not applicable'
-        write(iu,'(a)') 'idx  name           phase        adsorp      diff_method            A        B        m0       m1       A0       Ea       Vb      Dref     Tref'
-        write(iu,'(a)') '---  -------------  -----------  ----------  --------------------  -------  -------  -------  -------  -------  -------  ------  -------  ------'
+        write(iu,'(a)') 'idx  name           phase        adsorp           diff_method                 ' // &
+                        'A                B               m0               m1               ' // &
+                        'A0               Ea               Vb              Dref             Tref'
+        write(iu,'(a)') '---  -------------  -----------  --------------  -------------------------  ' // &
+                        '---------------  ---------------  ---------------  ---------------  ' // &
+                        '---------------  ---------------  ---------------  ---------------  ---------------'
+
 
         do i = 1, ntr
             ! Name
@@ -518,7 +511,7 @@ contains
 
             ! Adsorption (NA for particulates)
             if (BE%tracer_info(i)%is_solute) then
-                write(s_ads,'(ES10.3)') BE%tracer_info(i)%adsorption
+                s_ads = fmt_real(BE%tracer_info(i)%adsorption)
             else
                 s_ads = 'NA'
             end if
@@ -536,33 +529,37 @@ contains
             ! Populate only the relevant parameter columns
             select case (BE%tracer_info(i)%diff_method)
             case (DIFF_O2CO2_AB)
-            write(sA,'(ES9.2)') BE%tracer_info(i)%A
-            write(sB,'(ES9.2)') BE%tracer_info(i)%B
+                sA = fmt_real(BE%tracer_info(i)%A)
+                sB = fmt_real(BE%tracer_info(i)%B)
+
             case (DIFF_ION_LINEAR)
-            write(sm0,'(ES9.2)') BE%tracer_info(i)%m0
-            write(sm1,'(ES9.2)') BE%tracer_info(i)%m1
+                sm0 = fmt_real(BE%tracer_info(i)%m0)
+                sm1 = fmt_real(BE%tracer_info(i)%m1)
+
             case (DIFF_ARRHENIUS)
-            write(sA0,'(ES9.2)') BE%tracer_info(i)%A0
-            write(sEa,'(ES9.2)') BE%tracer_info(i)%Ea
+                sA0 = fmt_real(BE%tracer_info(i)%A0)
+                sEa = fmt_real(BE%tracer_info(i)%Ea)
+
             case (DIFF_WILKE_CHANG)
-            write(sVb,'(ES9.2)') BE%tracer_info(i)%Vb
+                sVb = fmt_real(BE%tracer_info(i)%Vb)
+
             case (DIFF_STOKES_EINSTEIN)
-            write(sDref,'(ES9.2)') BE%tracer_info(i)%Dref
-            write(sTref,'(ES9.2)') BE%tracer_info(i)%Tref
+                sDref = fmt_real(BE%tracer_info(i)%Dref)
+                sTref = fmt_real(BE%tracer_info(i)%Tref)
+
             case default
-            ! DIFF_NONE or unknown -> leave as NA
+                ! DIFF_NONE or unknown -> leave as NA
             end select
 
-            ! Write row
-            write(iu,'(i3,2x,a13,2x,a11,2x,a10,2x,a20,2x,a7,2x,a7,2x,a7,2x,a7,2x,a7,2x,a7,2x,a6,2x,a7,2x,a6)') &
-            BE%tracer_info(i)%fabm_index, trim(name), trim(phase), trim(s_ads), trim(dm), &
-            trim(sA), trim(sB), trim(sm0), trim(sm1), trim(sA0), trim(sEa), trim(sVb), trim(sDref), trim(sTref)
-
+            ! Write row (IMPORTANT: widen a-fields so values never truncate)
+            write(iu,'(i3,2x,a13,2x,a11,2x,a14,2x,a25, 2x,a15,2x,a15,2x,a15,2x,a15,2x,a15,2x,a15,2x,a15,2x,a15,2x,a15)') &
+                BE%tracer_info(i)%fabm_index, trim(name), trim(phase), trim(s_ads), trim(dm), &
+                trim(sA), trim(sB), trim(sm0), trim(sm1), trim(sA0), trim(sEa), trim(sVb), trim(sDref), trim(sTref)
         end do
 
         close(iu)
 
-        contains
+    contains
 
         pure function diff_label(method) result(s)
             integer, intent(in) :: method
@@ -578,8 +575,26 @@ contains
             end select
         end function diff_label
 
-    end subroutine write_tracer_properties
+        pure function fmt_real(x) result(s)
+            real(rk), intent(in) :: x
+            character(len=16) :: s
+            real(rk) :: ax
+            ax = abs(x)
 
+            if (ax == 0._rk) then
+                s = '0'
+            else if (ax >= 1.e-3_rk .and. ax < 1.e4_rk) then
+                ! "Normal-looking" decimals; 6 dp is a decent default for these tables
+                write(s,'(G0.6)') x
+            else
+                ! Tiny/huge -> scientific
+                write(s,'(ES12.4)') x
+            end if
+
+            s = adjustl(s)
+        end function fmt_real
+
+    end subroutine write_tracer_properties
 
 
     !! Clear sediment environment state and release memory.
