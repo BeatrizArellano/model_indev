@@ -12,7 +12,7 @@
         "USE_NETCDF": "ON",
 
         "FABM_EXTRA_DIR": "${sourceDir}/external/fabm-extra",
-        "FABM_EXTRA_MODULES": "medusa"
+        "FABM_EXTRA_MODULES": ""
       }
     },
     {
@@ -25,7 +25,7 @@
         "USE_NETCDF": "ON",
 
         "FABM_EXTRA_DIR": "${sourceDir}/external/fabm-extra",
-        "FABM_EXTRA_MODULES": "medusa"
+        "FABM_EXTRA_MODULES": ""
       }
     },
     {
@@ -39,7 +39,7 @@
         "USE_NETCDF": "ON",
 
         "FABM_EXTRA_DIR": "${sourceDir}/external/fabm-extra",
-        "FABM_EXTRA_MODULES": "medusa"
+        "FABM_EXTRA_MODULES": ""
       }
     }
   ],
