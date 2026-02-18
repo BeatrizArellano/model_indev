@@ -170,40 +170,53 @@ contains
       ! Unique file list
       call build_file_list(vars, files, nfiles)
 
-      ! Build a union list of variable names to validate (simple path)
       if (nfiles > 0) then
-         nreq = 0; maxlen = 1
-         do i=1, size(vars)
-            if (vars(i)%input_type == in_file) then
-            nreq   = nreq + 1
-            maxlen = max(maxlen, len_trim(vars(i)%name_in_file))
-            end if
-         end do
-         if (nreq == 0) then
-            allocate(character(len=1) :: req_names(0))
-         else
-            allocate(character(len=maxlen) :: req_names(nreq))
-            nreq = 0
-            do i=1, size(vars)
-            if (vars(i)%input_type == in_file) then
-               nreq = nreq + 1
-               req_names(nreq) = trim(vars(i)%name_in_file)
-            end if
-            end do
-         end if
+         allocate(scans(nfiles))
 
-         
-         ! Scan each file once
-         call scan_and_attach(files, location%lat, location%lon,                                 &
-                              start_datetime%year, start_datetime%month, start_datetime%day,     &
-                              start_datetime%hour, start_datetime%minute, start_datetime%second, &
-                              end_datetime%year,   end_datetime%month,   end_datetime%day,       &
-                              end_datetime%hour,   end_datetime%minute,   end_datetime%second,   &
-                              calendar_cfg%name(), req_names, scans, ok_inside, errmsg)
-         if (.not. ok_inside) then
-            call clear_state(state)
-            return
-         end if
+         do j = 1, nfiles
+
+            ! Build required list ONLY for variables that use this file
+            nreq   = 0
+            maxlen = 1
+            do i = 1, size(vars)
+               if (vars(i)%input_type == in_file) then
+                  if (trim(vars(i)%file_path) == trim(files(j))) then
+                     nreq   = nreq + 1
+                     maxlen = max(maxlen, len_trim(vars(i)%name_in_file))
+                  end if
+               end if
+            end do
+
+            if (allocated(req_names)) deallocate(req_names)
+            if (nreq == 0) then
+               allocate(character(len=1) :: req_names(0))
+            else
+               allocate(character(len=maxlen) :: req_names(nreq))
+               nreq = 0
+               do i = 1, size(vars)
+                  if (vars(i)%input_type == in_file) then
+                     if (trim(vars(i)%file_path) == trim(files(j))) then
+                        nreq = nreq + 1
+                        req_names(nreq) = trim(vars(i)%name_in_file)
+                     end if
+                  end if
+               end do
+            end if
+
+            ! Scan THIS file, requiring only its own vars
+            call scan_forcing(files(j), location%lat, location%lon,                                &
+                              start_datetime%year, start_datetime%month, start_datetime%day,      &
+                              start_datetime%hour, start_datetime%minute, start_datetime%second,  &
+                              end_datetime%year,   end_datetime%month,   end_datetime%day,        &
+                              end_datetime%hour,   end_datetime%minute,   end_datetime%second,    &
+                              calendar_cfg%name(), req_names, scans(j), ok_inside, errmsg)
+
+            if (.not. ok_inside) then
+               call clear_state(state)
+               return
+            end if
+
+         end do
 
       else
          allocate(character(len=1) :: files(0))
@@ -347,13 +360,23 @@ contains
          select case (mode_enum)
          case (in_file)
             s_name  = params%get_param_str('forcing.'//trim(adjustl(var_names(i)))//'.name',     required=.true.)
-            s_fname = params%get_param_str('forcing.'//var_names(i)//'.filename', default='')
+            s_fname = params%get_param_str('forcing.'//trim(adjustl(var_names(i)))//'.filename', default='')
             vars(i)%name_in_file = trim(s_name)
+            ! Normalise per-variable filename sentinel values
+            s_fname = trim(s_fname)
             if (len_trim(s_fname) > 0) then
-            vars(i)%file_path = trim(s_fname)
+               if (to_lower(trim(s_fname)) == 'off'  .or. &
+                  to_lower(trim(s_fname)) == 'null' .or. &
+                  to_lower(trim(s_fname)) == 'false') then
+                  s_fname = ''
+               end if
+            end if
+
+            if (len_trim(s_fname) > 0) then
+               vars(i)%file_path = s_fname
             else
-            if (len_trim(global_file) == 0) stop 'Var '//trim(var_names(i))// ': mode=file but no filename (per-var or global).'
-            vars(i)%file_path = global_file
+               if (len_trim(global_file) == 0) stop 'Var '//trim(var_names(i))// ': mode=file but no filename (per-var or global).'
+               vars(i)%file_path = global_file
             end if
 
          case (in_constant)
