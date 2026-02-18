@@ -6,9 +6,47 @@ module find_utils
   private
 
   public :: find_name, has_name
-  public :: argmin_abs_vec
+  public :: argmin_abs_vec, find_nearest_index
 
 contains
+
+    ! Returns the index of the element in array `a` closest to `x` (minimizes |a(i)−x|).
+    ! Tie-break (equal distance): if prefer_min=true choose smaller a(i), else choose larger a(i).
+    ! If still tied (equal values), keep the first occurrence.
+    integer function find_nearest_index(a, x, prefer_min) result(idx)
+        real(rk), intent(in) :: a(:)
+        real(rk), intent(in) :: x
+        logical, intent(in), optional :: prefer_min
+
+        real(rk) :: best, cur
+        logical  :: pmin
+        integer  :: i
+
+        pmin = .true.
+        if (present(prefer_min)) pmin = prefer_min
+
+        idx  = 1
+        best = abs(a(1) - x)
+
+        do i = 2, size(a)
+            cur = abs(a(i) - x)
+
+            if (cur < best) then
+                best = cur
+                idx  = i
+
+            else if (cur == best) then
+                if (pmin) then
+                    if (a(i) < a(idx)) idx = i
+                else
+                    if (a(i) > a(idx)) idx = i
+                end if
+                ! If a(i) == a(idx), keep earlier index (stable)
+            end if
+        end do
+    end function find_nearest_index
+
+
 
     ! Returns the index of the name to find in a vector of strings
     integer function find_name(list, name) result(idx)
