@@ -99,7 +99,8 @@ contains
 
         ! Initialise biogeochemistry if it's the case
         if (is_bio_enabled) then
-            call init_bio_fabm(cfg_params, location, wat_grid, sed_grid, full_grid, dt, PE%PS, ForcSnp, BE)
+            call init_bio_fabm(cfg_params, location, wat_grid, sed_grid, full_grid, &
+                               start_datetime, end_datetime, calendar, dt, PE%PS, ForcSnp, BE)
             nsed = BE%nsed
         else 
             nsed = 0
@@ -131,7 +132,7 @@ contains
 
         integer(lk)        :: istep, model_time, dt_now
         integer            :: doy
-        real(rk)           :: sec_of_day, doy_real
+        real(rk)           :: sec_of_day, doy_real, model_time_rk
         integer            :: ierr
         character(len=512) :: errmsg
         logical            :: is_first_step = .true.  
@@ -139,6 +140,7 @@ contains
         if (.not. is_main_initialized) error stop 'run_shelfseas: shelfseas not initialised.'
 
         model_time = 0_lk   ! Seconds since the start datetime of the simulation
+       
 
         write(*,'(/,A,I0,A)') 'Starting simulation (', n_steps, ' steps)...'
 
@@ -151,7 +153,7 @@ contains
             else
                 dt_now = last_dt_length
             end if
-
+             model_time_rk = real(model_time, rk)
 
             ! Get current calendar time for FABM
             call simtime_to_datetime(calendar, start_datetime, model_time, current_datetime, doy)
@@ -167,10 +169,10 @@ contains
             end if
 
             if (is_bio_enabled) then
-                sec_of_day = real( current_datetime%hour*3600 + current_datetime%minute*60 + current_datetime%second, rk )
+                sec_of_day = real(current_datetime%hour*3600 + current_datetime%minute*60 + current_datetime%second, rk)
                 ! 0-based day-of-year + fractional day
                 doy_real = real(doy - 1, rk) + sec_of_day / 86400._rk
-                call integrate_bio_fabm(BE, PE%PS, ForcSnp, dt_now, istep, current_datetime, sec_of_day, doy_real)
+                call integrate_bio_fabm(BE, PE%PS, ForcSnp, dt_now, istep, model_time_rk, current_datetime, sec_of_day, doy_real)
             end if 
             ! Sample state for output
             call OM%step(dt_now)
