@@ -1,10 +1,11 @@
 module bio_types
-    use precision_types,   only: rk, lk
-    use grids,             only: VerticalGrid
-    use fabm,              only: type_fabm_model, type_fabm_interior_variable_id, &
-                                   type_fabm_horizontal_variable_id, type_fabm_scalar_variable_id
-    use tridiagonal,       only: TridiagCoeff
     use bio_params,        only: BioParams, SedParams
+    use event_manager,     only: EventManager   
+    use fabm,              only: type_fabm_model, type_fabm_interior_variable_id, &
+                                 type_fabm_horizontal_variable_id, type_fabm_scalar_variable_id
+    use grids,             only: VerticalGrid
+    use precision_types,   only: rk, lk
+    use tridiagonal,       only: TridiagCoeff    
     use variable_registry, only: VarMetadata
     
 
@@ -143,6 +144,8 @@ module bio_types
     integer :: nwat = 0                                        ! Number of layers in water
     integer :: k_sed_btm = 0, k_sed_sfc = 0                    ! Bottom and surface Indices for sediments
     integer :: k_wat_btm = 0, k_wat_sfc = 0                    ! Bottom and surface Indices for water
+    !---------- Event Manager
+    type(EventManager) :: Events
 
     !------------ FABM environment variable ids
     type (type_fabm_interior_variable_id)   :: id_temp, id_salt, id_rho, id_swr, id_par, id_pres
@@ -191,8 +194,10 @@ module bio_types
     ! Working arrays
     real(rk), allocatable :: velocity(:,:)                     ! Vertical velocity due to residual movement (nz, n_interior)
     real(rk), allocatable :: vel_faces(:,:)                    ! Vertical velocity due to residual movement at interfaces (0:nz, n_interior)
-    real(rk), allocatable :: tendency_int(:,:)                 ! Tendencies (source terms) for interior tracers
+    real(rk), allocatable :: tendency_int(:,:)                 ! Tendencies (source terms) for interior tracers from FABM
     real(rk), allocatable :: tendency_sf(:), tendency_bt(:)    ! source terms at the surface and bottom. They store the tendencies (or derivatives dC/dt) for the tracers
+    real(rk), allocatable :: tendency_int_evt(:,:)             ! Tendencies for interior tracers resulting from external events (not from FABM)
+    real(rk), allocatable :: tendency_int_total(:,:)           ! Total tendencies for interior tracers from FABM and from external events 
     real(rk), allocatable :: flux_sf(:), flux_bt(:)            ! Fluxes of interior variables at the surface and bottom
     ! Counters for how many times the state was repaired
     integer :: nrepair_int = 0

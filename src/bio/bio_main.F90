@@ -17,11 +17,12 @@ module bio_main
                                    phase_to_bulk, bulk_to_phase, phase_to_bulk_all, bulk_to_phase_all
     use sediment_diffusion,  only: scalar_diffusion_sed
     use sediment_exchange,   only: compute_solute_flux_swi, apply_particulate_deposition, apply_bioirrigation
-    use time_types,          only: DateTime
+    use time_types,          only: DateTime, CFCalendar
     use tridiagonal,         only: init_tridiag, clear_tridiag
     use variable_registry,   only: register_variable, output_all_variables
-    use vertical_transport,  only: apply_vertical_transport, velocity_at_interfaces
     use vertical_mixing,     only: scalar_diffusion, BC_NEUMANN 
+    use vertical_transport,  only: apply_vertical_transport, velocity_at_interfaces
+    
 
   implicit none
   private
@@ -31,12 +32,14 @@ module bio_main
 
 contains
 
-    subroutine init_bio_fabm(cfg, location, wat_grid, sed_grid, full_grid, timestep, PS, FS, BE)
+    subroutine init_bio_fabm(cfg, location, wat_grid, sed_grid, full_grid, sim_startdate, sim_enddate, cal, timestep, PS, FS, BE)
         type(ConfigParams),       intent(in) :: cfg
         type(LocationInfo),       intent(in) :: location
         type(VerticalGrid),       intent(in) :: wat_grid
         type(VerticalGrid),       intent(in) :: sed_grid
         type(VerticalGrid),       intent(in) :: full_grid
+        type(DateTime),           intent(in) :: sim_startdate, sim_enddate
+        type(CFCalendar),         intent(in) :: cal
         integer(lk), intent(in)              :: timestep
         type(PhysicsState),       intent(in) :: PS
         type(ForcingSnapshot),    intent(in) :: FS
@@ -210,7 +213,9 @@ contains
         end if
 
         ! Allocating working arrays        
-        allocate(BE%tendency_int(nz,nint))                        ! Sources (dC/dt) 
+        allocate(BE%tendency_int(nz,nint))                        ! FABM Sources (dC/dt) 
+        allocate(BE%tendency_int_evt(nz,nint))                    ! Sources from external events (dC/dt) 
+        allocate(BE%tendency_int_total(nz,nint))                  ! Total sources FABM + external (dC/dt) 
         allocate(BE%velocity(nz,nint))                            ! Velocities
         allocate(BE%vel_faces(0:nz,nint))                         ! Velocities at interfaces for the water column
         allocate(BE%flux_sf(nint));    allocate(BE%flux_bt(nint)) ! Fluxes at the surface and bottom of interior variables 
@@ -533,6 +538,8 @@ contains
             end if
         end if
 
+        call BE%Events%init(cfg, BE%grid, BE%model, sim_startdate, sim_enddate, cal)
+
     end subroutine init_bio_fabm
 
     !=====================================================================================
@@ -542,19 +549,20 @@ contains
     !   - Applies vertical mixing and moves tracers according to reported velocities.
     !   - Integrates tracer tendencies (sources: dC/dt) subcycling if needed for stability.
     !=====================================================================================
-    subroutine integrate_bio_fabm(BE, PS, FS, timestep, istep_main, date, sec_of_day, doy_fraction)
+    subroutine integrate_bio_fabm(BE, PS, FS, timestep, istep_main, model_time, date, sec_of_day, doy_fraction)
         type(BioEnv),          intent(inout) :: BE
         type(PhysicsState),    intent(in)    :: PS
         type(ForcingSnapshot), intent(in)    :: FS
         integer(lk),           intent(in)    :: timestep
         integer(lk),           intent(in)    :: istep_main
+        real(rk),              intent(in)    :: model_time
         type(DateTime),        intent(in)    :: date
         real(rk),              intent(in)    :: sec_of_day
         real(rk),              intent(in)    :: doy_fraction   ! 0-based day of year + fraction
 
 
         integer  :: nz, ivar, k, nint, nsfc, nbtm
-        real(rk) :: istep_rk, dt_main, dt_sub
+        real(rk) :: istep_rk, dt_main, dt_sub, model_time_frac
         integer  :: nsub, isub, nsub_adv, nsub_diff, nsub_bio
         integer  :: kwb, kws, ksb, kss, kswi, nwat, nsed, nfaces_wat
         real(rk) :: vel_swi, Fdep
@@ -590,6 +598,7 @@ contains
 
 
         BE%BS%doy = doy_fraction
+        model_time_frac = model_time      
 
         !---------------------------------------------
         ! Update FABM with environment data
@@ -605,7 +614,7 @@ contains
         call BE%model%prepare_inputs(istep_rk, date%year, date%month, date%day, sec_of_day) !Providing the main time-step number as set_domain received dt_main 
 
         !-------------------------------------------------------------
-        ! Obtaining tendencies (dC/dt) and surface and bottom fluxes
+        ! Obtaining tendencies (dC/dt) and surface and bottom fluxes from FABM
         !-------------------------------------------------------------
         BE%flux_sf = 0.0_rk; BE%tendency_sf  = 0.0_rk                 ! Zeroing before receiving surface fluxes and sources
         call BE%model%get_surface_sources(BE%flux_sf, BE%tendency_sf) ! Retrieve surface fluxes and sources from FABM
@@ -613,8 +622,9 @@ contains
         BE%flux_bt = 0.0_rk; BE%tendency_bt  = 0.0_rk                 ! Zero before receiving bottom fluxes and sources
         call BE%model%get_bottom_sources(BE%flux_bt, BE%tendency_bt)  ! Retrieve bottom fluxes and sources from FABM
 
-        BE%tendency_int = 0.0_rk
+        BE%tendency_int       = 0.0_rk   ! Sources from FABM (tracer units s-1).
         call BE%model%get_interior_sources(1, nz, BE%tendency_int)
+        
 
         ! Include contribution of bottom and surface fluxes to tendencies at bottom and surface
         if (nint > 0) then
@@ -903,6 +913,18 @@ contains
             ! Repir state for interior tracers after vertical redistribution of tracers
             !----------------------------------------------------------------------------
             call check_and_repair_state(BE)
+
+            !------------------------------------------------------
+            ! Apply external events (e.g. a tracer pulse or trawling)
+            ! Obtain tendencies from external events (if any)
+            !------------------------------------------------------
+            BE%tendency_int_evt   = 0.0_rk       ! Zero before adding tendencies
+            BE%tendency_int_total = 0.0_rk
+            if (BE%Events%any_events) then
+                call BE%Events%apply(model_time_frac, dt_sub, BE%tendency_int_evt)
+            end if
+            ! Add tendencies, if any from the events
+            BE%tendency_int_total = BE%tendency_int + BE%tendency_int_evt
             
             !-----------------------------------------------------------------------------
             ! Integrate tracers using exflicit Forward Euler
@@ -911,7 +933,7 @@ contains
             if (nint>0) then
                 do ivar = 1, nint
                     do k = 1, nz
-                        BE%BS%interior_state(k,ivar) = BE%BS%interior_state(k,ivar) + dt_sub * BE%tendency_int(k,ivar)
+                        BE%BS%interior_state(k,ivar) = BE%BS%interior_state(k,ivar) + dt_sub * BE%tendency_int_total(k,ivar)
                     end do
                 end do
             end if
@@ -930,9 +952,13 @@ contains
                 end do
             end if
             ! Repair state, if needed, to let FABM restore all state variables within their registered bounds.
-            call check_and_repair_state(BE)       
-        end do   
-        
+            call check_and_repair_state(BE)    
+            
+            ! Advance time
+            model_time_frac = model_time_frac + dt_sub           
+        end do     
+        !----- End of inner loop
+
         ! Compute totals for conserved quantities if needed
         if (BE%params%output_conserved .and. BE%n_conserved > 0) then
             call BE%model%get_interior_conserved_quantities(1, nz, BE%conserved_interior)
@@ -940,8 +966,8 @@ contains
             do ivar = 1, BE%n_conserved
                 BE%conserved_total(ivar) = sum(BE%grid%dz(1:nz) * BE%conserved_interior(1:nz, ivar)) + BE%conserved_boundary(ivar)
             end do
-        end if           
-
+        end if    
+        
     end subroutine integrate_bio_fabm
 
     !==============================================================
@@ -1065,15 +1091,20 @@ contains
         end if
 
         ! Deallocate BioEnv working arrays
-        if (allocated(BE%velocity))     deallocate(BE%velocity)
-        if (allocated(BE%tendency_int)) deallocate(BE%tendency_int)
-        if (allocated(BE%tendency_sf))  deallocate(BE%tendency_sf)
-        if (allocated(BE%tendency_bt))  deallocate(BE%tendency_bt)
-        if (allocated(BE%flux_sf))      deallocate(BE%flux_sf)
-        if (allocated(BE%flux_bt))      deallocate(BE%flux_bt)
+        if (allocated(BE%velocity))           deallocate(BE%velocity)
+        if (allocated(BE%tendency_int))       deallocate(BE%tendency_int)
+        if (allocated(BE%tendency_int_evt))   deallocate(BE%tendency_int_evt)
+        if (allocated(BE%tendency_int_total)) deallocate(BE%tendency_int_total)
+        if (allocated(BE%tendency_sf))        deallocate(BE%tendency_sf)
+        if (allocated(BE%tendency_bt))        deallocate(BE%tendency_bt)
+        if (allocated(BE%flux_sf))            deallocate(BE%flux_sf)
+        if (allocated(BE%flux_bt))            deallocate(BE%flux_bt)
 
         ! Clear Tridiagonal workspace 
         call clear_tridiag(BE%wat_trid)
+
+        ! Clear events
+        call BE%Events%clear()
 
         ! Reset counters and flags
         BE%BS%n_interior = 0
