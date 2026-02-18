@@ -324,7 +324,7 @@ contains
         s = remove_whitespaces(adjustl(txt))
         n = len_trim(s)
         if (n < 2) then
-            seconds = 0_lk; return ! At least one digit and one time-unit
+            seconds = -1_lk; return ! At least one digit and one time-unit
         end if
 
         u = s(n:n)                 ! Grab the last character, which should be the unit
@@ -333,9 +333,9 @@ contains
             case ('m','M'); read(s(1:n-1), *, iostat=istat) seconds; seconds = seconds*sec_per_min
             case ('h','H'); read(s(1:n-1), *, iostat=istat) seconds; seconds = seconds*sec_per_hour
             case ('d','D'); read(s(1:n-1), *, iostat=istat) seconds; seconds = seconds*sec_per_day
-            case default   ; seconds = 0_lk; return
+            case default   ; seconds = -1_lk; return
         end select
-        if (istat /= 0) seconds = 0_lk
+        if (istat /= 0) seconds = -1_lk
     end subroutine parse_interval_to_seconds
 
 
