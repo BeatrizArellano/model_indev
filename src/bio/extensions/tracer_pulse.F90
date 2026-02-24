@@ -180,14 +180,14 @@ contains
             write(*,'(A)') 'WARNING: events.duration extends beyond the end of simulation.'
         end if
 
-        ! ---- magnitude requirements ----
+        ! ---- magnitude  ----
         if (TP%mode == 'rate') then
             if (.not. cfg%is_set('events.rate')) call fatal('tracer_pulse:init', '"events.rate" required when mode=rate.')
             TP%rate = cfg%get_param_num('events.rate', required=.true., finite=.true., positive=.true.)
         else
             if (.not. cfg%is_set('events.amount')) call fatal('tracer_pulse:init', '"events.amount" required when mode=amount.')
             TP%amount = cfg%get_param_num('events.amount', required=.true., finite=.true., positive=.true.)
-            ! Spread "amount [mol m-2]" over duration and thickness_eff
+            ! Spread "amount [mmol m-2]" over duration and thickness_eff
             TP%amount_rate_vol = (TP%amount / TP%duration_s) / TP%thickness_eff
         end if
 
