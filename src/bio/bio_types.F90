@@ -33,7 +33,8 @@ module bio_types
     ! Relevant Physical variables
     real(rk), allocatable :: temp(:), sal(:), rho(:)         ! temperature, salinity and density (From bottom to surface)
     real(rk), allocatable :: pres(:)                         ! pressure [dbar]     (optional)
-    real(rk), allocatable :: swr(:),  par(:)                 ! PAR profile [W/m2]  (optional)
+    real(rk), allocatable :: swr(:),  par(:)                 ! PAR profile [W/m2]  (optional)      
+    real(rk), allocatable :: atten_coeff(:)                  ! [m-1] attenuation coefficient for PAR, size N
     real(rk), allocatable :: vert_diff(:)                    ! vertical diffusivity
     ! Surface variables
     real(rk) :: short_rad  = 0._rk
@@ -148,7 +149,7 @@ module bio_types
     type(EventManager) :: Events
 
     !------------ FABM environment variable ids
-    type (type_fabm_interior_variable_id)   :: id_temp, id_salt, id_rho, id_swr, id_par, id_pres
+    type (type_fabm_interior_variable_id)   :: id_temp, id_salt, id_rho, id_swr, id_par, id_pres, id_atten
     type (type_fabm_horizontal_variable_id) :: id_windspd, id_par_sfc, id_slp, id_cloud, id_stressb, id_swr_sfc, id_co2, id_ice_af
     type (type_fabm_scalar_variable_id)     :: id_yearday
     ! Which env vars are actually needed?
@@ -167,6 +168,8 @@ module bio_types
     logical :: need_co2     = .false.
     logical :: need_ice_af  = .false.                          ! Ice area fraction
     logical :: is_init = .false.                               ! has biogeochemistry been initialised?
+    ! Pointer to attenuation coefficient
+    real(rk), pointer :: atten_ptr(:) => null()
     ! Working space
     type(TridiagCoeff)     :: wat_trid                             ! workspace for solving scalar diffusion
     ! Interior diagnostics 

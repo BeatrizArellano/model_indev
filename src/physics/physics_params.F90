@@ -17,7 +17,7 @@ module physics_params
   real(rk), parameter :: cp_sw           = 3900.0_rk             ! seawater heat capacity [J kg-1 K-1]
   real(rk), parameter :: cp_air          = 1004.0_rk             ! air heat capacity [J kg-1 K-1]
   real(rk), parameter :: kappa           = 0.41_rk               ! von Kármán constant
-  real(rk), parameter :: sigma_SB        = 5.670374419e-8_rk     ! Stephan-Boltzman 
+  real(rk), parameter :: sigma_SB        = 5.670374419e-8_rk     ! Stefan-Boltzman 
   real(rk), parameter :: p_atm_dbar      = 10.1325_rk            ! Atmospheric pressure at sea level 1 atm [dbar]
   !----- Specific constants for viscosity and diffusivity
   real(rk), parameter :: mol_vis         = 1.0e-6_rk             ! Molecular viscosity [m2 s-1]
@@ -31,15 +31,16 @@ module physics_params
   real(rk), parameter :: def_temp0               = 12.0_rk       ! Initial temperature
   real(rk), parameter :: def_sal0                = 35.0_rk       ! Constant salinity
   real(rk), parameter :: def_charnock            = 1400.0_rk     ! Empirical constant for roughness adaptation (Charnock, 1955)
-  real(rk), parameter :: def_drag_coeff          = 0.0025_rk     ! Bottom quadratic drag coefficient
   real(rk), parameter :: def_h0b                 = 0.05_rk       ! Bottom roughness height (h0b)
   real(rk), parameter :: def_vismax              = 0.1_rk        ! Maximum diffusivity and viscosity
   real(rk), parameter :: def_Kz_bg               = 1.0e-5_rk     ! Background diffusivity [m2 s-1]
   real(rk), parameter :: def_Nz_bg               = 1.0e-5_rk     ! Background viscosity [m2 s-1]
-  real(rk), parameter :: def_lambda              = 0.1_rk        ! Heat vertical attenuation coefficient [m-1]
-  real(rk), parameter :: def_heat_shade          = 0.012_rk      ! Chl effect on heat attenuation (m2 (mg Chl)-1)
-  real(rk), parameter :: def_lw_skin_penetration = 0.95          ! Fraction of incoming LW that reaches below the skin 
-  real(rk), parameter :: def_cnpar               = 0.5           ! Degree of Implicitness when solving diffusive mixing [0-1]
+  real(rk), parameter :: def_frac_nonvis         = 0.58_rk       ! Fraction of SWR in the non-visible band (UV+IR)
+  real(rk), parameter :: def_depth_nonvis        = 0.35_rk       ! e-folding depth of non-visible band [m]
+  real(rk), parameter :: def_depth_vis           = 20.0_rk       ! e-folding depth of visible band [m]
+  real(rk), parameter :: def_frac_par            = 0.45_rk       ! Fraction of shortwave radiation treated as Photosynthetically Active Radiation (PAR)
+  real(rk), parameter :: def_lw_skin_penetration = 0.95_rk       ! Fraction of incoming LW that reaches below the skin 
+  real(rk), parameter :: def_cnpar               = 0.5_rk        ! Degree of Implicitness when solving diffusive mixing [0-1]
   character(len=8), parameter :: def_salmode = 'constant'        ! Default mode for salinity
   !--------------------------------------------------------------------------------------------------------------------
 
@@ -62,9 +63,14 @@ module physics_params
      real(rk) :: Kz_bg               ! [m2 s-1]
      real(rk) :: Nz_bg               ! [m2 s-1]
      ! Heat and radiation
-     real(rk) :: lambda              ! [m-1]
-     real(rk) :: heat_shade          ! [m2 (mg Chl)-1]
+     real(rk) :: frac_nonvis         ! [-]
+     real(rk) :: depth_nonvis        ! [m]
+     real(rk) :: depth_vis           ! [m]
+     real(rk) :: frac_par        ! [-]
      real(rk) :: lw_skin_penetration ! [fraction 0-1]
+     logical  :: apply_heat_bioshade
+     logical  :: apply_par_bioshade
+
      ! Numerics
      real(rk) :: cnpar               ! implicitness [0..1]
   end type PhysicsParams
@@ -77,9 +83,12 @@ contains
         type(ConfigParams),  intent(in)   :: cfg_params
         type(PhysicsParams), intent(out)  :: phys
 
+        logical :: is_bio_enabled
         character(len=8), dimension(2) :: sal_choices
         character(:), allocatable :: sal_mode
         sal_choices = ['constant','compute ']
+
+        
 
         phys = default_physics_params()
         ! ---------------- Variables ----------------
@@ -102,9 +111,21 @@ contains
         phys%Kz_bg  = cfg_params%get_param_num('physics.mixing.Kz_bg',  default=def_Kz_bg,  finite=.true., min=0._rk)
         phys%Nz_bg  = cfg_params%get_param_num('physics.mixing.Nz_bg',  default=def_Nz_bg,  finite=.true., min=0._rk)
         ! ---------------- Heat and radiation ----------------
-        phys%lambda              = cfg_params%get_param_num('physics.heat.lambda', default=def_lambda, finite=.true., min=0._rk)
-        phys%heat_shade          = cfg_params%get_param_num('physics.heat.chl_shading', default=def_heat_shade, finite=.true., min=0._rk)       
-        phys%lw_skin_penetration = cfg_params%get_param_num('physics.heat.lw_skin_penetration', default=def_lw_skin_penetration, finite=.true., min=0._rk, max=1._rk)
+        phys%frac_nonvis        = cfg_params%get_param_num('physics.radiation.nonvisible_fraction', default=def_frac_nonvis, finite=.true., min=0._rk, max=1.0_rk)
+        phys%depth_nonvis       = cfg_params%get_param_num('physics.radiation.depth_nonvisible', default=def_depth_nonvis, finite=.true., positive=.true.)       
+        phys%depth_vis          = cfg_params%get_param_num('physics.radiation.depth_visible', default=def_depth_vis, finite=.true., positive=.true.)   
+        phys%frac_par           = cfg_params%get_param_num('physics.radiation.par_fraction', default=def_frac_par, finite=.true., min=0._rk, max=1.0_rk)
+        phys%lw_skin_penetration = cfg_params%get_param_num('physics.radiation.lw_skin_penetration', default=def_lw_skin_penetration, finite=.true., min=0._rk, max=1._rk)
+
+        phys%apply_heat_bioshade = cfg_params%get_param_logical('physics.radiation.apply_bioshading_to_heat', default=.true.)
+        phys%apply_par_bioshade  = cfg_params%get_param_logical('physics.radiation.apply_bioshading', default=.true.)
+
+        is_bio_enabled = cfg_params%get_param_logical('biogeochemistry.enabled', default=.false.)
+        if (.not. is_bio_enabled) then
+            if(phys%apply_heat_bioshade) write(*,*) 'Warning: apply_bioshading_to_heat set to "no" since Biogeochemistry is disabled.'
+            phys%apply_heat_bioshade = .false. 
+            phys%apply_par_bioshade  = .false.
+        end if
         ! ---------------- Numerics ----------------
         phys%cnpar = cfg_params%get_param_num('physics.mixing.cnpar', default=def_cnpar, finite=.true., min=0._rk, max=1._rk)
     end subroutine read_physics_parameters
@@ -113,14 +134,21 @@ contains
     ! Return a struct pre-filled with defaults
     pure function default_physics_params() result(p)
         type(PhysicsParams) :: p
+        p%charnock = def_charnock
+        p%compute_salinity = .false.   ! consistent with def_salmode='constant'
         p%temp0      = def_temp0
         p%sal0       = def_sal0
         p%h0b        = def_h0b
         p%vismax     = def_vismax
         p%Kz_bg      = def_Kz_bg
         p%Nz_bg      = def_Nz_bg
-        p%lambda     = def_lambda
-        p%heat_shade = def_heat_shade
+        p%frac_nonvis = def_frac_nonvis
+        p%depth_nonvis = def_depth_nonvis
+        p%depth_vis   = def_depth_vis
+        p%frac_par   = def_frac_par
+        p%lw_skin_penetration = def_lw_skin_penetration
+        p%apply_heat_bioshade = .true.
+        p%apply_par_bioshade  = .true.
         p%cnpar      = def_cnpar
     end function default_physics_params
 

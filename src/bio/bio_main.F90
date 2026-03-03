@@ -6,7 +6,6 @@ module bio_main
     use forcing_manager,     only: ForcingSnapshot
     use geo_utils,           only: LocationInfo    
     use grids,               only: VerticalGrid
-    use light,               only: compute_SW_profile, compute_PAR_profile
     use molecular_diffusion, only: molecular_diffusivity
     use numerical_stability, only: compute_bio_substeps
     use physics_types,       only: PhysicsState
@@ -426,6 +425,14 @@ contains
         if (BE%need_rho)  allocate(BE%BS%rho(nz))
 
         allocate(BE%BS%vert_diff(0:nz))
+        allocate(BE%BS%atten_coeff(nz)) ! Allocate array for attenuation coefficients
+        BE%BS%atten_coeff = 0.0_rk 
+        call register_variable(BE%env_int_vars,                      &
+                                name='env_atten_bio',                                       &
+                                long_name='Attenuation coefficient of PAR by biogeochemistry',      &
+                                units='m-1',                                               &
+                                vert_coord='centre', n_space_dims=1,                       &
+                                data_1d=BE%BS%atten_coeff)
 
         if (BE%need_pres .or. BE%params%sediments_enabled) then
             if (.not. allocated(BE%BS%pres)) allocate(BE%BS%pres(nz))
@@ -485,11 +492,21 @@ contains
         ! Check other potential variables needed -> Implement a way to provide those variables. 
         ! Loop over a section within biogeochemistry in the yaml file to load those variables. 
 
+        ! Require FABM to obtain attenuation coefficients from bio/particles
+        call BE%model%require_data(fabm_standard_variables%attenuation_coefficient_of_photosynthetic_radiative_flux)
+        BE%id_atten   = BE%model%get_interior_variable_id(fabm_standard_variables%attenuation_coefficient_of_photosynthetic_radiative_flux)
+
         call update_environment_data(PS, FS, BE)
 
         ! Complete initialization and check whether FABM has all dependencies fulfilled
         ! (i.e., whether all required calls to model%link_*_data have been made)
         call BE%model%start()
+
+        ! Pointer for attenuation coefficient array
+        BE%atten_ptr => BE%model%get_interior_data(BE%id_atten)
+        if (.not. associated(BE%atten_ptr)) then
+            error stop 'FABM: atten_ptr not associated (attenuation data from FABM unavailable?).'
+        end if
 
     !!! Later implement initialising from a previous state loaded via a file. 
         ! Initialize the tracers
@@ -624,7 +641,6 @@ contains
 
         BE%tendency_int       = 0.0_rk   ! Sources from FABM (tracer units s-1).
         call BE%model%get_interior_sources(1, nz, BE%tendency_int)
-        
 
         ! Include contribution of bottom and surface fluxes to tendencies at bottom and surface
         if (nint > 0) then
@@ -727,7 +743,7 @@ contains
                         call compute_solute_flux_swi(c_w=c_w, c_s=c_s, phi_swi=phi_swi, u_taub=BE%BS%u_taub, z0b=BE%BS%z0b,   &
                                                      Nz=BE%BS%Nz_btm, Kz=BE%BS%Kz_btm, D_sol=D0, D_eff=Deff, &
                                                      dz_w=BE%wat_grid%dz(1), dz_sed=BE%sed_grid%dz(kss),     &
-                                                     swi_flux=swi_flux)                
+                                                     swi_flux=swi_flux)              
                                           
 
                         if (swi_flux > 0._rk) then
@@ -1011,6 +1027,9 @@ contains
         if (allocated(BE%BS%swr))       deallocate(BE%BS%swr)
         if (allocated(BE%BS%par))       deallocate(BE%BS%par)
         if (allocated(BE%BS%vert_diff)) deallocate(BE%BS%vert_diff)
+        if (allocated(BE%BS%atten_coeff)) deallocate(BE%BS%atten_coeff)
+
+        if(associated(BE%atten_ptr)) nullify(BE%atten_ptr)
 
         if (allocated(BE%vel_faces))   deallocate(BE%vel_faces)
         if (allocated(BE%tracer_info)) deallocate(BE%tracer_info)
@@ -1185,8 +1204,7 @@ contains
         BE%BS%slp       = FS%slp * 100.0_rk   ! Converting from hPa to Pa
         BE%BS%co2_air   = FS%co2_air
         BE%BS%stressb   = PS%stressb
-! Change when we have a parameter for par_fraction
-        BE%BS%par_sfc   = BE%BS%short_rad * 0.45_rk
+        BE%BS%par_sfc   = PS%par_sfc
 
         ! Bottom scalars
         BE%BS%u_taub  = PS%u_taub
@@ -1205,16 +1223,17 @@ contains
             end if
         end if
 
-        ! ---- SWR/PAR: compute in water, zero in sediments
+        ! ---- SWR/PAR: provided by physics (water), zero in sediments
         if (BE%need_swr) then
-            call compute_SW_profile(BE%wat_grid%dz, BE%BS%short_rad, BE%BS%swr(kwb:kws))
+            BE%BS%swr(kwb:kws) = PS%swr(1:nwat)
             if (BE%params%sediments_enabled) BE%BS%swr(1:nsed) = 0.0_rk
         end if
 
         if (BE%need_par) then
-            call compute_PAR_profile(BE%wat_grid%dz, BE%BS%short_rad, BE%BS%par(kwb:kws))
+            BE%BS%par(kwb:kws) = PS%par(1:nwat)
             if (BE%params%sediments_enabled) BE%BS%par(1:nsed) = 0.0_rk
         end if
+
     end subroutine update_environment_data
 
 
@@ -1265,6 +1284,12 @@ contains
                 BE%diag_hz(j) = BE%model%get_horizontal_diagnostic_data(idx)
             end do
         end if
+
+        ! Store bioattenuation coefficients in the state-array
+        if (BE%params%sediments_enabled .and. BE%nsed > 0) then
+            BE%BS%atten_coeff(1:BE%nsed) = 0.0_rk
+        end if
+        BE%BS%atten_coeff(BE%k_wat_btm:BE%k_wat_sfc) = BE%atten_ptr(BE%k_wat_btm:BE%k_wat_sfc)
     end subroutine update_bio_diagnostics
 
     ! Allocate arrays for Variables Metadata if not allocated 

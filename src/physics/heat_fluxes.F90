@@ -19,6 +19,7 @@ module heat_fluxes
   use forcing_manager, only: ForcingSnapshot
   use physics_params,  only: rho0, rho_air, cp_sw, cp_air, sigma_SB
   use precision_types, only: rk  
+  use radiation,       only: compute_radiation_profile
 
   implicit none
   private
@@ -38,53 +39,62 @@ contains
   !   max_abs_dTdt : max over layers of abs(dTdt_heat)
   !---------------------------------------------------------------------------
   subroutine compute_heat_tendency(temp, dz, N,                                 &
-                                           rsds, rlds_down, wind_speed, airT, rh, airP, &
-                                           lw_skin_penetration, lambda,                 &
-                                           dTdt_heat,                                   &
-                                           Q_net_surf, max_abs_dTdt,                    &
-                                           heat_shade, chl)
+                                   rsds, rlds_down, wind_speed, airT, rh, airP, &
+                                   lw_skin_penetration,                         &
+                                   nonvisible_fraction, depth_nonvisible, depth_visible, &
+                                   deposit_bottom_residual, apply_bioshading_to_heat, &
+                                   dTdt_heat, Q_net_surf, max_abs_dTdt,                    &
+                                   swr_c, atten_bio)
 
       real(rk), intent(in)  :: temp(:)
       real(rk), intent(in)  :: dz(:)
       integer,  intent(in)  :: N
       real(rk), intent(in)  :: rsds, rlds_down, wind_speed, airT, rh, airP
-      real(rk), intent(in)  :: lambda, lw_skin_penetration
+      real(rk), intent(in)  :: lw_skin_penetration, nonvisible_fraction, depth_nonvisible, depth_visible
 
-      real(rk), intent(out) :: dTdt_heat(1:N)
+      logical, intent(in)   :: deposit_bottom_residual, apply_bioshading_to_heat
+
+      real(rk), intent(out)   :: dTdt_heat(1:N)
 
       real(rk), intent(out), optional :: Q_net_surf
       real(rk), intent(out), optional :: max_abs_dTdt
+      real(rk), intent(out)           :: swr_c(1:N)     
 
-      real(rk), intent(in),  optional :: heat_shade
-      real(rk), intent(in),  optional :: chl(:)
-
-      ! Parameters (same as your existing SURFACE_HEAT)
+      real(rk), intent(in), optional :: atten_bio(1:N)     ! m-1
+      
+      ! Parameters 
       real(rk), parameter :: eps_sfc = 0.98_rk
       real(rk), parameter :: Cd_h    = 1.45e-3_rk
       real(rk), parameter :: Ce_e    = 1.50e-3_rk
 
-      integer  :: i
-      real(rk) :: shade, chl_i
+      real(rk) :: atten_local(1:N)
+      real(rk) :: swr_abs(1:N)
+
       real(rk) :: surf_temp
       real(rk) :: sat_vap, vap, spec_hum1, spec_hum2
       real(rk) :: q_up_lw, q_down_lw_eff
       real(rk) :: q_lw_out, q_sensible_out, q_latent_out
       real(rk) :: q_nonSW_in
-      real(rk) :: k_top
-      real(rk) :: q_sw_top, q_sw_rest
-      real(rk) :: Iin, Iout, atten, flux
       real(rk) :: inv_rho_cp
-      real(rk) :: dTdt, maxrate
+      real(rk) :: maxrate
+
+      atten_local = 0.0_rk
+      if (apply_bioshading_to_heat .and. present(atten_bio)) atten_local = atten_bio
+
 
       ! Initialise tendency arrays
       dTdt_heat(:) = 0.0_rk
       maxrate = 0.0_rk
 
-      shade = 0.012_rk
-      if (present(heat_shade)) shade = heat_shade
-
-      chl_i = 0.0_rk
-      if (present(chl)) chl_i = chl(N)
+      ! Computing shortwave radiation profile
+      call compute_radiation_profile(N=N, dz=dz, rsds=rsds, &
+                                     nonvisible_fraction=nonvisible_fraction, &
+                                     depth_nonvisible=depth_nonvisible, depth_visible=depth_visible, &
+                                     apply_bioshading_to_heat=apply_bioshading_to_heat, &
+                                     atten_bio=atten_local, &
+                                     deposit_bottom_residual=deposit_bottom_residual, &
+                                     swr_abs=swr_abs, &
+                                     swr_c=swr_c)
 
       ! --- Surface temperature in Kelvin for Stefan–Boltzmann 
       surf_temp = temp(N) + 273.15_rk
@@ -106,45 +116,20 @@ contains
       q_latent_out   = Ce_e * rho_air * wind_speed * (spec_hum1 - spec_hum2) * (2.5e6_rk - 2.3e3_rk*temp(N))
 
       ! Convert to "positive INTO ocean"
-      q_nonSW_in = -(q_lw_out + q_sensible_out + q_latent_out)   ! this equals your rad_out
-
-      ! --- Shortwave split: sw_top_fraction to top layer, remainder decays with Beer–Lambert ---
-      k_top   = max(0.0_rk, lambda + shade*chl_i)
-      q_sw_top  = rsds * (1.0_rk - exp(-k_top * dz(N)))
-      q_sw_rest = rsds - q_sw_top
+      q_nonSW_in = -(q_lw_out + q_sensible_out + q_latent_out)   
 
       inv_rho_cp = 1.0_rk / (rho0 * cp_sw)
 
       ! --- Surface cell tendency: (nonSW + sw absorbed in top) / (rho*cp*dz) ---
-      dTdt = (q_nonSW_in + q_sw_top) * inv_rho_cp / dz(N)
-      dTdt_heat(N) = dTdt
-      maxrate = max(maxrate, abs(dTdt))
+      ! SWR absorption heats all layers
+      dTdt_heat(1:N) = dTdt_heat(1:N) + (swr_abs(1:N) * inv_rho_cp) / dz(1:N)
 
-      if (present(Q_net_surf)) Q_net_surf = q_nonSW_in + q_sw_top
+      ! Non-shortwave fluxes act at the surface cell only
+      dTdt_heat(N) = dTdt_heat(N) + (q_nonSW_in * inv_rho_cp) / dz(N)
 
-      ! --- Distribute remaining SW downwards with Beer–Lambert ---
-      Iin = q_sw_rest
-      do i = N-1, 1, -1
-        if (present(chl)) chl_i = chl(i)           ! <-- use chl if provided, else 0
-        atten = max(0.0_rk, lambda + shade*chl_i)
+      if (present(Q_net_surf)) Q_net_surf = q_nonSW_in + swr_abs(N)
 
-        Iout = Iin * exp(-atten * dz(i))
-        flux = (Iin - Iout)   ! W/m2 absorbed in layer i
-
-        dTdt = flux * inv_rho_cp / dz(i)
-        dTdt_heat(i) = dTdt
-        maxrate = max(maxrate, abs(dTdt))
-
-        Iin = Iout
-      end do
-
-      ! Any residue below bottom goes to the bottom layer
-      if (Iin > 0.0_rk) then
-        dTdt = Iin * inv_rho_cp / dz(1)
-        dTdt_heat(1) = dTdt_heat(1) + dTdt
-        maxrate = max(maxrate, abs(dTdt_heat(1)))
-      end if
-
+      maxrate = maxval(abs(dTdt_heat(1:N)))
       if (present(max_abs_dTdt)) max_abs_dTdt = maxrate
 
   end subroutine compute_heat_tendency

@@ -173,6 +173,10 @@ contains
                 ! 0-based day-of-year + fractional day
                 doy_real = real(doy - 1, rk) + sec_of_day / 86400._rk
                 call integrate_bio_fabm(BE, PE%PS, ForcSnp, dt_now, istep, model_time_rk, current_datetime, sec_of_day, doy_real)
+                ! Update bioattenuation coefficients in Physics
+                if (PE%params%apply_heat_bioshade) then
+                    PE%atten_bio(:) = BE%BS%atten_coeff(BE%k_wat_btm:BE%k_wat_sfc)
+                end if
             end if 
             ! Sample state for output
             call OM%step(dt_now)

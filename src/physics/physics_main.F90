@@ -31,7 +31,8 @@ module physics_main
                                  gravity, kappa, mol_nu, mol_diff_T, rho0
   use physics_types,       only: PhysicsState, PhysicsEnv       
   use phys_var_registry,   only: register_physics_variables    
-  use precision_types,     only: rk, lk                   
+  use precision_types,     only: rk, lk               
+  use radiation,           only: compute_par_profile    
   use read_config_yaml,    only: ConfigParams 
   use tidal_readers,       only: read_tidal_parameters
   use tidal,               only: TidalSet, create_tidal_set, tide_pressure_accel
@@ -78,11 +79,14 @@ contains
       ! --- Arrays for prognostic variables (1..N) ---
       allocate(PE%PS%temp(PE%PS%N), PE%PS%sal(PE%PS%N), PE%PS%rho(PE%PS%N))
       allocate(PE%PS%velx(PE%PS%N), PE%PS%vely(PE%PS%N))
+      allocate(PE%PS%swr(PE%PS%N), PE%PS%par(PE%PS%N))
       PE%PS%temp = PE%params%temp0
       PE%PS%sal  = PE%params%sal0
       PE%PS%rho  = eos_density(PE%PS%temp, PE%PS%sal)
       PE%PS%velx = 0.0_rk
       PE%PS%vely = 0.0_rk
+      PE%PS%swr  = 0.0_rk 
+      PE%PS%par  = 0.0_rk 
   
       ! --- Arrays for turbulence/mixing (N+1) ---
       allocate(PE%PS%Kz(0:PE%PS%N), PE%PS%Nz(0:PE%PS%N), PE%PS%tke(0:PE%PS%N), PE%PS%eps(0:PE%PS%N))
@@ -100,8 +104,10 @@ contains
       if (allocated(PE%Nz_tot)) deallocate(PE%Nz_tot, PE%Kz_T)   
       allocate(PE%Nz_tot(0:N), PE%Kz_T(0:N))  ! Arrays for viscosity and diffusivity plus molecular values
       if (allocated(PE%dTdt_heat)) deallocate(PE%dTdt_heat)   
-      allocate(PE%dTdt_heat(N))               ! Arrays for temperature tendencies computed from heat fluxes
-      
+      allocate(PE%dTdt_heat(N))               ! Array for temperature tendencies computed from heat fluxes
+      if (allocated(PE%atten_bio)) deallocate(PE%atten_bio)   
+      allocate(PE%atten_bio(N))               ! Array for attenuation coefficients from biogeochemsitry
+      PE%atten_bio = 0.0_rk      
   
       ! --- A sensible initial length-scale (S2P3) ---
       depth = PE%grid%depth
@@ -174,11 +180,20 @@ contains
         ! Update density
         PE%PS%rho  = eos_density(PE%PS%temp, PE%PS%sal)
 
-        call compute_heat_tendency(temp=PE%PS%temp, dz=PE%grid%dz, N=N,                                   &
-                                   rsds=FS%short_rad, rlds_down=FS%long_rad, wind_speed=PE%PS%wind_speed, &
-                                   airT=FS%air_temp, rh=FS%rel_hum, airP=FS%slp,                          &
-                                   lw_skin_penetration=PE%params%lw_skin_penetration, lambda=PE%params%lambda, &
-                                   dTdt_heat=PE%dTdt_heat, Q_net_surf=PE%PS%Q_net_surf, max_abs_dTdt=PE%max_abs_dTdt)
+        call compute_heat_tendency(temp=PE%PS%temp, dz=PE%grid%dz, N=N,                                               &
+                                   rsds=FS%short_rad, rlds_down=FS%long_rad, wind_speed=PE%PS%wind_speed,             &
+                                   airT=FS%air_temp, rh=FS%rel_hum, airP=FS%slp,                                      &
+                                   lw_skin_penetration=PE%params%lw_skin_penetration,                                 &
+                                   nonvisible_fraction=PE%params%frac_nonvis, depth_nonvisible=PE%params%depth_nonvis, &
+                                   depth_visible=PE%params%depth_vis, deposit_bottom_residual=.true.,                 &
+                                   apply_bioshading_to_heat=PE%params%apply_heat_bioshade,                            &
+                                   dTdt_heat=PE%dTdt_heat, Q_net_surf=PE%PS%Q_net_surf, max_abs_dTdt=PE%max_abs_dTdt, &
+                                   swr_c=PE%PS%swr, atten_bio=PE%atten_bio)
+        
+        call compute_par_profile(N=N, dz=PE%grid%dz, rsds=FS%short_rad,                            &
+                                 par_fraction=PE%params%frac_par, depth_visible=PE%params%depth_vis,                                 &
+                                 apply_bioshading_to_par=PE%params%apply_par_bioshade, atten_bio=PE%atten_bio,                          &
+                                 par=PE%PS%par, par_sfc=PE%PS%par_sfc)
  
         ! Turbulence: once per main step     
         ! Solves turbulence using the Canuto k-eps closure scheme and calculates Kz and Nz
@@ -282,6 +297,9 @@ contains
       if (allocated(PE%PS%sal))    deallocate(PE%PS%sal)
       if (allocated(PE%PS%rho))    deallocate(PE%PS%rho)
 
+      if (allocated(PE%PS%swr))    deallocate(PE%PS%swr)
+      if (allocated(PE%PS%par))    deallocate(PE%PS%par)
+
       if (allocated(PE%PS%velx))   deallocate(PE%PS%velx)
       if (allocated(PE%PS%vely))   deallocate(PE%PS%vely)
 
@@ -289,9 +307,9 @@ contains
       if (allocated(PE%PS%Nz))     deallocate(PE%PS%Nz)
       if (allocated(PE%PS%tke))    deallocate(PE%PS%tke)
       if (allocated(PE%PS%eps))    deallocate(PE%PS%eps)
-      if (allocated(PE%PS%NN))     deallocate(PE%PS%NN)   ! <-- missing before
-      if (allocated(PE%PS%SS))     deallocate(PE%PS%SS)   ! <-- missing before
-      if (allocated(PE%PS%Ri))     deallocate(PE%PS%Ri)   ! <-- missing before
+      if (allocated(PE%PS%NN))     deallocate(PE%PS%NN)   
+      if (allocated(PE%PS%SS))     deallocate(PE%PS%SS)   
+      if (allocated(PE%PS%Ri))     deallocate(PE%PS%Ri)   
 
       if (allocated(PE%PS%Lscale)) deallocate(PE%PS%Lscale)
       if (allocated(PE%PS%cmue1))  deallocate(PE%PS%cmue1)
@@ -304,6 +322,8 @@ contains
       if (allocated(PE%Nz_tot))    deallocate(PE%Nz_tot)
       if (allocated(PE%Kz_T))      deallocate(PE%Kz_T)
       if (allocated(PE%dTdt_heat)) deallocate(PE%dTdt_heat)
+      if (allocated(PE%atten_bio)) deallocate(PE%atten_bio)
+      
 
       PE%PS%N = 0
 
