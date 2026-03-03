@@ -26,8 +26,8 @@
 location:
     name: North Sea
     latitude:  55.5         # degrees North. min=-90.0, max=90.0.
-    longitude: 1         # degrees East. Use -180 to 180 or 0 to 360
-    depth:     60         # Water column depth in meters. depth>0. 
+    longitude: 1            # degrees East. Use -180 to 180 or 0 to 360
+    depth:     60           # Water column depth in meters. depth>0. 
 time:
     start: 1980-01-01        # start date [yyyy-mm-dd or yyyy-mm-dd HH:MM[:SS]]
     end:   2024-12-31        # end date   [yyyy-mm-dd or yyyy-mm-dd HH:MM[:SS]]
@@ -39,11 +39,15 @@ grid:                             # Parameters to build the vertical grid.
         dz: 2.0                   # Layer thickness in meters [default: 2.0, min=0.2]
         nlayers: off              # Alternatively, specify number of layers (integer)
     sediments:                    # Sediments grid, only used if biogeochemistry and sediments are enabled
-        depth: 0.5                # Total sediment depth [m]
-        dz_min: 0.001             # Minimum layer thickness at the sediment-water interface [m]
+        depth: 0.2                # Total sediment depth [m] [Minimum=0.03]
+        dz_min: 0.001             # Minimum layer thickness at the sediment-water interface [m. Default=0.001]
+        dz_max: 0.02              # Maximum layer thickness towards the bottom [m. Default=0.02]
+        dz_wat_btm: 0.2           # Thickness of the bottom layer in the water column [m. Default=0.1, min=0.1, max=1]
+                                  # When sediments are enabled, the bottom layers of the water column are adjusted so that the bottommost 
+                                  # layer lies within the logarithmic region ~0.1-1m used for sediment–water exchange (Umlauf et al., 2023).
 
 output:
-    file: output/test_npzd_carb      # File name; program adds nc (NetCDF). 
+    file: output/test_npzd_carb   # File name; program adds nc (NetCDF). 
     overwrite: yes                    # Overwrite in case the output file already exists [Default: no].
     frequency: daily                  # Time frequency [hourly, daily, custom. Default: daily].
     statistic: mean                   # Aggregation method for data over that time interval [mean, instant].
@@ -107,7 +111,7 @@ forcing:                                        # Variables for surface forcing
         constant: 0.0
     co2_air:
         mode:     constant
-        name:     null
+        name:     off
         filename: off
         constant: 400
     
@@ -117,7 +121,7 @@ tides:
     filename: input/s12_m2_s2_n2_h_map.dat     # Path to file containing tide parameters
     tol_deg: 0.1                               # Tolerance in degrees to find the closest gridpoint in the file
 
-    ellipse_params:                            # If read_from_file=false, specify tidal parameters here. Note: nan or missing values will be treated as zero.
+    ellipse_params:                            # If read_from_file=false, specify tidal parameters here. Note: null or missing values will be treated as zero.
         M2:                                    # Principal Lunar Semidiurnal
             semi_major: 20.691                      # Semi-Major Axis [cm/s]: The longest radius of the ellipse (maximum amplitude).
             semi_minor: -1.462                      # Semi-Minor Axis [cm/s]: The shortest radius of the ellipse (current amplitude).
@@ -161,10 +165,16 @@ physics:
         Nz_bg: 1.0e-6                 # Background viscosity [m2 s-1, default=1.0e-5]
         cnpar: 0.5                    # Crank-Nicholson parameter to solve diffusive mixing [default=0.5, min=0, max=1]
                                       # 0.5 for Cranck-Nicholson method, 0 for fully explicit using Forward Euler, 1 for fully implicit (Backward Euler), 0.5<cnpar<1 to follow a semi-implicit scheme.         
-    heat:     
-        lambda: 0.17                  # Heat vertical background attenuation coefficient (Kd) [m-1, default = 0.1]
-        chl_shading: 0.012            # Chl effect on heat attenuation - Not doing anything at the moment
-        lw_skin_penetration: 0.96     # Fraction of incoming LW that reaches below the skin [fraction, min=0, max=1, default=0.95]   
+    radiation:                         # Two-band shortwave radiation scheme (visible + non-visible)
+        nonvisible_fraction: 0.58      # Fraction of SWR in the non-visible band (UV+IR); visible fraction = 1 - frac_nonvisible
+        depth_nonvisible: 0.35         # [m] e-folding depth of non-visible band (rapid near-surface absorption)
+        depth_visible: 10.0            # [m] background e-folding depth of visible band in clear water (before any bio/particle shading)       
+        apply_bioshading_to_heat: yes   # Apply attenuation coefficient from bio/particle shading to shortwave heating (vertical heat absorption profile)
+        lw_skin_penetration: 0.96      # Fraction of incoming LW that reaches below the skin [fraction, min=0, max=1, default=0.95] 
+        # Photosyntetically Active Radiation (when biogeochemistry is enabled)
+        par_fraction: 0.45             # Fraction of shortwave radiation treated as Photosyntetically Active Radiation (PAR). PAR attenuates with the same background e-folding depth as the visible band
+        apply_bioshading: yes          # Apply FABM-provided attenuation coefficient (k_ext, m-1) to PAR decay 
+         
     output:
         all: no                       # Include all variables in the output file [default=no].
         temperature: yes              # Sea water temperature (in-situ) [default=yes].
@@ -190,21 +200,44 @@ physics:
         stressb: no                   # Bottom stress magnitude (Pa).
 
 
-#============================== BIOGEOCHEMISTRY COUPLED VIA FABM ======================
+#============================== BIOGEOCHEMISTRY COUPLED VIA FABM ========================================================================================================
 biogeochemistry:
     enabled: yes                 # Enable Biogeochemistry via FABM; if no, only physics is considered [default=no].
 
     config_file: fabm.yaml       # Path to FABM YAML config [default=fabm.yaml]
     repair_state: yes            # If yes, FABM will repair the state by clipping all variables to their configured bounds [default=no]
-    output_conserved_qt: no     # Include in the output file column-integrated totals (per unit area) of all FABM conserved quantities [default=no].
+    output_conserved_qt: yes     # Include in the output file column-integrated totals (per unit area) of all FABM conserved quantities [default=no].
 
     vertical_mixing:
-        cnpar: 0.5               # Crank-Nicholson parameter to solve diffusive mixing [default=0.5, min=0, max=1]
+        cnpar: 0.5               # Crank-Nicholson parameter to solve diffusive mixing in the water column [default=0.5, min=0, max=1]
                                  # 0.5 for Cranck-Nicholson method, 0 for fully explicit using Forward Euler, 1 for fully implicit (Backward Euler), 0.5<cnpar<1 to follow a semi-implicit scheme. 
     numerics:
        max_change: 0.1           # Maximum fractional change per state variable per main time-step. If tendencies exceed this fraction, the time-step will be adjusted for numerical stabiluty.
        min_timestep: 10          # Minimum timestep for inner subcycles to achieve numerical stability.
     sediments:
         enabled: no                 # Enable vertically resolved sediment biogeochemistry; if no, only water-column is considered [default=no].
-        sedimentation_rate: 3.0e-7  # Sedimentation rate (site-specific) [m s-1]
+        #--- Sediment accumulation -----------
+        sedimentation_rate: 0.3      # Downward burial velocity of sediment (site-specific) [cm yr-1]
+        sed_rate_depth:     5        # Reference depth for the sedimentation rate [cm] default = deepest sediment layer, min=0 (sediment-water interface).
+        # --- Porosity profile  ---               
+        porosity_surface:     0.95    # Porosity at the sediment–water interface. If equal to porosity_depth, porosity is constant with depth.
+        porosity_depth:       0.8     # Sediment porosity at a depth where compaction is stable.
+        porosity_decay_depth: 4       # Depth scale over which sediment porosity decreases exponentially with depth [cm].
+        # --- Bioturbation (particle mixing by fauna) ---
+        db_surface:                5.0  # Bioturbation diffusivity at the sediment surface (mixing intensity) [cm2 yr-1]
+        bioturbation_depth:        5    # Sediment mixed layer depth below which bioturbation decreases exponentially [cm]
+        bioturbation_decay_depth:  1    # Coefficient (decay depth) for exponential bioturbation decrease [cm]
+        # --- Bioirrigation (nonlocal porewater exchange with bottom water) ---
+        irrigation_surface:      200      # [yr-1] Exchange rate at the sediment-water interface (alpha0 in Aller's model)
+        irrigation_decay_depth:  2        # [cm] Decay depth for exponential attenuation of irrigation
+        #---- Numerics----------
+        cnpar_sed:  0.9                # Crank-Nicholson parameter to solve diffusive mixing [default=0.9, min=0, max=1]
+                                       # 0.5 for Cranck-Nicholson method, 0 for fully explicit using Forward Euler, 1 for fully implicit (Backward Euler), 0.5<cnpar<1 to follow a semi-implicit scheme.
+                                       # For sediment, it is recommended a value ~0.9. 
+
+    process_modules:
+        tracer_pulse:
+            enabled: no
+            config_file: tracer_pulse.yaml
+
 
