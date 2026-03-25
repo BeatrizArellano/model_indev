@@ -11,6 +11,7 @@ module shelfseas
   use precision_types,   only: rk, lk
   use read_config_yaml,  only: ConfigParams
   use sim_clocks,        only: init_clock, print_progress, simtime_to_datetime
+  use output_static,     only: StaticProfile, clear_static_profiles
   use time_types,        only: DateTime, CFCalendar
   use time_utils,        only: datetime_to_str
   use validation_utils,  only: validate_input_dates, validate_location_input, print_header
@@ -47,7 +48,8 @@ module shelfseas
   type(PhysicsEnv)      :: PE
   type(BioEnv), target  :: BE
   type(OutputManager)   :: OM
-  type(VarMetadata), allocatable :: all_vars(:)
+  type(VarMetadata),   allocatable :: all_vars(:)
+  type(StaticProfile), allocatable :: static_profs(:)
   character(:), allocatable :: time_units, calname
   
 
@@ -76,7 +78,7 @@ contains
         end if
 
         ! Build vertical grids: water, sediment (if enabled), and full grid
-        call build_grids(cfg_params, location%depth, is_bio_enabled, is_sed_enabled, wat_grid, sed_grid, full_grid)
+        call build_grids(cfg_params, location%depth, is_bio_enabled, is_sed_enabled, wat_grid, sed_grid, full_grid, static_profs)
 
         ! Verify and initialise forcing data
         call ForcMan%set_error_mode(stop_on_error)  
@@ -100,7 +102,7 @@ contains
         ! Initialise biogeochemistry if it's the case
         if (is_bio_enabled) then
             call init_bio_fabm(cfg_params, location, wat_grid, sed_grid, full_grid, &
-                               start_datetime, end_datetime, calendar, dt, PE%PS, ForcSnp, BE)
+                               start_datetime, end_datetime, calendar, dt, PE%PS, ForcSnp, BE, static_profs)
             nsed = BE%nsed
         else 
             nsed = 0
@@ -118,7 +120,7 @@ contains
 
         ! Initialise output manager and output file
         call OM%init(cfg_params, full_grid, dt_s=dt, time_units=time_units, calendar_name=calname, &
-                    vars=all_vars, loc=location, n_sed=nsed)
+                     vars=all_vars, loc=location, static_profiles=static_profs)
 
         is_main_initialized = .true.     
         
@@ -201,6 +203,7 @@ contains
         if (is_bio_enabled) then
             call end_bio_fabm(BE)
         end if
+        call clear_static_profiles(static_profs)
         call cfg_params%clear()
     end subroutine end_shelfseas 
 
