@@ -5,12 +5,14 @@ module sediment
     use grids,             only: VerticalGrid
     use precision_types,   only: rk
     use read_config_yaml,  only: ConfigParams
+    use output_static,     only: StaticProfile, init_static_profile, append_static_profile
+    use str_utils,         only: to_lower
     use tridiagonal,       only: init_tridiag, clear_tridiag
 
     implicit none
     private
 
-    public :: init_sediment, clear_sediment_env, write_tracer_properties
+    public :: init_sediment, output_sed_profiles, clear_sediment_env, write_tracer_properties
     public :: phase_to_bulk, bulk_to_phase, phase_to_bulk_all, bulk_to_phase_all
 
 contains
@@ -34,19 +36,32 @@ contains
         ! Allocate working arrays 
         call allocate_sed_arrays(SE)
 
+        SE%use_bioturbation       = (SE%params_SI%biot_mode /= 'off')
+        SE%use_bioirrigation      = (SE%params_SI%irr_mode  /= 'off')
+        SE%output_bioturb_dynamic = (SE%params_SI%biot_mode == 'dynamic')
+        SE%output_bioirr_dynamic  = (SE%params_SI%irr_mode  == 'dynamic')
+
         ! Compute profiles for sediment properties
         call compute_porosity_profile(grid, SE%params_SI, SE%poro, SE%poro_w, SE%theta2, SE%porewat_thickness, SE%solid_thickness)
-        call compute_bioturbation_profile(grid, SE%params_SI%biot_db_sfc, SE%params_SI%biot_mld, SE%params_SI%biot_ez, SE%bioturb)
-        call compute_bioirrigation_alpha(grid, SE%params_SI%irr_sfc, SE%params_SI%irr_ez, SE%bioirr, SE%bioirr_w)
+        if (SE%use_bioturbation) then
+            call compute_bioturbation_profile(grid, SE%params_SI%biot_db_sfc, SE%params_SI%biot_mld, SE%params_SI%biot_ez, SE%bioturb)
+        else 
+            SE%bioturb = 0.0_rk
+        end if
+        if (SE%use_bioirrigation) then
+            call compute_bioirrigation_alpha(grid, SE%params_SI%irr_sfc, SE%params_SI%irr_ez, SE%bioirr, SE%bioirr_w)
+        else 
+            SE%bioirr   = 0.0_rk
+            SE%bioirr_w = 0.0_rk
+        end if
         ! ---- Burial velocities (interfaces). 
         call compute_burial_velocities(SE%grid, SE%params_SI, SE%poro_w, SE%params_SI%sed_rate, SE%vel_solids, SE%vel_solutes)
-
 
         ! Initialise tridiagonal matrix
         call init_tridiag(SE%sed_trid, SE%nz)
 
         SE%is_init = .true.
-        call write_sediment_profiles('Sediment_profiles.dat',SE%grid, SE)
+        ! call write_sediment_profiles('Sediment_profiles.dat',SE%grid, SE)
     end subroutine init_sediment
 
     ! Convert from phase-specific concentrations to bulk-sediment concentrations
@@ -167,6 +182,214 @@ contains
         end do
     end subroutine bulk_to_phase_all
 
+    !! Clear sediment environment state and release memory.
+    !! Deallocates all sediment arrays, clears the tridiagonal workspace, resets flags/counters,
+    !! and nullifies the grid pointer.
+    subroutine clear_sediment_env(SE)
+        type(SedimentEnv), intent(inout) :: SE
+
+        ! ---- Deallocate allocatable arrays ----
+        if (allocated(SE%poro))       deallocate(SE%poro)
+        if (allocated(SE%porewat_thickness)) deallocate(SE%porewat_thickness)
+        if (allocated(SE%solid_thickness))  deallocate(SE%solid_thickness)
+        if (allocated(SE%bioirr))     deallocate(SE%bioirr)
+
+        if (allocated(SE%poro_w))   deallocate(SE%poro_w)
+        if (allocated(SE%theta2))   deallocate(SE%theta2)
+        if (allocated(SE%bioturb))  deallocate(SE%bioturb)
+        if (allocated(SE%bioirr_w)) deallocate(SE%bioirr_w)
+
+        if (allocated(SE%vel_solids))  deallocate(SE%vel_solids)
+        if (allocated(SE%vel_solutes)) deallocate(SE%vel_solutes)
+
+        if(allocated(SE%bulk_conc)) deallocate(SE%bulk_conc)
+        if(allocated(SE%diff_sed)) deallocate(SE%diff_sed)
+        if(allocated(SE%diff_sed0)) deallocate(SE%diff_sed0)
+        if(allocated(SE%diff_sed_max)) deallocate(SE%diff_sed_max)
+        if(allocated(SE%Db_eff_solids)) deallocate(SE%Db_eff_solids)
+        if(allocated(SE%swi_flux)) deallocate(SE%swi_flux)
+
+        ! ---- Reset workspace ----
+        call clear_tridiag(SE%sed_trid)
+
+        ! ---- Reset size/flags and pointer ----
+        SE%nz      = 0
+        SE%is_init = .false.
+        nullify(SE%grid)
+    end subroutine clear_sediment_env
+
+    subroutine output_sed_profiles(full_grid, nsed, porosity_full, SE, static_prof)
+        type(VerticalGrid),  intent(in)    :: full_grid
+        integer,             intent(in)    :: nsed
+        real(rk),            intent(in)    :: porosity_full(:)
+        type(SedimentEnv),   intent(in)    :: SE
+        type(StaticProfile), allocatable, intent(inout) :: static_prof(:)
+
+        type(StaticProfile) :: prof
+        integer :: nz_full
+        real(rk), allocatable :: centre_full(:)
+        real(rk), allocatable :: interface_full(:)
+
+        nz_full = full_grid%nz
+
+        if (nsed < 0 .or. nsed > nz_full) then
+            error stop 'output_sed_profiles: invalid nsed.'
+        end if
+
+        if (size(porosity_full) /= nz_full) then
+            error stop 'output_sed_profiles: porosity_full has wrong size.'
+        end if
+
+        if (nsed > 0) then
+            if (.not. allocated(SE%theta2))      error stop 'output_sed_profiles: SE%theta2 not allocated.'
+            if (.not. allocated(SE%vel_solids))  error stop 'output_sed_profiles: SE%vel_solids not allocated.'
+            if (.not. allocated(SE%vel_solutes)) error stop 'output_sed_profiles: SE%vel_solutes not allocated.'
+            if (SE%use_bioirrigation .and. .not. SE%output_bioirr_dynamic) then
+                if (.not. allocated(SE%bioirr))  error stop 'output_sed_profiles: SE%bioirr not allocated.'
+            end if
+            if (SE%use_bioturbation .and. .not. SE%output_bioturb_dynamic) then
+                if (.not. allocated(SE%bioturb)) error stop 'output_sed_profiles: SE%bioturb not allocated.'
+            end if
+        end if
+
+        !============================================================
+        ! Sediment mask on full grid (centres)
+        !============================================================
+        allocate(centre_full(nz_full))
+        centre_full = 0.0_rk
+        if (nsed > 0) centre_full(1:nsed) = 1.0_rk
+
+        call init_static_profile(p            = prof, &
+                                 name         = 'sediment_mask', &
+                                 long_name    = 'Mask for sediment layers (1=sediment, 0=water)', &
+                                 units        = '1', &
+                                 profile_data = centre_full, &
+                                 vert_coord   = 'centre' )
+        prof%has_min   = .true.
+        prof%valid_min = 0.0_rk
+        prof%has_max   = .true.
+        prof%valid_max = 1.0_rk
+        call append_static_profile(static_prof, prof)
+        deallocate(centre_full)
+
+        !============================================================
+        ! Porosity on full grid (centres)
+        ! Water column naturally has porosity = 1
+        !============================================================
+        call init_static_profile(p            = prof, &
+                                 name         = 'porosity', &
+                                 long_name    = 'Porosity', &
+                                 units        = '1', &
+                                 profile_data = porosity_full, &
+                                 vert_coord   = 'centre' )
+        prof%has_min   = .true.
+        prof%valid_min = 0.0_rk
+        prof%has_max   = .true.
+        prof%valid_max = 1.0_rk
+        call append_static_profile(static_prof, prof)
+
+        !============================================================
+        ! Tortuosity squared on full grid (centres)
+        ! Neutral extension into water column: 1
+        !============================================================
+        allocate(centre_full(nz_full))
+        centre_full = 1.0_rk
+        if (nsed > 0) centre_full(1:nsed) = SE%theta2(1:nsed)
+
+        call init_static_profile(p            = prof, &
+                                 name         = 'tortuosity2', &
+                                 long_name    = 'Tortuosity squared', &
+                                 units        = '1', &
+                                 profile_data = centre_full, &
+                                 vert_coord   = 'centre' )
+        prof%has_min   = .true.
+        prof%valid_min = 1.0_rk
+        call append_static_profile(static_prof, prof)
+        deallocate(centre_full)
+
+        !============================================================
+        ! Bioirrigation on full grid (centres)
+        ! Zero in water column
+        !============================================================
+        if (SE%use_bioirrigation .and. .not. SE%output_bioirr_dynamic) then
+            allocate(centre_full(nz_full))
+            centre_full = 0.0_rk
+            if (nsed > 0) centre_full(1:nsed) = SE%bioirr(1:nsed)
+
+            call init_static_profile(p          = prof,            &
+                                     name       = 'bioirrigation', &
+                                     long_name  = 'Bioirrigation coefficient', &
+                                     units      = 's-1', &
+                                     profile_data = centre_full, &
+                                     vert_coord = 'centre' )
+            prof%has_min   = .true.
+            prof%valid_min = 0.0_rk
+            call append_static_profile(static_prof, prof)
+            deallocate(centre_full)
+        end if
+
+        !============================================================
+        ! Bioturbation on full grid (interfaces)
+        ! Zero in water column
+        !
+        ! StaticProfile stores interface data as a packed 1..nz+1 array.
+        ! Mapping from SE arrays with 0:nsed indexing:
+        !   packed(i+1) <-> interface i
+        !============================================================
+        if (SE%use_bioturbation .and. .not. SE%output_bioturb_dynamic) then
+            allocate(interface_full(nz_full + 1))
+            interface_full = 0.0_rk
+            if (nsed > 0) interface_full(1:nsed+1) = SE%bioturb(0:nsed)
+
+            call init_static_profile(p          = prof, &
+                                     name       = 'bioturbation', &
+                                     long_name  = 'Bioturbation coefficient', &
+                                     units      = 'm2 s-1', &
+                                     profile_data = interface_full, &
+                                     vert_coord = 'interface' )
+            prof%has_min   = .true.
+            prof%valid_min = 0.0_rk
+            call append_static_profile(static_prof, prof)
+            deallocate(interface_full)
+        end if
+
+        !============================================================
+        ! Burial velocity of solids on full grid (interfaces)
+        ! Zero in water column
+        !============================================================
+        allocate(interface_full(nz_full + 1))
+        interface_full = 0.0_rk
+        if (nsed > 0) interface_full(1:nsed+1) = SE%vel_solids(0:nsed)
+
+        call init_static_profile(p          = prof, &
+                                 name       = 'burial_velocity_solids', &
+                                 long_name  = 'Burial velocity of solids', &
+                                 units      = 'm s-1', &
+                                 profile_data = interface_full, &
+                                 vert_coord = 'interface' )
+        call append_static_profile(static_prof, prof)
+        deallocate(interface_full)
+
+        !============================================================
+        ! Burial velocity of solutes / porewater on full grid (interfaces)
+        ! Zero in water column
+        !============================================================
+        allocate(interface_full(nz_full + 1))
+        interface_full = 0.0_rk
+        if (nsed > 0) interface_full(1:nsed+1) = SE%vel_solutes(0:nsed)
+
+        call init_static_profile(p          = prof, &
+                                 name       = 'burial_velocity_solutes', &
+                                 long_name  = 'Burial velocity of porewater', &
+                                 units      = 'm s-1', &
+                                 profile_data = interface_full, &
+                                 vert_coord = 'interface' )
+        call append_static_profile(static_prof, prof)
+        deallocate(interface_full)
+
+    end subroutine output_sed_profiles
+
+
 
     !==================== SEDIMENT PROFILES=========================================
     !! Compute porosity and tortuosity profiles from an exponential compaction law.
@@ -217,7 +440,7 @@ contains
         real(rk),           intent(in)  :: db_surface               ! [m2/s]
         real(rk),           intent(in)  :: bioturbation_depth       ! [m] thickness of well-mixed layer
         real(rk),           intent(in)  :: bioturbation_decay_depth ! [m] e-folding scale below that
-        real(rk),           intent(out) :: Db_int(0:grid%nz)             ! [m2/s] interfaces (0:nz)
+        real(rk),           intent(out) :: Db_int(0:grid%nz)        ! [m2/s] interfaces (0:nz)
 
         integer :: nz, i
         real(rk) :: z, zdec
@@ -329,6 +552,8 @@ contains
         ! Copy porosity params (dimensionless)
         si%poro_sfc  = user%poro_sfc
         si%poro_deep = user%poro_deep
+        si%biot_mode = to_lower(user%biot_mode)
+        si%irr_mode  = to_lower(user%irr_mode)
 
         ! Depth scales: cm -> m
         si%poro_decay    = user%poro_decay    * cm_to_m
@@ -588,43 +813,6 @@ contains
             s = adjustl(s)
         end function fmt_real
 
-    end subroutine write_tracer_properties
-
-
-    !! Clear sediment environment state and release memory.
-    !! Deallocates all sediment arrays, clears the tridiagonal workspace, resets flags/counters,
-    !! and nullifies the grid pointer.
-    subroutine clear_sediment_env(SE)
-        type(SedimentEnv), intent(inout) :: SE
-
-        ! ---- Deallocate allocatable arrays ----
-        if (allocated(SE%poro))       deallocate(SE%poro)
-        if (allocated(SE%porewat_thickness)) deallocate(SE%porewat_thickness)
-        if (allocated(SE%solid_thickness))  deallocate(SE%solid_thickness)
-        if (allocated(SE%bioirr))     deallocate(SE%bioirr)
-
-        if (allocated(SE%poro_w))   deallocate(SE%poro_w)
-        if (allocated(SE%theta2))   deallocate(SE%theta2)
-        if (allocated(SE%bioturb))  deallocate(SE%bioturb)
-        if (allocated(SE%bioirr_w)) deallocate(SE%bioirr_w)
-
-        if (allocated(SE%vel_solids))  deallocate(SE%vel_solids)
-        if (allocated(SE%vel_solutes)) deallocate(SE%vel_solutes)
-
-        if(allocated(SE%bulk_conc)) deallocate(SE%bulk_conc)
-        if(allocated(SE%diff_sed)) deallocate(SE%diff_sed)
-        if(allocated(SE%diff_sed0)) deallocate(SE%diff_sed0)
-        if(allocated(SE%diff_sed_max)) deallocate(SE%diff_sed_max)
-        if(allocated(SE%Db_eff_solids)) deallocate(SE%Db_eff_solids)
-        if(allocated(SE%swi_flux)) deallocate(SE%swi_flux)
-
-        ! ---- Reset workspace ----
-        call clear_tridiag(SE%sed_trid)
-
-        ! ---- Reset size/flags and pointer ----
-        SE%nz      = 0
-        SE%is_init = .false.
-        nullify(SE%grid)
-    end subroutine clear_sediment_env
+    end subroutine write_tracer_properties    
 
 end module sediment
