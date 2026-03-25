@@ -4,6 +4,7 @@ module sediment
     use bio_params,        only: SedParams, read_sed_parameters
     use grids,             only: VerticalGrid
     use precision_types,   only: rk
+    use precision_utils,   only: get_nan_rk
     use read_config_yaml,  only: ConfigParams
     use output_static,     only: StaticProfile, init_static_profile, append_static_profile
     use str_utils,         only: to_lower
@@ -293,7 +294,7 @@ contains
         ! Neutral extension into water column: 1
         !============================================================
         allocate(centre_full(nz_full))
-        centre_full = 1.0_rk
+        centre_full = get_nan_rk()
         if (nsed > 0) centre_full(1:nsed) = SE%theta2(1:nsed)
 
         call init_static_profile(p            = prof, &
@@ -304,6 +305,8 @@ contains
                                  vert_coord   = 'centre' )
         prof%has_min   = .true.
         prof%valid_min = 1.0_rk
+        prof%has_missing   = .true.
+        prof%missing_value = get_nan_rk()
         call append_static_profile(static_prof, prof)
         deallocate(centre_full)
 
@@ -313,7 +316,7 @@ contains
         !============================================================
         if (SE%use_bioirrigation .and. .not. SE%output_bioirr_dynamic) then
             allocate(centre_full(nz_full))
-            centre_full = 0.0_rk
+            centre_full = get_nan_rk()
             if (nsed > 0) centre_full(1:nsed) = SE%bioirr(1:nsed)
 
             call init_static_profile(p          = prof,            &
@@ -324,6 +327,8 @@ contains
                                      vert_coord = 'centre' )
             prof%has_min   = .true.
             prof%valid_min = 0.0_rk
+            prof%has_missing   = .true.
+            prof%missing_value = get_nan_rk()
             call append_static_profile(static_prof, prof)
             deallocate(centre_full)
         end if
@@ -338,7 +343,7 @@ contains
         !============================================================
         if (SE%use_bioturbation .and. .not. SE%output_bioturb_dynamic) then
             allocate(interface_full(nz_full + 1))
-            interface_full = 0.0_rk
+            interface_full = get_nan_rk()
             if (nsed > 0) interface_full(1:nsed+1) = SE%bioturb(0:nsed)
 
             call init_static_profile(p          = prof, &
@@ -349,6 +354,8 @@ contains
                                      vert_coord = 'interface' )
             prof%has_min   = .true.
             prof%valid_min = 0.0_rk
+            prof%has_missing   = .true.
+            prof%missing_value = get_nan_rk()
             call append_static_profile(static_prof, prof)
             deallocate(interface_full)
         end if
@@ -358,7 +365,7 @@ contains
         ! Zero in water column
         !============================================================
         allocate(interface_full(nz_full + 1))
-        interface_full = 0.0_rk
+        interface_full = get_nan_rk()
         if (nsed > 0) interface_full(1:nsed+1) = SE%vel_solids(0:nsed)
 
         call init_static_profile(p          = prof, &
@@ -367,6 +374,10 @@ contains
                                  units      = 'm s-1', &
                                  profile_data = interface_full, &
                                  vert_coord = 'interface' )
+        prof%has_max   = .true.
+        prof%valid_max = 0.0_rk
+        prof%has_missing   = .true.
+        prof%missing_value = get_nan_rk()
         call append_static_profile(static_prof, prof)
         deallocate(interface_full)
 
@@ -375,7 +386,7 @@ contains
         ! Zero in water column
         !============================================================
         allocate(interface_full(nz_full + 1))
-        interface_full = 0.0_rk
+        interface_full = get_nan_rk()
         if (nsed > 0) interface_full(1:nsed+1) = SE%vel_solutes(0:nsed)
 
         call init_static_profile(p          = prof, &
@@ -384,6 +395,10 @@ contains
                                  units      = 'm s-1', &
                                  profile_data = interface_full, &
                                  vert_coord = 'interface' )
+        prof%has_max   = .true.
+        prof%valid_max = 0.0_rk
+        prof%has_missing   = .true.
+        prof%missing_value = get_nan_rk()
         call append_static_profile(static_prof, prof)
         deallocate(interface_full)
 
