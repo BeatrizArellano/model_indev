@@ -12,10 +12,11 @@ module bio_main
     use pressure,            only: compute_pressure 
     use precision_types,     only: rk, lk
     use read_config_yaml,    only: ConfigParams
-    use sediment,            only: init_sediment, clear_sediment_env, write_tracer_properties, &
+    use sediment,            only: init_sediment, output_sed_profiles, clear_sediment_env, write_tracer_properties, &
                                    phase_to_bulk, bulk_to_phase, phase_to_bulk_all, bulk_to_phase_all
     use sediment_diffusion,  only: scalar_diffusion_sed
     use sediment_exchange,   only: compute_solute_flux_swi, apply_particulate_deposition, apply_bioirrigation
+    use output_static,       only: StaticProfile
     use time_types,          only: DateTime, CFCalendar
     use tridiagonal,         only: init_tridiag, clear_tridiag
     use variable_registry,   only: register_variable, output_all_variables
@@ -31,7 +32,7 @@ module bio_main
 
 contains
 
-    subroutine init_bio_fabm(cfg, location, wat_grid, sed_grid, full_grid, sim_startdate, sim_enddate, cal, timestep, PS, FS, BE)
+    subroutine init_bio_fabm(cfg, location, wat_grid, sed_grid, full_grid, sim_startdate, sim_enddate, cal, timestep, PS, FS, BE, static_prof)
         type(ConfigParams),       intent(in) :: cfg
         type(LocationInfo),       intent(in) :: location
         type(VerticalGrid),       intent(in) :: wat_grid
@@ -43,6 +44,7 @@ contains
         type(PhysicsState),       intent(in) :: PS
         type(ForcingSnapshot),    intent(in) :: FS
         type(BioEnv),          intent(inout) :: BE
+        type(StaticProfile),   allocatable, intent(inout) :: static_prof(:)
 
         integer  :: ivar, nz, nint, nsfc, nbtm
         integer  :: n_total_int_diag, n_save_int, j
@@ -59,6 +61,7 @@ contains
         BE%nwat     = BE%wat_grid%nz
         BE%grid     = full_grid
         BE%sed_grid = sed_grid
+        nz          = BE%grid%nz             ! Number of vertical layers in the full grid (water-only or water+sediments if it's the case)    
 
         if (BE%params%sediments_enabled) then
             if (full_grid%nz /= sed_grid%nz + wat_grid%nz) stop 'init_bio_fabm: full_grid size mismatch'
@@ -70,6 +73,15 @@ contains
             BE%k_sed_sfc = BE%nsed             ! Layer of sediments at Sediment-water interface
             BE%k_wat_btm = BE%nsed + 1         ! Index for deepest water layer
             BE%k_wat_sfc = BE%nsed + BE%nwat   
+
+            ! Set full-column porosity values
+            if (.not. allocated(BE%BS%porosity)) allocate(BE%BS%porosity(nz))
+            BE%BS%porosity = 1.0_rk
+            BE%BS%porosity(1:BE%nsed) = BE%SED%poro(1:BE%nsed)
+
+            ! Build static profiles for output file (porosity and sedimetn mask)
+            call output_sed_profiles(BE%grid, BE%nsed, BE%BS%porosity, BE%SED, static_prof)
+            
             if (BE%SED%is_init) then
                 write(*,'("  ✓ Sediments initialised successfully with ",I0," layers.")') BE%nsed
             end if
@@ -80,7 +92,7 @@ contains
             BE%k_wat_btm = 1
             BE%k_wat_sfc = BE%nwat
         end if
-        nz  = BE%grid%nz                  ! Number of vertical layers in the full grid (water-only or water+sediments if it's the case)     
+         
 
         ! Initialize (reads FABM configuration from fabm.yaml)
         ! After this the number of biogeochemical variables is fixed.
@@ -204,11 +216,11 @@ contains
                             stop 1
                         end select
                     end if
+                    ! Write dat file with information of the tracer properties
+                    call write_tracer_properties(BE, 'tracer_properties.dat')
                 end if                        
             end do
             if (allocated(BE%int_vars)) call output_all_variables(BE%int_vars)
-            ! Write dat file with information of the tracer properties
-            call write_tracer_properties(BE, 'tracer_properties.dat')
         end if
 
         ! Allocating working arrays        
@@ -216,7 +228,7 @@ contains
         allocate(BE%tendency_int_evt(nz,nint))                    ! Sources from external events (dC/dt) 
         allocate(BE%tendency_int_total(nz,nint))                  ! Total sources FABM + external (dC/dt) 
         allocate(BE%velocity(nz,nint))                            ! Velocities
-        allocate(BE%vel_faces(0:nz,nint))                         ! Velocities at interfaces for the water column
+        allocate(BE%vel_faces(0:nz,nint))                         ! Velocities at interfaces
         allocate(BE%flux_sf(nint));    allocate(BE%flux_bt(nint)) ! Fluxes at the surface and bottom of interior variables 
 
         ! --- Bottom-only state variables ---
@@ -443,8 +455,8 @@ contains
         if (BE%need_par .and. .not. allocated(BE%BS%par)) then
             allocate(BE%BS%par(nz))
             call register_variable(BE%env_int_vars,                                &
-                                    name='env_par',                                                     &
-                                    long_name='Downwelling Photosynthetic Active Radiation',         &
+                                    name='env_par',                                                 &
+                                    long_name='Downwelling Photosynthetic Active Radiation',        &
                                     units='W m-2',                                                  &
                                     vert_coord='centre', n_space_dims=1,                            &
                                     data_1d=BE%BS%par)
@@ -463,6 +475,29 @@ contains
             stop 1
         end if       
 
+        !----- Dynamic sediment properties to output
+        if (BE%params%sediments_enabled) then
+            if(BE%SED%output_bioirr_dynamic) then
+                if(allocated(BE%BS%full_bioirr)) deallocate(BE%BS%full_bioirr)
+                allocate(BE%BS%full_bioirr(nz)) 
+                BE%BS%full_bioirr = 0._rk
+                call register_variable(BE%env_int_vars, name='bioirrigation', &
+                                       long_name='Bioirrigation coefficient', &
+                                       units='s-1', vert_coord='centre', n_space_dims=1, &
+                                       data_1d=BE%BS%full_bioirr)
+            end if
+            if(BE%SED%output_bioturb_dynamic) then
+                if(allocated(BE%BS%full_biotur)) deallocate(BE%BS%full_biotur)
+                allocate(BE%BS%full_biotur(0:nz)) 
+                BE%BS%full_biotur = 0._rk
+                
+                call register_variable(BE%env_int_vars, name='bioturbation', &
+                                       long_name='Bioturbation coefficient (Db)', &
+                                       units='m2 s-1', vert_coord='interface', n_space_dims=1, &
+                                       data_1d=BE%BS%full_biotur)
+            end if
+        end if
+
         if (allocated(BE%env_int_vars)) call output_all_variables(BE%env_int_vars)
 
         if (allocated(BE%BS%temp)) BE%BS%temp = 0._rk
@@ -477,6 +512,7 @@ contains
         if (BE%need_pres) call BE%model%link_interior_data(BE%id_pres, BE%BS%pres)
         if (BE%need_swr ) call BE%model%link_interior_data(BE%id_swr,  BE%BS%swr)
         if (BE%need_par ) call BE%model%link_interior_data(BE%id_par,  BE%BS%par)
+        if (BE%params%sediments_enabled) call BE%model%link_interior_data(BE%porosity, BE%BS%porosity)
 
         call BE%model%link_horizontal_data(BE%id_windspd, BE%BS%wind_spd)
         call BE%model%link_horizontal_data(BE%id_slp,     BE%BS%slp)
@@ -697,7 +733,11 @@ contains
                 BE%SED%diff_sed_max(k) = BE%SED%poro_w(k) * D0_max / max(BE%SED%theta2(k), 1.0e-12_rk)
             end do
             ! Compute effective biodiffusivities for particulates
-            BE%SED%Db_eff_solids(0:nsed) = max(0.0_rk, (1.0_rk - BE%SED%poro_w(0:nsed)) * BE%SED%bioturb(0:nsed))
+            if (BE%SED%use_bioturbation) then
+                BE%SED%Db_eff_solids(0:nsed) = max(0.0_rk, (1.0_rk - BE%SED%poro_w(0:nsed)) * BE%SED%bioturb(0:nsed))
+            else
+                BE%SED%Db_eff_solids(0:nsed) = 0.0_rk
+            end if
         end if
         ! Compute number of subcycles needed for numerical stabiluty in the water column
         call compute_bio_substeps(BE, dt_main, BE%params%frac_max, BE%params%min_dt, &
@@ -837,16 +877,18 @@ contains
                         !  Bioirrigation (only for solutes)
                         !-------------------------------------------------------------
                         ! NOTE: bioirrigation of solutes is done on porewater concentrations 
-                        call apply_bioirrigation(dt=dt_sub, nsed=nsed, ntotal=nz, alpha=BE%SED%bioirr, &
-                                                 porewat_thickness=BE%SED%porewat_thickness, dz_wat_btm=BE%wat_grid%dz(1), &
-                                                 k_wat_btm=kwb, concentration=BE%BS%interior_state(:, ivar))
+                        if (BE%SED%use_bioirrigation) then
+                            call apply_bioirrigation(dt=dt_sub, nsed=nsed, ntotal=nz, alpha=BE%SED%bioirr, &
+                                                    porewat_thickness=BE%SED%porewat_thickness, dz_wat_btm=BE%wat_grid%dz(1), &
+                                                    k_wat_btm=kwb, concentration=BE%BS%interior_state(:, ivar))
+                        end if
 
                     end if
 
                     !---------------------------------------------------------
                     ! BIOTURBATION: only on particulate matter (solids)
                     !----------------------------------------------------------
-                    if (BE%tracer_info(ivar)%is_particulate) then
+                    if (BE%SED%use_bioturbation .and. BE%tracer_info(ivar)%is_particulate) then
 !                       ! NOTE: Bioturbation is modelled as a bioduiffusivity process on concentrations per solid volume
                         call scalar_diffusion_sed(Var=BE%BS%interior_state(1:nsed, ivar), N=nsed, dt=dt_sub,   &
                                                   h=BE%sed_grid%dz, phase_thickness=BE%SED%solid_thickness, &
@@ -870,10 +912,10 @@ contains
                         vel_swi = BE%velocity(kwb, ivar)
                         call apply_particulate_deposition(Cw_bot        = BE%BS%interior_state(kwb, ivar), &
                                                           dz_w_bot      = BE%wat_grid%dz(1), &
-                                                          vel_swi       = vel_swi, &
-                                                          dt            = dt_sub, &
-                                                          dz_sed_top    = BE%sed_grid%dz(nsed), &
-                                                          Cbulk_sed_top = BE%SED%bulk_conc(nsed, ivar))    
+                                                          vel_swi       = vel_swi,           &
+                                                          dt            = dt_sub,            &
+                                                          dz_sed_top    = BE%sed_grid%dz(kss), &
+                                                          Cbulk_sed_top = BE%SED%bulk_conc(kss, ivar))    
                     end if
                 end do
                 !----------------------------------------------------------------
@@ -883,11 +925,11 @@ contains
                     if (BE%tracer_info(ivar)%disable_transport) cycle
                     if (BE%tracer_info(ivar)%is_solute) then
                         ! Porewater burial
-                        call apply_vertical_transport(BE%SED%bulk_conc(:, ivar),BE%sed_grid, BE%SED%vel_solutes, &
+                        call apply_vertical_transport(BE%SED%bulk_conc(:, ivar),BE%sed_grid, BE%SED%vel_solutes, &                                                      
                                                       dt_sub, bottom_outflow_only = .true.)
                     else
                         ! Solids burial                        
-                        call apply_vertical_transport(BE%SED%bulk_conc(:, ivar), BE%sed_grid, BE%SED%vel_solids, &
+                        call apply_vertical_transport(BE%SED%bulk_conc(:, ivar), BE%sed_grid, BE%SED%vel_solids, &                                                        
                                                       dt_sub, bottom_outflow_only = .true.)                      
                     end if
                 end do
@@ -1028,6 +1070,9 @@ contains
         if (allocated(BE%BS%par))       deallocate(BE%BS%par)
         if (allocated(BE%BS%vert_diff)) deallocate(BE%BS%vert_diff)
         if (allocated(BE%BS%atten_coeff)) deallocate(BE%BS%atten_coeff)
+        if (allocated(BE%BS%porosity))  deallocate(BE%BS%porosity)
+        if(allocated(BE%BS%full_bioirr)) deallocate(BE%BS%full_bioirr)
+        if(allocated(BE%BS%full_biotur)) deallocate(BE%BS%full_biotur)  
 
         if(associated(BE%atten_ptr)) nullify(BE%atten_ptr)
 
@@ -1143,7 +1188,8 @@ contains
         BE%need_swr_sfc = .false.
         BE%need_cloud   = .false.
         BE%need_stressb = .false.
-        BE%need_co2     = .false.        
+        BE%need_co2     = .false.  
+        BE%need_ice_af  = .false.      
 
         BE%is_init = .false.
     end subroutine end_bio_fabm
@@ -1232,6 +1278,21 @@ contains
         if (BE%need_par) then
             BE%BS%par(kwb:kws) = PS%par(1:nwat)
             if (BE%params%sediments_enabled) BE%BS%par(1:nsed) = 0.0_rk
+        end if
+
+        ! Extending bioturbation and bioirrigation arrays when they're dynamic for output
+        if (BE%params%sediments_enabled) then
+            ! Bioirrigation on full column (centres)
+            if (allocated(BE%BS%full_bioirr) .and. BE%SED%output_bioirr_dynamic) then
+                BE%BS%full_bioirr = 0.0_rk
+                BE%BS%full_bioirr(1:nsed) = BE%SED%bioirr(1:nsed)
+            end if
+
+            ! Bioturbation on full column
+            if (allocated(BE%BS%full_biotur) .and. BE%SED%output_bioturb_dynamic) then
+                BE%BS%full_biotur = 0.0_rk
+                BE%BS%full_biotur(0:nsed) = BE%SED%bioturb(0:nsed)
+            end if
         end if
 
     end subroutine update_environment_data
