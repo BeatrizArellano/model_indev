@@ -3,6 +3,7 @@ module bio_types
     use event_manager,     only: EventManager   
     use fabm,              only: type_fabm_model, type_fabm_interior_variable_id, &
                                  type_fabm_horizontal_variable_id, type_fabm_scalar_variable_id
+    use fabm_types,        only: type_interior_standard_variable
     use grids,             only: VerticalGrid
     use precision_types,   only: rk, lk
     use tridiagonal,       only: TridiagCoeff    
@@ -36,6 +37,10 @@ module bio_types
     real(rk), allocatable :: swr(:),  par(:)                 ! PAR profile [W/m2]  (optional)      
     real(rk), allocatable :: atten_coeff(:)                  ! [m-1] attenuation coefficient for PAR, size N
     real(rk), allocatable :: vert_diff(:)                    ! vertical diffusivity
+    ! Sediment arrays (defined for the full column)
+    real(rk), allocatable :: porosity(:)                     ! Porosity
+    real(rk), allocatable :: full_biotur(:)                  ! Bioturbation
+    real(rk), allocatable :: full_bioirr(:)                  ! Bioirrigation
     ! Surface variables
     real(rk) :: short_rad  = 0._rk
     real(rk) :: par_sfc    = 0._rk                          ! surface PAR [W/m2] (optional)
@@ -111,7 +116,7 @@ module bio_types
 
       ! ---- Properties at layer interfaces (0:nz)
       real(rk), allocatable :: poro_w(:)     ! [-] porosity at interfaces
-      real(rk), allocatable :: theta2(:)      ! [-] Diffusion tortuosity factor (Boudreau 1997), used as D_eff = D0 / theta2
+      real(rk), allocatable :: theta2(:)     ! [-] Diffusion tortuosity factor (Boudreau 1997), used as D_eff = D0 / theta2
       real(rk), allocatable :: bioturb(:)    ! [m2/s] particulate diffusivity    
       real(rk), allocatable :: bioirr_w(:)   ! [s-1] 
       ! --- Burial velocities
@@ -125,6 +130,11 @@ module bio_types
       real(rk), allocatable :: diff_sed_max(:)     ! Array to store maximum effective diffusivities scaled by tortuosity for all tracers
       real(rk), allocatable :: Db_eff_solids(:)    ! Array to store effective bioturbation diffusivity (scaled by 1-phi)
       real(rk), allocatable :: swi_flux(:)         ! Flux of solutes at the sediment-water interface (tracer specific)
+      ! --- Runtime flags 
+      logical :: use_bioturbation        = .false.
+      logical :: use_bioirrigation       = .false.
+      logical :: output_bioturb_dynamic  = .false.
+      logical :: output_bioirr_dynamic   = .false.
       ! Working space
     type(TridiagCoeff)      :: sed_trid            ! workspace for solving scalar diffusion
   end type SedimentEnv  
@@ -149,27 +159,30 @@ module bio_types
     type(EventManager) :: Events
 
     !------------ FABM environment variable ids
+    type (type_interior_standard_variable)  :: porosity = type_interior_standard_variable(name='porosity', units='1')
     type (type_fabm_interior_variable_id)   :: id_temp, id_salt, id_rho, id_swr, id_par, id_pres, id_atten
     type (type_fabm_horizontal_variable_id) :: id_windspd, id_par_sfc, id_slp, id_cloud, id_stressb, id_swr_sfc, id_co2, id_ice_af
     type (type_fabm_scalar_variable_id)     :: id_yearday
+    
     ! Which env vars are actually needed?
-    logical :: need_temp    = .false.
-    logical :: need_salt    = .false.
-    logical :: need_rho     = .false.
-    logical :: need_pres    = .false.
-    logical :: need_par     = .false.
-    logical :: need_swr     = .false.
-    logical :: need_windspd = .false.
-    logical :: need_slp     = .false.
-    logical :: need_par_sfc = .false.
-    logical :: need_swr_sfc = .false.
-    logical :: need_cloud   = .false.
-    logical :: need_stressb = .false.
-    logical :: need_co2     = .false.
-    logical :: need_ice_af  = .false.                          ! Ice area fraction
+    logical :: need_temp     = .false.
+    logical :: need_salt     = .false.
+    logical :: need_rho      = .false.
+    logical :: need_pres     = .false.
+    logical :: need_par      = .false.
+    logical :: need_swr      = .false.
+    logical :: need_windspd  = .false.
+    logical :: need_slp      = .false.
+    logical :: need_par_sfc  = .false.
+    logical :: need_swr_sfc  = .false.
+    logical :: need_cloud    = .false.
+    logical :: need_stressb  = .false.
+    logical :: need_co2      = .false.
+    logical :: need_ice_af   = .false.                          ! Ice area fraction
     logical :: is_init = .false.                               ! has biogeochemistry been initialised?
     ! Pointer to attenuation coefficient
     real(rk), pointer :: atten_ptr(:) => null()
+
     ! Working space
     type(TridiagCoeff)     :: wat_trid                             ! workspace for solving scalar diffusion
     ! Interior diagnostics 
