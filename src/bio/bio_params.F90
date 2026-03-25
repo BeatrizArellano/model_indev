@@ -43,12 +43,14 @@ module bio_params
         !--- Porosity
         real(rk) :: poro_sfc                ! Porosity at SWI [-]
         real(rk) :: poro_deep               ! Asymptotic porosity at depth [-]
-        real(rk) :: poro_decay              ! Decay depth for porosity exponential decay (user: cm; SI: m)
+        real(rk) :: poro_decay              ! Decay depth for porosity exponential decay (user: cm; SI: m)     
         !--- Bioturbation
+        character(:), allocatable :: biot_mode ! off | static | dynamic
         real(rk) :: biot_db_sfc             ! Bioturbation diffusivity at the sediment surface (user: cm2/yr; SI: m2/s)
         real(rk) :: biot_mld                ! Thickness of Sediment mixed layer depth below which bioturbation decreases exponentially (user: cm; SI: m)
         real(rk) :: biot_ez                 ! Coefficient (decay depth) for exponential bioturbation decrease (user: cm; SI: m)
         !--- Bioirrigation
+        character(:), allocatable :: irr_mode ! off | static | dynamic
         real(rk) :: irr_sfc                ! Exchange rate at the sediment-water interface (user: 1/yr; SI: 1/s) (alpha0 in Aller's model)
         real(rk) :: irr_ez                 ! Decay depth for exponential attenuation of irrigation (user: cm; SI: m)
         ! --- Numerics
@@ -78,6 +80,8 @@ module bio_params
     real(rk), parameter :: def_irr_sfc    = 200_rk        ! Irrigation rate at the sediment-water interface [yr-1]
     real(rk), parameter :: def_irr_ez     = 2.0_rk        ! Decay depth for exponential attenuation of irrigation [cm]
     real(rk), parameter :: def_cnpar_sed  = 0.9_rk        ! Crank-Nicolson parameter to solve diffusive mixing [-]
+    character(len=*), parameter :: def_biot_mode = 'static'
+    character(len=*), parameter :: def_irr_mode  = 'static'
     !-------------------------------------------------------------------------------------------------------------
 
 
@@ -101,6 +105,35 @@ contains
     end subroutine read_bio_parameters
 
 
+    ! Reading parameters relevant for sediments in units commonly reported in the literature
+    subroutine read_sed_parameters(cfg_params, SedP)
+        type(ConfigParams), intent(in)  :: cfg_params
+        type(SedParams),    intent(out) :: SedP
+
+        character(len=7), parameter :: mode_choices(3) = [ character(len=7) :: 'off', 'static', 'dynamic' ]
+
+        SedP = default_sed_params()
+
+        ! --------- Sedimentation rate -----------
+        SedP%sed_rate      = cfg_params%get_param_num('biogeochemistry.sediments.sedimentation_rate', default=def_sed_rate, finite=.true., min=0.0_rk)
+        ! ---------------- Porosity profile ----------------
+        SedP%poro_sfc   = cfg_params%get_param_num('biogeochemistry.sediments.porosity_surface', default=def_poro_sfc, finite=.true., min=0.0_rk, max=1._rk)
+        SedP%poro_deep  = cfg_params%get_param_num('biogeochemistry.sediments.porosity_depth', default=def_poro_deep, finite=.true., min=0.0_rk, max=SedP%poro_sfc)
+        SedP%poro_decay = cfg_params%get_param_num('biogeochemistry.sediments.porosity_decay_depth', default=def_poro_decay, finite=.true., positive=.true.)
+        ! -------- Bioturbation profile ------------
+        SedP%biot_mode   = cfg_params%get_param_str('biogeochemistry.sediments.bioturbation_mode', default=def_biot_mode, choices=mode_choices, trim_value=.true., match_case=.false.)
+        SedP%biot_db_sfc = cfg_params%get_param_num('biogeochemistry.sediments.db_surface', default=def_db_sfc, finite=.true., min=0.0_rk)
+        SedP%biot_mld    = cfg_params%get_param_num('biogeochemistry.sediments.bioturbation_depth', default=def_biot_mld, finite=.true., min=0.0_rk)
+        SedP%biot_ez     = cfg_params%get_param_num('biogeochemistry.sediments.bioturbation_decay_depth', default=def_biot_ez, finite=.true., positive=.true.)
+        !--------- Bioirrigation profile -------
+        SedP%irr_mode  = cfg_params%get_param_str('biogeochemistry.sediments.bioirrigation_mode', default=def_irr_mode, choices=mode_choices, trim_value=.true., match_case=.false.)
+        SedP%irr_sfc = cfg_params%get_param_num('biogeochemistry.sediments.irrigation_surface', default=def_irr_sfc, finite=.true., min=0.0_rk)
+        SedP%irr_ez  = cfg_params%get_param_num('biogeochemistry.sediments.irrigation_decay_depth', default=def_irr_ez, finite=.true., positive=.true.)
+        !--------- Numerics---------------------
+        SedP%cnpar_sed  = cfg_params%get_param_num('biogeochemistry.sediments.cnpar_sed', default=def_cnpar_sed, finite=.true., min=0.0_rk, max=1._rk)
+    end subroutine read_sed_parameters
+
+
     ! Return the data structure pre-filled with defaults
     pure function default_bio_params() result(p)
         type(BioParams) :: p
@@ -112,27 +145,24 @@ contains
         p%min_dt            = def_min_dt
     end function default_bio_params
 
+    pure function default_sed_params() result(p)
+        type(SedParams) :: p
 
-    ! Reading parameters relevant for sediments in units commonly reported in the literature
-    subroutine read_sed_parameters(cfg_params, SedP)
-        type(ConfigParams), intent(in)  :: cfg_params
-        type(SedParams),    intent(out) :: SedP
+        p%sed_rate    = def_sed_rate
+        p%poro_sfc    = def_poro_sfc
+        p%poro_deep   = def_poro_deep
+        p%poro_decay  = def_poro_decay
 
-        ! --------- Sedimentation rate -----------
-        SedP%sed_rate      = cfg_params%get_param_num('biogeochemistry.sediments.sedimentation_rate', default=def_sed_rate, finite=.true., min=0.0_rk)
-        ! ---------------- Porosity profile ----------------
-        SedP%poro_sfc   = cfg_params%get_param_num('biogeochemistry.sediments.porosity_surface', default=def_poro_sfc, finite=.true., min=0.0_rk, max=1._rk)
-        SedP%poro_deep  = cfg_params%get_param_num('biogeochemistry.sediments.porosity_depth', default=def_poro_deep, finite=.true., min=0.0_rk, max=SedP%poro_sfc)
-        SedP%poro_decay = cfg_params%get_param_num('biogeochemistry.sediments.porosity_decay_depth', default=def_poro_decay, finite=.true., positive=.true.)
-        ! -------- Bioturbation profile ------------
-        SedP%biot_db_sfc = cfg_params%get_param_num('biogeochemistry.sediments.db_surface', default=def_db_sfc, finite=.true., min=0.0_rk)
-        SedP%biot_mld    = cfg_params%get_param_num('biogeochemistry.sediments.bioturbation_depth', default=def_biot_mld, finite=.true., min=0.0_rk)
-        SedP%biot_ez     = cfg_params%get_param_num('biogeochemistry.sediments.bioturbation_decay_depth', default=def_biot_ez, finite=.true., positive=.true.)
-        !--------- Bioirrigation profile -------
-        SedP%irr_sfc = cfg_params%get_param_num('biogeochemistry.sediments.irrigation_surface', default=def_irr_sfc, finite=.true., min=0.0_rk)
-        SedP%irr_ez  = cfg_params%get_param_num('biogeochemistry.sediments.irrigation_decay_depth', default=def_irr_ez, finite=.true., positive=.true.)
-        !--------- Numerics---------------------
-        SedP%cnpar_sed  = cfg_params%get_param_num('biogeochemistry.sediments.cnpar_sed', default=def_cnpar_sed, finite=.true., min=0.0_rk, max=1._rk)
-    end subroutine read_sed_parameters
+        p%biot_mode   = def_biot_mode
+        p%biot_db_sfc = def_db_sfc
+        p%biot_mld    = def_biot_mld
+        p%biot_ez     = def_biot_ez
+
+        p%irr_mode    = def_irr_mode
+        p%irr_sfc     = def_irr_sfc
+        p%irr_ez      = def_irr_ez
+
+        p%cnpar_sed   = def_cnpar_sed
+    end function default_sed_params
 
 end module bio_params
