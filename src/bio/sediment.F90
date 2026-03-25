@@ -20,15 +20,15 @@ contains
     !! and precomputes sediment property profiles (porosity, tortuosity, Db, irrigation).
     subroutine init_sediment(cfg_params, grid, SE)
         type(ConfigParams),  intent(in) :: cfg_params
-        type(VerticalGrid),  intent(in), target  :: grid        ! Sediment grid
-        type(SedimentEnv),intent(inout) :: SE
+        type(VerticalGrid),  intent(in), target :: grid        ! Sediment grid
+        type(SedimentEnv),   intent(inout) :: SE
 
         ! Associate grid pointer
         SE%grid => grid
         SE%nz = grid%nz
 
         ! Read sediment parameters
-        call read_sed_parameters(cfg_params, grid, SE%params_user)
+        call read_sed_parameters(cfg_params, SE%params_user)
         ! Convert parameter units to SI units cm->m and yr->s
         call convert_units_to_SI(SE%params_user, SE%params_SI)
         ! Allocate working arrays 
@@ -39,7 +39,7 @@ contains
         call compute_bioturbation_profile(grid, SE%params_SI%biot_db_sfc, SE%params_SI%biot_mld, SE%params_SI%biot_ez, SE%bioturb)
         call compute_bioirrigation_alpha(grid, SE%params_SI%irr_sfc, SE%params_SI%irr_ez, SE%bioirr, SE%bioirr_w)
         ! ---- Burial velocities (interfaces). 
-        call compute_burial_velocities(SE%grid, SE%poro_w, SE%params_SI%sed_ref_depth, SE%params_SI%sed_rate, SE%vel_solids, SE%vel_solutes)
+        call compute_burial_velocities(SE%grid, SE%params_SI, SE%poro_w, SE%params_SI%sed_rate, SE%vel_solids, SE%vel_solutes)
 
 
         ! Initialise tridiagonal matrix
@@ -251,7 +251,7 @@ contains
         real(rk),           intent(in)  :: alpha0          ! [s-1]
         real(rk),           intent(in)  :: z_decay         ! [m]
         real(rk),           intent(out) :: alpha(1:grid%nz)  ! [s-1] (1:nz)
-        real(rk),           intent(out) :: alpha_w(0:grid%nz)  ! [s-1] (1:nz)
+        real(rk),           intent(out) :: alpha_w(0:grid%nz)  ! [s-1] (0:nz)
 
         integer :: k, nz
         real(rk) :: z, zdec
@@ -275,44 +275,39 @@ contains
     !===================================================================
     !         Burial velocities for solids and pore water 
     !     under the assumption of steady-state compaction
-    ! Applies constant solid flux (1-phi)w and porewater flux phi*u relative to a
-    ! reference depth z_ref and burial velocity w_ref (Boudreau, 1997).
+    ! Assumes steady-state compaction with constant solid volume flux
+    ! (1-phi)w = (1-phi_inf)w_inf and constant porewater volume flux
+    ! phi*u = phi_inf*w_inf, where phi_inf is the asymptotic porosity
+    ! and w_inf is the deep solid burial velocity.
     !==================================================================
-    subroutine compute_burial_velocities(grid, poro_int, z_ref, w_ref, w_solid, u_pore)
+    subroutine compute_burial_velocities(grid, SedP, poro_int, w_inf, w_solid, u_pore)
         type(VerticalGrid), intent(in)  :: grid
+        type(SedParams),    intent(in)  :: SedP
         real(rk), intent(in)  :: poro_int(0:grid%nz)   ! porosity at interfaces
-        real(rk), intent(in)  :: z_ref                 ! [m] reference depth below SWI
-        real(rk), intent(in)  :: w_ref                 ! [m/s] burial velocity at z_ref
-        real(rk), intent(out) :: w_solid(0:grid%nz)    ! Burial velocity of particulate matter [m/s]
-        real(rk), intent(out) :: u_pore(0:grid%nz)     ! Burial velocity of pore water [m/s]
+        real(rk), intent(in)  :: w_inf                 ! Solid burial velocity at infinite depth. [m/s]
+        real(rk), intent(out) :: w_solid(0:grid%nz)    ! Solid-phase burial velocity [m/s]
+        real(rk), intent(out) :: u_pore(0:grid%nz)     ! Porewater burial velocity [m/s]
 
-        integer  :: k, nz, k_ref
-        real(rk) :: phi_ref, phik, phi_min
-        real(rk) :: wref_neg, zref
+        integer  :: k
+        real(rk) :: phi_inf, phik
+        real(rk) :: winf_neg
+        real(rk), parameter :: phi_min = 1.0e-12_rk
 
-        nz = grid%nz
-        phi_min = 1.0e-12_rk
+        winf_neg = - abs(w_inf)      ! Enforcing negative velocity for burial        
 
-        wref_neg = - abs(w_ref)      ! Enforcing negative velocity for burial
-        zref = min(max(z_ref, 0._rk), grid%depth)
+        ! Asymptotic porosity (CANDI-style reference)
+        phi_inf = min(max(SedP%poro_deep, phi_min), 1.0_rk - phi_min) 
 
-        ! Find index for closest interface to reference depth
-        k_ref = minloc(abs(grid%z_w(0:nz) - zref), dim=1) - 1  
-
-        if (k_ref < 0 .or. k_ref > nz) error stop "compute_burial_velocities: k_ref out of range"
-        ! Porosity at the reference depth
-        phi_ref = min(max(poro_int(k_ref), phi_min), 1._rk - phi_min)
-
-        do k = 0, nz
+        do k = 0, grid%nz
             phik = min(max(poro_int(k), phi_min), 1._rk - phi_min)
 
-            ! Solid burial velocity: (1-phi) w  = (1-phi_ref) wref_neg
-            ! (1-ϕ)w = (1-ϕ_x)w_x  Eq. 3.67 in Boudreau (1997)
-            w_solid(k) = wref_neg * (1._rk - phi_ref) / (1._rk - phik)
+            ! Solid burial velocity: (1-phi) w  = (1-phi_inf) winf_neg
+            ! (1-phi) w = (1-phi_inf) w_inf   (Boudreau, 1997, Eq. 3.67)
+            w_solid(k) = winf_neg * (1._rk - phi_inf) / (1._rk - phik)
 
-            ! Porewater burial velocity: phi u = phi_ref wref_neg
-            ! ϕu = ϕ_x w_x     Eq. 3.68 in Boudreau (1997)
-            u_pore(k)  = (wref_neg * phi_ref) / phik
+            ! Porewater burial velocity: phi u = phi_inf winf_neg
+            ! phi u = phi_inf w_inf           (Boudreau, 1997, Eq. 3.68)
+            u_pore(k)  = (winf_neg * phi_inf) / phik
         end do
         ! Enforce no advective burial flux through the SWI (top interface k=nz).
         ! SWI exchange is handled separately via deposition/solute exchange.
@@ -336,7 +331,6 @@ contains
         si%poro_deep = user%poro_deep
 
         ! Depth scales: cm -> m
-        si%sed_ref_depth = abs(user%sed_ref_depth * cm_to_m)
         si%poro_decay    = user%poro_decay    * cm_to_m
         si%biot_mld      = user%biot_mld      * cm_to_m
         si%biot_ez       = user%biot_ez       * cm_to_m

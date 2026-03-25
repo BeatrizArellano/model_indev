@@ -35,15 +35,14 @@ module bio_params
         !         * bioturbation: m2 s-1
         !         * irrigation:   s-1
         !
-        !   Conversion is performed once during init_sediments() via convert_units_to_SI().
+        !   Conversion is performed once during init_sediment() via convert_units_to_SI().
         !   Internal sediment computations must use params_SI only.
         !-----------------------------------------------------------------------------------
-        !--- Burial rates
-        real(rk) :: sed_rate               ! Linear sedimentation rate (user: cm/yr; SI: m/s)
-        real(rk) :: sed_ref_depth          ! Depth in the sediments for the sedimentation rate measurement (user: cm;   SI: m)
+        !--- Burial rate
+        real(rk) :: sed_rate                ! Solid burial velocity at infinite depth (user: cm/yr; SI: m/s)
         !--- Porosity
         real(rk) :: poro_sfc                ! Porosity at SWI [-]
-        real(rk) :: poro_deep               ! Porosity at depth [-]
+        real(rk) :: poro_deep               ! Asymptotic porosity at depth [-]
         real(rk) :: poro_decay              ! Decay depth for porosity exponential decay (user: cm; SI: m)
         !--- Bioturbation
         real(rk) :: biot_db_sfc             ! Bioturbation diffusivity at the sediment surface (user: cm2/yr; SI: m2/s)
@@ -53,7 +52,7 @@ module bio_params
         real(rk) :: irr_sfc                ! Exchange rate at the sediment-water interface (user: 1/yr; SI: 1/s) (alpha0 in Aller's model)
         real(rk) :: irr_ez                 ! Decay depth for exponential attenuation of irrigation (user: cm; SI: m)
         ! --- Numerics
-        real(rk) :: cnpar_sed              ! Crank-Nicholson parameter to solve diffusive mixing [default=0.9, min=0, max=1]
+        real(rk) :: cnpar_sed              ! Crank-Nicolson parameter to solve diffusive mixing [default=0.9, min=0, max=1]
     end type SedParams
 
     real(rk), parameter :: mol_diff   = 1.0e-6_rk             ! Molecular diffusivity in the water column [m2 s-1]
@@ -69,16 +68,16 @@ module bio_params
 
     ! ----------------- Default values for sediment parameters ----------------------------------------------------------
     ! --- Values are later converted to SI units (meters and seconds) where needed
-    real(rk), parameter :: def_sed_rate   = 0.1_rk        ! Sedimentation rate. [cm yr-1]
+    real(rk), parameter :: def_sed_rate   = 0.1_rk        ! Deep solid burial velocity [cm yr-1]
     real(rk), parameter :: def_poro_sfc   = 0.95_rk       ! Porosity at the sediment–water interface. (Soetaert et al., 1996)
-    real(rk), parameter :: def_poro_deep  = 0.80_rk       ! Porosity at depth in sediment. (Soetaert et al., 1996)
-    real(rk), parameter :: def_poro_decay = 4.0_rk        ! Depth scale over which sediment porosity decreases exponentially with depth [cm] (Soetaert et al., 1996)
+    real(rk), parameter :: def_poro_deep  = 0.80_rk       ! Asymptotic porosity at depth [-] (Soetaert et al., 1996)
+    real(rk), parameter :: def_poro_decay = 4.0_rk        ! E-folding depth scale for exponential porosity decrease [cm] (Soetaert et al., 1996)
     real(rk), parameter :: def_db_sfc     = 5.0_rk        ! Bioturbation at the sediment surface [cm2 yr-1]
     real(rk), parameter :: def_biot_mld   = 5.0_rk        ! Sediment mixed layer depth below which bioturbation decreases exponentially [cm]
     real(rk), parameter :: def_biot_ez    = 1.0_rk        ! Coefficient (decay depth) for exponential bioturbation decrease [cm]
     real(rk), parameter :: def_irr_sfc    = 200_rk        ! Irrigation rate at the sediment-water interface [yr-1]
     real(rk), parameter :: def_irr_ez     = 2.0_rk        ! Decay depth for exponential attenuation of irrigation [cm]
-    real(rk), parameter :: def_cnpar_sed  = 0.9_rk        ! Crank-Nicholson parameter to solve diffusive mixing [-]
+    real(rk), parameter :: def_cnpar_sed  = 0.9_rk        ! Crank-Nicolson parameter to solve diffusive mixing [-]
     !-------------------------------------------------------------------------------------------------------------
 
 
@@ -115,20 +114,16 @@ contains
 
 
     ! Reading parameters relevant for sediments in units commonly reported in the literature
-    subroutine read_sed_parameters(cfg_params, sed_grid, SedP)
-        type(ConfigParams),       intent(in) :: cfg_params
-        type(VerticalGrid),       intent(in) :: sed_grid          ! Sediment grid
-        type(SedParams),          intent(inout) :: SedP
+    subroutine read_sed_parameters(cfg_params, SedP)
+        type(ConfigParams), intent(in)  :: cfg_params
+        type(SedParams),    intent(out) :: SedP
 
-        real(rk) :: def_sed_ref_depth
-        def_sed_ref_depth = sed_grid%depth * 100.0_rk  ! Default value for depth [cm] where sedimentation rate was measured
         ! --------- Sedimentation rate -----------
         SedP%sed_rate      = cfg_params%get_param_num('biogeochemistry.sediments.sedimentation_rate', default=def_sed_rate, finite=.true., min=0.0_rk)
-        SedP%sed_ref_depth = cfg_params%get_param_num('biogeochemistry.sediments.sed_rate_depth', default=def_sed_ref_depth, finite=.true., min=0.0_rk)
         ! ---------------- Porosity profile ----------------
         SedP%poro_sfc   = cfg_params%get_param_num('biogeochemistry.sediments.porosity_surface', default=def_poro_sfc, finite=.true., min=0.0_rk, max=1._rk)
-        SedP%poro_deep  = cfg_params%get_param_num('biogeochemistry.sediments.porosity_depth', default=def_poro_deep, finite=.true., min=0.0_rk, max=1._rk)
-        SedP%poro_decay = cfg_params%get_param_num('biogeochemistry.sediments.porosity_decay_depth', default=def_poro_decay, finite=.true., min=0.0_rk)
+        SedP%poro_deep  = cfg_params%get_param_num('biogeochemistry.sediments.porosity_depth', default=def_poro_deep, finite=.true., min=0.0_rk, max=SedP%poro_sfc)
+        SedP%poro_decay = cfg_params%get_param_num('biogeochemistry.sediments.porosity_decay_depth', default=def_poro_decay, finite=.true., positive=.true.)
         ! -------- Bioturbation profile ------------
         SedP%biot_db_sfc = cfg_params%get_param_num('biogeochemistry.sediments.db_surface', default=def_db_sfc, finite=.true., min=0.0_rk)
         SedP%biot_mld    = cfg_params%get_param_num('biogeochemistry.sediments.bioturbation_depth', default=def_biot_mld, finite=.true., min=0.0_rk)
