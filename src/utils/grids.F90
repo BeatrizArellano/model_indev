@@ -1,6 +1,7 @@
 module grids
   use precision_types,  only: rk
   use read_config_yaml, only: ConfigParams
+  use output_static,    only: StaticProfile, init_static_profile, append_static_profile
 
   implicit none
   private
@@ -31,7 +32,7 @@ module grids
 
 contains
 
-    subroutine build_grids(cfg, depth, is_bio_enabled, is_sed_enabled, wat_grid, sed_grid, full_grid, ierr)
+    subroutine build_grids(cfg, depth, is_bio_enabled, is_sed_enabled, wat_grid, sed_grid, full_grid, static_profiles, ierr)
         type(ConfigParams), intent(in)  :: cfg
         real(rk),           intent(in)  :: depth         ! local depth [m], positive
         logical,            intent(in)  :: is_bio_enabled
@@ -39,6 +40,7 @@ contains
         type(VerticalGrid), intent(out) :: wat_grid
         type(VerticalGrid), intent(out) :: sed_grid
         type(VerticalGrid), intent(out) :: full_grid
+        type(StaticProfile), allocatable, intent(inout), optional :: static_profiles(:)
         integer,  optional, intent(out) :: ierr      ! 0 OK; >0 is an error
         
         integer :: ierr_loc
@@ -96,7 +98,12 @@ contains
             call copy_grid(wat_grid, full_grid)
         end if
 
-        call write_vertical_grid(full_grid, 'Vertical_grid.dat', n_sed=sed_grid%nz, ierr=ierr_loc)        
+        call write_vertical_grid(full_grid, 'Vertical_grid.dat', n_sed=sed_grid%nz, ierr=ierr_loc)  
+        
+        if (present(static_profiles)) then
+            call add_dz_to_output(full_grid, static_profiles)
+        end if
+
         if (present(ierr)) ierr = ierr_loc
 
     end subroutine build_grids
@@ -135,7 +142,7 @@ contains
 
             call allocate_grid(grid, nz_cfg)
             grid%depth = depth
-            grid%dz    = dz_u          ! all layers same thickness; bottom→top is irrelevant here
+            grid%dz    = dz_u          ! uniform layer thickness
             call calculate_layer_depths(grid)
 
         case ('dz')
@@ -425,6 +432,11 @@ contains
     ! Result:
     !   full%dz(1:nsed)      = sediment dz (bottom-first)
     !   full%dz(nsed+1:end)  = water dz    (bottom-first)
+    ! Note:
+    !   wat_grid and sed_grid each use their own local vertical reference:
+    !     - wat_grid: 0 at sea surface
+    !     - sed_grid: 0 at sediment-water interface
+    !   full_grid is rebuilt on a common absolute depth axis with 0 at sea surface.
     !------------------------------
     subroutine build_full_grid(wgrid, sgrid, full, ierr)
         type(VerticalGrid), intent(in)  :: wgrid ! water grid
@@ -586,7 +598,7 @@ contains
     !   z_w(0)    = bottom interface depth (= depth > 0)
     !   z_w(nz)   = surface (0)
     !   dz(i)     = z_w(i-1) - z_w(i) > 0, layer i thickness, bottom→top
-    !   z(i)      = 0.5*(z_w(i-1) + z_w(i)), layer centres, 1=bottom … nz=top
+    !   z(i)      = 0.5*(z_w(i-1) + z_w(i)), 1=bottom ... nz=top (layer centre)
     subroutine calculate_layer_depths(g)
         type(VerticalGrid), intent(inout) :: g
         integer :: i
@@ -673,5 +685,26 @@ contains
         end if
 
     end subroutine read_sgrid_config
+
+    subroutine add_dz_to_output(grid, static_profiles)
+        type(VerticalGrid),  intent(in)    :: grid
+        type(StaticProfile), allocatable, intent(inout) :: static_profiles(:)
+
+        type(StaticProfile) :: prof
+
+        if (grid%nz <= 0 .or. .not. allocated(grid%dz)) then
+            error stop 'add_dz_to_output: grid%dz is not available.'
+        end if
+
+        call init_static_profile(p            = prof, &
+                                 name         = 'dz', &
+                                 long_name    = 'Layer thickness', &
+                                 units        = 'm', &
+                                 profile_data = grid%dz, &
+                                 vert_coord   = 'centre' )
+
+        call append_static_profile(static_profiles, prof)
+
+    end subroutine add_dz_to_output
 
 end module grids
