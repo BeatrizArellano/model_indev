@@ -11,6 +11,7 @@ module bio_main
     use physics_types,       only: PhysicsState
     use pressure,            only: compute_pressure 
     use precision_types,     only: rk, lk
+    use precision_utils,     only: get_nan_rk
     use read_config_yaml,    only: ConfigParams
     use sediment,            only: init_sediment, output_sed_profiles, clear_sediment_env, write_tracer_properties, &
                                    phase_to_bulk, bulk_to_phase, phase_to_bulk_all, bulk_to_phase_all
@@ -480,21 +481,23 @@ contains
             if(BE%SED%output_bioirr_dynamic) then
                 if(allocated(BE%BS%full_bioirr)) deallocate(BE%BS%full_bioirr)
                 allocate(BE%BS%full_bioirr(nz)) 
-                BE%BS%full_bioirr = 0._rk
+                BE%BS%full_bioirr = get_nan_rk()
                 call register_variable(BE%env_int_vars, name='bioirrigation', &
                                        long_name='Bioirrigation coefficient', &
                                        units='s-1', vert_coord='centre', n_space_dims=1, &
-                                       data_1d=BE%BS%full_bioirr)
+                                       data_1d=BE%BS%full_bioirr,             &
+                                       minimum=0.0_rk, missing_value=get_nan_rk())
             end if
             if(BE%SED%output_bioturb_dynamic) then
                 if(allocated(BE%BS%full_biotur)) deallocate(BE%BS%full_biotur)
                 allocate(BE%BS%full_biotur(0:nz)) 
-                BE%BS%full_biotur = 0._rk
+                BE%BS%full_biotur = get_nan_rk()
                 
                 call register_variable(BE%env_int_vars, name='bioturbation', &
                                        long_name='Bioturbation coefficient (Db)', &
                                        units='m2 s-1', vert_coord='interface', n_space_dims=1, &
-                                       data_1d=BE%BS%full_biotur)
+                                       data_1d=BE%BS%full_biotur,             &
+                                       minimum=0.0_rk, missing_value=get_nan_rk())
             end if
         end if
 
@@ -886,10 +889,10 @@ contains
                     end if
 
                     !---------------------------------------------------------
-                    ! BIOTURBATION: only on particulate matter (solids)
+                    ! BIOTURBATION: only fpr particulate matter (solids)
                     !----------------------------------------------------------
                     if (BE%SED%use_bioturbation .and. BE%tracer_info(ivar)%is_particulate) then
-!                       ! NOTE: Bioturbation is modelled as a bioduiffusivity process on concentrations per solid volume
+                        ! NOTE: Bioturbation is modelled as a bioduiffusivity process on concentrations per solid volume
                         call scalar_diffusion_sed(Var=BE%BS%interior_state(1:nsed, ivar), N=nsed, dt=dt_sub,   &
                                                   h=BE%sed_grid%dz, phase_thickness=BE%SED%solid_thickness, &
                                                   diff=BE%SED%Db_eff_solids, cnpar=BE%SED%params_SI%cnpar_sed, tricoef=BE%SED%sed_trid, ierr=ierr)
@@ -968,7 +971,7 @@ contains
             end if             
 
             !-----------------------------------------------------------------------------
-            ! Repir state for interior tracers after vertical redistribution of tracers
+            ! Repair state for interior tracers after vertical redistribution of tracers
             !----------------------------------------------------------------------------
             call check_and_repair_state(BE)
 
@@ -1284,13 +1287,13 @@ contains
         if (BE%params%sediments_enabled) then
             ! Bioirrigation on full column (centres)
             if (allocated(BE%BS%full_bioirr) .and. BE%SED%output_bioirr_dynamic) then
-                BE%BS%full_bioirr = 0.0_rk
+                BE%BS%full_bioirr = get_nan_rk()
                 BE%BS%full_bioirr(1:nsed) = BE%SED%bioirr(1:nsed)
             end if
 
             ! Bioturbation on full column
             if (allocated(BE%BS%full_biotur) .and. BE%SED%output_bioturb_dynamic) then
-                BE%BS%full_biotur = 0.0_rk
+                BE%BS%full_biotur = get_nan_rk()
                 BE%BS%full_biotur(0:nsed) = BE%SED%bioturb(0:nsed)
             end if
         end if
