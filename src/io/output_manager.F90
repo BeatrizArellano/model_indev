@@ -1,10 +1,11 @@
-module output_manager
+module output_manager  
+  use geo_utils,         only: LocationInfo
+  use grids,             only: VerticalGrid  
+  use output_writer,     only: OutputWriter
   use precision_types,   only: rk, lk
   use read_config_yaml,  only: ConfigParams
-  use geo_utils,         only: LocationInfo
+  use output_static,     only: StaticProfile
   use time_utils,        only: parse_interval_to_seconds, sec_per_hour, sec_per_day
-  use grids,             only: VerticalGrid
-  use output_writer,     only: OutputWriter
   use variable_registry, only: VarMetadata
   use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_quiet_nan
   implicit none
@@ -81,7 +82,7 @@ module output_manager
      integer :: n_centre = 0                   ! Number of variables defined at layers' centres
      integer :: n_iface  = 0                   ! Number of variables defined at layers' interfaces
      integer :: n_scalar = 0
-     ! Persistent record arrats (surface to bottom orientation)
+     ! Persistent record arrays (surface to bottom orientation)
      real(rk), allocatable :: centre_rec(:,:)   ! (N,  n_centre)
      real(rk), allocatable :: iface_rec(:,:)    ! (Ni, n_iface)
      real(rk), allocatable :: scalar_rec(:)     ! (n_scalar)
@@ -407,7 +408,7 @@ contains
 
   !================ OUTPUT MANAGER ================
   ! Read output config, set up scheduler and data storage, and open the NetCDF file.
-  subroutine om_init(this, params, grid, dt_s, time_units, calendar_name, vars, loc, n_sed)
+  subroutine om_init(this, params, grid, dt_s, time_units, calendar_name, vars, loc, static_profiles)
     class(OutputManager), intent(inout) :: this
     type(ConfigParams),   intent(in)    :: params
     type(VerticalGrid),   intent(in)    :: grid
@@ -416,17 +417,14 @@ contains
     character(*),         intent(in)    :: calendar_name
     type(VarMetadata),    intent(in)    :: vars(:)
     type(LocationInfo),   intent(in)    :: loc
-    integer,       intent(in), optional :: n_sed
+    type(StaticProfile),  intent(in), optional :: static_profiles(:)
 
     character(:), allocatable :: path
     character(:), allocatable :: title_str
     logical :: exists
     integer :: ios
     integer :: j
-    integer :: nsed_local
-
-    nsed_local = 0
-    if (present(n_sed)) nsed_local = max(0, n_sed)
+    
 
     ! Read config
     call read_output_config(params, this%cfg)
@@ -520,7 +518,7 @@ contains
                                calendar_name     = calendar_name,     &
                                vars              = this%vars,         &
                                title             = title_str,         &
-                               n_sed             = nsed_local)
+                               static_profiles   = static_profiles)
 
     this%is_init = .true.
   end subroutine om_init
@@ -531,7 +529,7 @@ contains
       integer(lk),          intent(in)    :: dt_s
 
       logical :: emit
-      integer(lk) :: t_emit, wlen
+      integer(lk) :: t_emit
 
       if (.not. this%is_init) error stop 'OutputManager: step called before init'
       if (dt_s <= 0_lk) error stop 'OutputManager: step dt_s must be > 0.'
@@ -550,15 +548,12 @@ contains
 
          ! Time info for this record
          t_emit = this%sched%emit_time_s(this%is_mean)
-         wlen   = this%sched%window_len_s()
 
          ! Append to file
-         call this%writer%append_record(elapsed_time_s = t_emit,        &
-                                       window_len_s   = wlen,          &
-                                       is_mean        = this%is_mean,  &
-                                       centre_data    = this%centre_rec, &
-                                       iface_data     = this%iface_rec,  &
-                                       scalar_data    = this%scalar_rec)
+         call this%writer%append_record(elapsed_time_s = t_emit,          &
+                                        centre_data    = this%centre_rec, &
+                                        iface_data     = this%iface_rec,  &
+                                        scalar_data    = this%scalar_rec)
 
          ! Optional periodic sync to disk
          if (this%next_sync_time_s > 0_lk .and. t_emit >= this%next_sync_time_s) then

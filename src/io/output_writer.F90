@@ -1,11 +1,12 @@
 ! src/io/output_writer.F90
 module output_writer
-  use precision_types,  only: rk, lk
-  use netcdf,           only: NF90_UNLIMITED
-  use netcdf_io,        only: NcFile, nc_create, nc_redef, nc_enddef, nc_close, nc_sync, &
-                              nc_def_dim, nc_def_var_real, nc_def_var_double, &
-                              nc_put_att_str, nc_put_att_real, nc_write_real
-  use grids,            only: VerticalGrid
+  use grids,             only: VerticalGrid
+  use netcdf,            only: NF90_UNLIMITED
+  use netcdf_io,         only: NcFile, nc_create, nc_enddef, nc_close, nc_sync, &
+                               nc_def_dim, nc_def_var_real, nc_def_var_double, &
+                               nc_put_att_str, nc_put_att_real, nc_write_real
+  use precision_types,   only: rk, lk
+  use output_static,     only: StaticProfile
   use variable_registry, only: VarMetadata
 
   implicit none
@@ -14,7 +15,7 @@ module output_writer
 
 
   type :: VarID
-    character(len=:), allocatable :: name   ! NetCDF variable name
+    character(len=:), allocatable :: name     ! NetCDF variable name
     integer :: n_space_dims = 0
     character(len=16) :: vert_coord = 'none'  ! 'centre','interface','none',...
     integer :: col_index = 0                  ! which column in the aggregated arrays
@@ -60,7 +61,7 @@ contains
   ! Open file, define coordinates and set attrubutes
   !========================
   subroutine outputwriter_open_file(this, path, grid, interval_statistic, time_units, &
-                                    calendar_name, vars, title, n_sed)
+                                    calendar_name, vars, title, static_profiles)
     class(OutputWriter), intent(inout) :: this
     character(*),        intent(in)    :: path
     type(VerticalGrid),  intent(in)    :: grid        ! bottom→surface order internally
@@ -69,23 +70,19 @@ contains
     character(*),        intent(in)    :: calendar_name
     type(VarMetadata),   intent(in)    :: vars(:)
     character(*),        intent(in), optional :: title
-    integer,             intent(in), optional :: n_sed
+    type(StaticProfile), intent(in), optional :: static_profiles(:)
 
     integer :: dim_t, dim_z, dim_zw
-    integer :: j, ic, ii, is 
-    integer :: var_time, var_z, var_zw, var_mask, varid_dummy
-    integer :: nsed_local
+    integer :: j, ic, ii, is, js, ks
+    integer :: var_time, var_z, var_zw, varid_dummy
     character(len=:), allocatable :: cm
     real(rk), allocatable :: z_out(:), zw_out(:)
-    real(rk), allocatable :: mask_out(:)
+    real(rk), allocatable :: static_out(:)
 
     ! sizes
     this%N  = grid%nz
     this%Ni = grid%nz + 1
 
-    nsed_local = 0
-    if (present(n_sed)) nsed_local = max(0, n_sed)
-    if (nsed_local > int(this%N)) error stop 'outputwriter_open_file: n_sed > N'
 
     this%filename           = trim(path)
     this%interval_statistic = trim(interval_statistic)
@@ -106,12 +103,6 @@ contains
     var_z    = nc_def_var_real(this%db, 'depth',    [dim_z])
     var_zw   = nc_def_var_real(this%db, 'depth_interface',  [dim_zw])
 
-    var_mask = nc_def_var_real(this%db, 'sediment_mask', [dim_z])
-    call nc_put_att_str(this%db, 'sediment_mask', 'long_name', 'Mask for sediment layers (1=sediment, 0=water)')
-    call nc_put_att_str(this%db, 'sediment_mask', 'units', '1')
-    call nc_put_att_str(this%db, 'sediment_mask', 'flag_values', '0 1')
-    call nc_put_att_str(this%db, 'sediment_mask', 'flag_meanings', 'water sediment')
-    call nc_put_att_str(this%db, 'sediment_mask', 'coordinates', 'depth')
 
     cm = cf_cell_methods_from_stat(interval_statistic) ! Write the statistic following the CF-metadata convention to set as attribute
 
@@ -212,7 +203,7 @@ contains
                 call nc_put_att_str(this%db, trim(vars(j)%name), 'units', trim(vars(j)%units))
         end if
         ! Set statistic in CF-metadata convention        
-        ! time cell_methods (mean or poitn) for this variable
+        ! time cell_methods (mean or point) for this variable
         call nc_put_att_str(this%db, trim(vars(j)%name), 'cell_methods', trim(cm))
 
         if (vars(j)%has_min) then
@@ -226,6 +217,94 @@ contains
             !call nc_put_att_real(this%db, trim(vars(j)%name), '_FillValue', vars(j)%missing_value)
         end if
     end do    
+
+    ! --- Static profiles ----
+    if (present(static_profiles)) then
+        do js = 1, size(static_profiles)
+
+            if (.not. allocated(static_profiles(js)%name)) then
+                error stop 'outputwriter_open_file: static profile has no name.'
+            end if
+
+            if (len_trim(static_profiles(js)%name) == 0) then
+                error stop 'outputwriter_open_file: static profile has empty name.'
+            end if
+            
+            ! Check for duplicated names
+            do ks = 1, js-1
+                if (trim(adjustl(static_profiles(ks)%name)) == trim(adjustl(static_profiles(js)%name))) then
+                    error stop 'outputwriter_open_file: duplicate static profile name: ' // &
+                            trim(static_profiles(js)%name)
+                end if
+            end do
+
+            if (is_reserved_name(static_profiles(js)%name)) then
+                error stop 'outputwriter_open_file: static profile name conflicts with reserved coordinate name: ' // &
+                        trim(static_profiles(js)%name)
+            end if
+
+            if (name_in_vars(static_profiles(js)%name, vars)) then
+                error stop 'outputwriter_open_file: static profile name conflicts with output variable: ' // &
+                        trim(static_profiles(js)%name)
+            end if
+
+            if (.not. allocated(static_profiles(js)%data_1d)) then
+                error stop 'outputwriter_open_file: static profile has no data.'
+            end if
+
+            select case (trim(static_profiles(js)%vert_coord))
+            case ('centre')
+                if (size(static_profiles(js)%data_1d) /= this%N) then
+                    error stop 'outputwriter_open_file: static centre profile has wrong size.'
+                end if
+
+                varid_dummy = nc_def_var_real(this%db, trim(static_profiles(js)%name), [dim_z])
+                call nc_put_att_str(this%db, trim(static_profiles(js)%name), 'coordinates', 'depth')
+
+            case ('interface')
+                if (size(static_profiles(js)%data_1d) /= this%Ni) then
+                    error stop 'outputwriter_open_file: static interface profile has wrong size.'
+                end if
+
+                varid_dummy = nc_def_var_real(this%db, trim(static_profiles(js)%name), [dim_zw])
+                call nc_put_att_str(this%db, trim(static_profiles(js)%name), 'coordinates', 'depth_interface')
+
+            case default
+                error stop 'outputwriter_open_file: unsupported vert_coord for static profile.'
+            end select
+
+            if (allocated(static_profiles(js)%standard_name)) then
+                if (len_trim(static_profiles(js)%standard_name) > 0) &
+                    call nc_put_att_str(this%db, trim(static_profiles(js)%name), 'standard_name', &
+                                        trim(static_profiles(js)%standard_name))
+            end if
+
+            if (allocated(static_profiles(js)%long_name)) then
+                if (len_trim(static_profiles(js)%long_name) > 0) &
+                    call nc_put_att_str(this%db, trim(static_profiles(js)%name), 'long_name', &
+                                        trim(static_profiles(js)%long_name))
+            end if
+
+            if (allocated(static_profiles(js)%units)) then
+                if (len_trim(static_profiles(js)%units) > 0) &
+                    call nc_put_att_str(this%db, trim(static_profiles(js)%name), 'units', &
+                                        trim(static_profiles(js)%units))
+            end if
+
+            if (static_profiles(js)%has_min) then
+                call nc_put_att_real(this%db, trim(static_profiles(js)%name), 'valid_min', &
+                                     static_profiles(js)%valid_min)
+            end if
+            if (static_profiles(js)%has_max) then
+                call nc_put_att_real(this%db, trim(static_profiles(js)%name), 'valid_max', &
+                                     static_profiles(js)%valid_max)
+            end if
+            if (static_profiles(js)%has_missing) then
+                call nc_put_att_real(this%db, trim(static_profiles(js)%name), 'missing_value', &
+                                     static_profiles(js)%missing_value)
+            end if
+        end do
+    end if
 
     ! --- Attributes 
     if (present(title)) call nc_put_att_str(this%db, '', 'title', trim(title), global=.true.)
@@ -245,38 +324,47 @@ contains
 
     call nc_enddef(this%db)
 
-
-    allocate(mask_out(this%N))
-    mask_out(:) = 0.0_rk
-
-    if (nsed_local > 0) then
-        ! In file order: surface->bottom, sediments are last n_sed elements
-        mask_out(this%N - nsed_local + 1 : this%N) = 1.0_rk
-    end if
-
-    call nc_write_real(this%db, 'sediment_mask', start=[1], count=[int(this%N,kind=4)], data_array=mask_out)
-    deallocate(mask_out)
-
-
     ! --- Depth values (surface to bottom)
     allocate(z_out(this%N), zw_out(this%Ni))
-    call flip_centers_b2s_to_s2b(grid%z,  z_out)         ! z(1..N) 
-    call flip_interfaces_b2s_to_s2b(grid%z_w, zw_out)    ! z_w(0..N)
+    call flip_centers_b2s_to_s2b(grid%z,  z_out)
+    call flip_interfaces_b2s_to_s2b(grid%z_w, zw_out)
 
-    call nc_write_real(this%db, 'depth',   start=[1], count=[int(this%N,kind=4)],   data_array=z_out)
-    call nc_write_real(this%db, 'depth_interface', start=[1], count=[int(this%Ni,kind=4)],  data_array=zw_out)
+    call nc_write_real(this%db, 'depth', start=[1], count=[int(this%N,kind=4)], data_array=z_out)
+    call nc_write_real(this%db, 'depth_interface', start=[1], count=[int(this%Ni,kind=4)], data_array=zw_out)
     deallocate(z_out, zw_out)
+
+    ! --- Static auxiliary profiles (surface to bottom in file)
+    if (present(static_profiles)) then
+        do js = 1, size(static_profiles)
+            select case (trim(static_profiles(js)%vert_coord))
+            case ('centre')
+                allocate(static_out(this%N))
+                call flip_centers_b2s_to_s2b(static_profiles(js)%data_1d, static_out)
+                call nc_write_real(this%db, trim(static_profiles(js)%name), &
+                                   start=[1], count=[int(this%N,kind=4)], data_array=static_out)
+                deallocate(static_out)
+
+            case ('interface')
+                allocate(static_out(this%Ni))
+                call flip_interfaces_b2s_to_s2b(static_profiles(js)%data_1d, static_out)
+                call nc_write_real(this%db, trim(static_profiles(js)%name), &
+                                   start=[1], count=[int(this%Ni,kind=4)], data_array=static_out)
+                deallocate(static_out)
+
+            case default
+                error stop 'outputwriter_open_file: unsupported vert_coord for static profile write.'
+            end select
+        end do
+    end if
+
   end subroutine outputwriter_open_file
 
   !========================
   ! Append one record per closed window
   !========================
-  subroutine outputwriter_append_record(this, elapsed_time_s, window_len_s, is_mean, &
-                                        centre_data, iface_data, scalar_data)
+  subroutine outputwriter_append_record(this, elapsed_time_s, centre_data, iface_data, scalar_data)
     class(OutputWriter), intent(inout) :: this
-    integer(lk),         intent(in)    :: elapsed_time_s   ! seconds since sim start (window start)
-    integer(lk),         intent(in)    :: window_len_s       ! seconds (window length)
-    logical,             intent(in)    :: is_mean            ! .true. if statistic='mean'
+    integer(lk),         intent(in)    :: elapsed_time_s     ! record time coordinate [s since simulation start]
     real(rk),            intent(in)    :: centre_data(:,:)   ! Data at layers' centres
     real(rk),            intent(in)    :: iface_data(:,:)    ! Data at interfaces
     real(rk),            intent(in)    :: scalar_data(:)     ! Scalars
@@ -382,7 +470,7 @@ contains
     case ('mean');     cm = 'time: mean'
     case ('instant');  cm = 'time: point'
     case default
-       cm = 'time: point'   ! safe default
+        error stop 'cf_cell_methods_from_stat: unsupported statistic.'
     end select
   end function cf_cell_methods_from_stat
 
@@ -422,5 +510,39 @@ contains
       error stop 'flip_interfaces: unexpected lower bound'
     end select
   end subroutine flip_interfaces_b2s_to_s2b
+
+    pure logical function is_reserved_name(name) result(reserved)
+        character(*), intent(in) :: name
+        character(len=:), allocatable :: s
+
+        s = trim(adjustl(name))
+
+        select case (s)
+        case ('time', 'depth', 'depth_interface')
+            reserved = .true.
+        case default
+            reserved = .false.
+        end select
+    end function is_reserved_name
+
+
+    pure logical function name_in_vars(name, vars) result(found)
+        character(*),      intent(in) :: name
+        type(VarMetadata), intent(in) :: vars(:)
+
+        integer :: j
+        character(len=:), allocatable :: s
+
+        s = trim(adjustl(name))
+        found = .false.
+
+        do j = 1, size(vars)
+            if (.not. vars(j)%output) cycle
+            if (trim(adjustl(vars(j)%name)) == s) then
+                found = .true.
+                return
+            end if
+        end do
+    end function name_in_vars
 
 end module output_writer
