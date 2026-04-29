@@ -929,11 +929,11 @@ contains
                     if (BE%tracer_info(ivar)%is_solute) then
                         ! Porewater burial
                         call apply_vertical_transport(BE%SED%bulk_conc(:, ivar),BE%sed_grid, BE%SED%vel_solutes, &                                                      
-                                                      dt_sub, bottom_outflow_only = .true.)
+                                                      dt_sub, bottom_outflow_only=BE%SED%params_SI%bottom_outflow)
                     else
                         ! Solids burial                        
                         call apply_vertical_transport(BE%SED%bulk_conc(:, ivar), BE%sed_grid, BE%SED%vel_solids, &                                                        
-                                                      dt_sub, bottom_outflow_only = .true.)                      
+                                                      dt_sub, bottom_outflow_only=BE%SED%params_SI%bottom_outflow)                      
                     end if
                 end do
                 ! Update phase-specific concentrations from bulk-concentrations

@@ -53,6 +53,8 @@ module bio_params
         character(:), allocatable :: irr_mode ! off | static | dynamic
         real(rk) :: irr_sfc                ! Exchange rate at the sediment-water interface (user: 1/yr; SI: 1/s) (alpha0 in Aller's model)
         real(rk) :: irr_ez                 ! Decay depth for exponential attenuation of irrigation (user: cm; SI: m)
+        ! --- Bottom boundary
+        logical :: bottom_outflow          ! If true, allow porewater/solids to leave through deepest sediment boundary
         ! --- Numerics
         real(rk) :: cnpar_sed              ! Crank-Nicolson parameter to solve diffusive mixing [default=0.9, min=0, max=1]
     end type SedParams
@@ -78,8 +80,9 @@ module bio_params
     real(rk), parameter :: def_biot_mld   = 5.0_rk        ! Sediment mixed layer depth below which bioturbation decreases exponentially [cm]
     real(rk), parameter :: def_biot_ez    = 1.0_rk        ! Coefficient (decay depth) for exponential bioturbation decrease [cm]
     real(rk), parameter :: def_irr_sfc    = 200_rk        ! Irrigation rate at the sediment-water interface [yr-1]
-    real(rk), parameter :: def_irr_ez     = 2.0_rk        ! Decay depth for exponential attenuation of irrigation [cm]
+    real(rk), parameter :: def_irr_ez     = 2.0_rk        ! Decay depth for exponential attenuation of irrigation [cm]    
     real(rk), parameter :: def_cnpar_sed  = 0.9_rk        ! Crank-Nicolson parameter to solve diffusive mixing [-]
+    logical, parameter  :: def_bottom_outflow = .true.    ! Allow bottom outflow/burial/export by default
     character(len=*), parameter :: def_biot_mode = 'static'
     character(len=*), parameter :: def_irr_mode  = 'static'
     !-------------------------------------------------------------------------------------------------------------
@@ -129,6 +132,8 @@ contains
         SedP%irr_mode  = cfg_params%get_param_str('biogeochemistry.sediments.bioirrigation_mode', default=def_irr_mode, choices=mode_choices, trim_value=.true., match_case=.false.)
         SedP%irr_sfc = cfg_params%get_param_num('biogeochemistry.sediments.irrigation_surface', default=def_irr_sfc, finite=.true., min=0.0_rk)
         SedP%irr_ez  = cfg_params%get_param_num('biogeochemistry.sediments.irrigation_decay_depth', default=def_irr_ez, finite=.true., positive=.true.)
+        ! --------- Bottom boundary -----------
+        SedP%bottom_outflow = cfg_params%get_param_logical('biogeochemistry.sediments.bottom_outflow', default=def_bottom_outflow)
         !--------- Numerics---------------------
         SedP%cnpar_sed  = cfg_params%get_param_num('biogeochemistry.sediments.cnpar_sed', default=def_cnpar_sed, finite=.true., min=0.0_rk, max=1._rk)
     end subroutine read_sed_parameters
@@ -161,6 +166,8 @@ contains
         p%irr_mode    = def_irr_mode
         p%irr_sfc     = def_irr_sfc
         p%irr_ez      = def_irr_ez
+
+        p%bottom_outflow = def_bottom_outflow
 
         p%cnpar_sed   = def_cnpar_sed
     end function default_sed_params

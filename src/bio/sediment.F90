@@ -34,6 +34,12 @@ contains
         call read_sed_parameters(cfg_params, SE%params_user)
         ! Convert parameter units to SI units cm->m and yr->s
         call convert_units_to_SI(SE%params_user, SE%params_SI)
+        if (SE%params_SI%bottom_outflow) then
+            write(*,'(A)') '  Sediment bottom boundary: open outflow for porewater and solids.'
+        else
+            write(*,'(A)') '  Sediment bottom boundary: closed/no-outflow for porewater and solids.'
+        end if
+
         ! Allocate working arrays 
         call allocate_sed_arrays(SE)
 
@@ -585,6 +591,8 @@ contains
 
         ! irr_sfc: 1/yr -> 1/s
         si%irr_sfc = user%irr_sfc / yr_to_s
+
+        si%bottom_outflow = user%bottom_outflow
         ! Copy cnpar value
         si%cnpar_sed = user%cnpar_sed
     end subroutine convert_units_to_SI
