@@ -164,17 +164,32 @@ contains
         real(rk), intent(in)    :: dz_sed_top      ! thickness of top sediment layer [m]
         real(rk), intent(inout) :: Cbulk_sed_top   ! bulk-sediment conc in top layer (per bulk volume)
 
-        real(rk) :: Fdep
+        real(rk) :: dep_flux_req, dep_mass_req, dep_mass
+        real(rk) :: available
 
         ! Only downward movement deposits into sediment.
         if (vel_swi < 0._rk) then
-            ! Flux
-            Fdep = (-vel_swi) * Cw_bot              ! [m/s]*[mass/m3]=[mass/m2/s]
-            Fdep = min(Fdep, Cw_bot * dz_w_bot / dt)   ! prevents immediate negative 
-            ! Update concentration at the bottom layer of the water column (Forward Euler)
-            Cw_bot = Cw_bot - dt * Fdep / dz_w_bot
+            ! Available particulate inventory in bottom water cell [mass m-2].
+            available = max(Cw_bot, 0._rk) * dz_w_bot
+            if (available <= 0._rk) return
+
+            ! Requested depositional flux [mass m-2 s-1].
+            dep_flux_req = (-vel_swi) * max(Cw_bot, 0.0_rk)
+
+            ! Requested depositional inventory over this time step [mass m-2].
+            dep_mass_req = dt * dep_flux_req
+
+            ! Positivity-preserving deposited inventory.
+            dep_mass = min(dep_mass_req, available)
+
+            ! Update bottom-water concentration.
+            Cw_bot = Cw_bot - dep_mass / dz_w_bot
+
+            ! Avoid tiny negative roundoff.
+            if (Cw_bot < 0.0_rk .and. Cw_bot > - 100._rk * epsilon(1._rk)) Cw_bot = 0.0_rk
+
             ! update sediment surface concentration (Forward Euler)
-            Cbulk_sed_top = Cbulk_sed_top + dt * Fdep / dz_sed_top
+            Cbulk_sed_top = Cbulk_sed_top + dep_mass / dz_sed_top
         end if
     end subroutine apply_particulate_deposition
 
