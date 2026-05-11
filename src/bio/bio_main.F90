@@ -7,7 +7,7 @@ module bio_main
     use geo_utils,           only: LocationInfo    
     use grids,               only: VerticalGrid
     use molecular_diffusion, only: molecular_diffusivity
-    use numerical_stability, only: compute_bio_substeps
+    use numerical_stability, only: compute_transport_safe_dt, compute_reaction_safe_dt
     use physics_types,       only: PhysicsState
     use pressure,            only: compute_pressure 
     use precision_types,     only: rk, lk
@@ -50,7 +50,6 @@ contains
         integer  :: ivar, nz, nint, nsfc, nbtm
         integer  :: n_total_int_diag, n_save_int, j
         integer  :: n_total_hz_diag, n_save_hz
-        real(rk) :: diff_tracer
         real(rk) :: dt_main
 
         write(*,'(A)') 'Initialising biogeochemistry via FABM...'
@@ -217,11 +216,11 @@ contains
                             stop 1
                         end select
                     end if
-                    ! Write dat file with information of the tracer properties
-                    call write_tracer_properties(BE, 'tracer_properties.dat')
                 end if                        
             end do
             if (allocated(BE%int_vars)) call output_all_variables(BE%int_vars)
+            ! Write dat file with information of the tracer properties
+            if(BE%params%sediments_enabled) call write_tracer_properties(BE, 'tracer_properties.dat')
         end if
 
         ! Allocating working arrays        
@@ -619,9 +618,11 @@ contains
 
         integer  :: nz, ivar, k, nint, nsfc, nbtm
         real(rk) :: istep_rk, dt_main, dt_sub, model_time_frac
-        integer  :: nsub, isub, nsub_adv, nsub_diff, nsub_bio
+        integer  :: isub
+        real(rk) :: dt_done, dt_left
+        real(rk) :: dt_transport_safe, dt_reaction_safe
         integer  :: kwb, kws, ksb, kss, kswi, nwat, nsed, nfaces_wat
-        real(rk) :: vel_swi, Fdep
+        real(rk) :: vel_swi
         real(rk) :: c_w, c_s, M_old, M_new
         real(rk) :: D0, D0_max, Deff, phi_swi
         real(rk) :: swi_flux, swi_flux_max, flux_into_water, flux_into_sed
@@ -662,55 +663,7 @@ contains
         call update_environment_data(PS, FS, BE)
 
         ! Repair state, if needed, to let FABM restore all state variables within their registered bounds.
-        call check_and_repair_state(BE)
-
-        !--------------------------------------------------------------------
-        ! Prepare all fields FABM needs to compute source terms (e.g., light)
-        !---------------------------------------------------------------------
-        call BE%model%prepare_inputs(istep_rk, date%year, date%month, date%day, sec_of_day) !Providing the main time-step number as set_domain received dt_main 
-
-        !-------------------------------------------------------------
-        ! Obtaining tendencies (dC/dt) and surface and bottom fluxes from FABM
-        !-------------------------------------------------------------
-        BE%flux_sf = 0.0_rk; BE%tendency_sf  = 0.0_rk                 ! Zeroing before receiving surface fluxes and sources
-        call BE%model%get_surface_sources(BE%flux_sf, BE%tendency_sf) ! Retrieve surface fluxes and sources from FABM
-
-        BE%flux_bt = 0.0_rk; BE%tendency_bt  = 0.0_rk                 ! Zero before receiving bottom fluxes and sources
-        call BE%model%get_bottom_sources(BE%flux_bt, BE%tendency_bt)  ! Retrieve bottom fluxes and sources from FABM
-
-        BE%tendency_int       = 0.0_rk   ! Sources from FABM (tracer units s-1).
-        call BE%model%get_interior_sources(1, nz, BE%tendency_int)
-
-        ! Include contribution of bottom and surface fluxes to tendencies at bottom and surface
-        if (nint > 0) then
-            do ivar = 1, nint
-                if (.not. BE%params%sediments_enabled) then
-                    ! Bottom flux: positive is flux into the column, negative out of the column
-                    ! Flux = mass/(Area*dt)
-                    ! Concentration change due to flux = mass flux/volume = (Flux Area)/(Area dz) = Flux/dz
-                    BE%tendency_int(1,ivar)  = BE%tendency_int(1,ivar)  + BE%flux_bt(ivar) / BE%grid%dz(1)
-                end if
-
-                ! Surface flux: positive is flux into the water, negative out of the water
-                ! Concentration change due to flux = mass flux/volume = (Flux Area)/(Area dz) = Flux/dz
-                BE%tendency_int(nz,ivar) = BE%tendency_int(nz,ivar) + BE%flux_sf(ivar) / BE%grid%dz(nz)
-            end do
-        end if    
-
-        !------------------------------------------------------
-        ! Let FABM compute any remaining outputs (diagnostics) 
-        !------------------------------------------------------
-        call BE%model%finalize_outputs()
-
-        call update_bio_diagnostics(BE)   
-
-        BE%velocity = 0.0_rk
-        BE%vel_faces = 0._rk   
-        call BE%model%get_vertical_movement(1,nz, BE%velocity)   ! Obtain vertical velocities from FABM
-
-        ! Caluclate velocities at layer interfaces only for the water column
-        call velocity_at_interfaces( BE%velocity(kwb:kws, :), BE%wat_grid, BE%vel_faces(kwb-1:kws, :))
-
+        call check_and_repair_state(BE)      
 
         !----------------------------------------------------
         ! Compute molecular diffusivities per tracer (sediments only)
@@ -742,12 +695,125 @@ contains
                 BE%SED%Db_eff_solids(0:nsed) = 0.0_rk
             end if
         end if
-        ! Compute number of subcycles needed for numerical stabiluty in the water column
-        call compute_bio_substeps(BE, dt_main, BE%params%frac_max, BE%params%min_dt, &
-                                  nsub_adv, nsub_diff, nsub_bio, nsub, dt_sub)
+
+
+        !--------------------------------------------------------------------
+        ! Transport/diffusion fields are assumed fixed over this main biological step
+        !--------------------------------------------------------------------
+        BE%velocity = 0.0_rk
+        BE%vel_faces = 0._rk   
+        call BE%model%get_vertical_movement(1,nz, BE%velocity)   ! Obtain vertical velocities from FABM
+
+        ! Caluclate velocities at layer interfaces only for the water column
+        call velocity_at_interfaces( BE%velocity(kwb:kws, :), BE%wat_grid, BE%vel_faces(kwb-1:kws, :))
+
+        !------------------------------------------------------
+        ! Compute safe time-step for subcycling transport processes
+        !------------------------------------------------------
+        call compute_transport_safe_dt(BE, dt_main, dt_transport_safe)
+        
+        dt_done = 0.0_rk  ! How long of the main time step has been completed
+        isub    = 0       ! Number of substep
 
         ! Inner loop to maintain numerical stabilty
-        do isub=1, nsub            
+        do while (dt_done < dt_main - 1.0e-10_rk * dt_main)
+            
+            dt_left = dt_main - dt_done
+            isub = isub + 1
+
+            if (isub > BE%params%max_substeps) then
+                write(*,*) 'integrate_bio_fabm: exceeded max_substeps.'
+                error stop
+            end if
+
+            !--------------------------------------------------------------------
+            ! Prepare all fields FABM needs to compute source terms (e.g., light)
+            !---------------------------------------------------------------------
+            call BE%model%prepare_inputs(istep_rk + dt_done / dt_main, date%year, date%month, date%day, sec_of_day)
+
+            !-------------------------------------------------------------
+            ! Obtaining tendencies (dC/dt) and surface and bottom fluxes from FABM
+            !-------------------------------------------------------------
+            BE%flux_sf = 0.0_rk; BE%tendency_sf  = 0.0_rk                 ! Zeroing before receiving surface fluxes and sources
+            call BE%model%get_surface_sources(BE%flux_sf, BE%tendency_sf) ! Retrieve surface fluxes and sources from FABM
+
+            BE%flux_bt = 0.0_rk; BE%tendency_bt  = 0.0_rk                 ! Zero before receiving bottom fluxes and sources
+            call BE%model%get_bottom_sources(BE%flux_bt, BE%tendency_bt)  ! Retrieve bottom fluxes and sources from FABM
+
+            BE%tendency_int       = 0.0_rk   ! Sources from FABM (tracer units s-1).
+            call BE%model%get_interior_sources(1, nz, BE%tendency_int)
+
+            ! Include contribution of bottom and surface fluxes to tendencies at bottom and surface
+            if (nint > 0) then
+                do ivar = 1, nint
+                    if (.not. BE%params%sediments_enabled) then
+                        ! Bottom flux: positive is flux into the column, negative out of the column
+                        ! Flux = mass/(Area*dt)
+                        ! Concentration change due to flux = mass flux/volume = (Flux Area)/(Area dz) = Flux/dz
+                        BE%tendency_int(1,ivar)  = BE%tendency_int(1,ivar)  + BE%flux_bt(ivar) / BE%grid%dz(1)
+                    end if
+
+                    ! Surface flux: positive is flux into the water, negative out of the water
+                    ! Concentration change due to flux = mass flux/volume = (Flux Area)/(Area dz) = Flux/dz
+                    BE%tendency_int(nz,ivar) = BE%tendency_int(nz,ivar) + BE%flux_sf(ivar) / BE%grid%dz(nz)
+                end do
+            end if    
+
+            !------------------------------------------------------
+            ! Apply external events (e.g. a tracer pulse or trawling)
+            ! Obtain tendencies from external events (if any)
+            !------------------------------------------------------
+            BE%tendency_int_evt   = 0.0_rk       ! Zero before adding tendencies
+            BE%tendency_int_total = 0.0_rk
+    !!! Review which dt to use 
+            if (BE%Events%any_events) then
+                call BE%Events%apply(model_time_frac, dt_left, BE%tendency_int_evt)
+            end if
+            ! Add tendencies, if any from the events
+            BE%tendency_int_total = BE%tendency_int + BE%tendency_int_evt  
+
+            !----------------------------------------------------------------
+            ! Compute adaptive time-step for integrating tendencies safely
+            !----------------------------------------------------------------
+            call compute_reaction_safe_dt(BE, BE%tendency_int_total, BE%tendency_sf, BE%tendency_bt, dt_left, dt_reaction_safe)
+            dt_sub = min(dt_left, dt_transport_safe, dt_reaction_safe)
+
+            if (dt_sub < BE%params%min_dt) then
+                write(*,*) 'integrate_bio_fabm: adaptive dt_sub below min_dt.'
+                write(*,*) 'dt_sub=', dt_sub, ' min_dt=', BE%params%min_dt
+                write(*,*) 'dt_transport_safe=', dt_transport_safe
+                write(*,*) 'dt_reaction_safe=', dt_reaction_safe
+                error stop
+            end if
+
+            !-----------------------------------------------------------------------------
+            ! Integrate tracers using exflicit Forward Euler
+            !-----------------------------------------------------------------------------    
+            ! Interior
+            if (nint>0) then
+                do ivar = 1, nint
+                    do k = 1, nz
+                        BE%BS%interior_state(k,ivar) = BE%BS%interior_state(k,ivar) + dt_sub * BE%tendency_int_total(k,ivar)
+                    end do
+                end do
+            end if
+
+            ! Surface
+            if (nsfc>0) then
+                do ivar = 1, nsfc
+                    BE%BS%surface_state(ivar) = BE%BS%surface_state(ivar) + dt_sub * BE%tendency_sf(ivar)
+                end do
+            end if 
+
+            ! Bottom
+            if (nbtm>0) then
+                do ivar = 1, nbtm
+                    BE%BS%bottom_state(ivar)  = BE%BS%bottom_state(ivar)  + dt_sub * BE%tendency_bt(ivar)
+                end do
+            end if
+            ! Repair state, if needed, to let FABM restore all state variables within their registered bounds.
+            call check_and_repair_state(BE) 
+
             !--------------------------------------------------------------
             ! Vertical diffusivity and burial in the sediment (if enabled)
             !--------------------------------------------------------------
@@ -844,8 +910,8 @@ contains
                             ! Diffusion in the water column
                             call scalar_diffusion(Var=BE%BS%interior_state(kwb:kws,ivar), N=nwat, dt=dt_sub, h=BE%wat_grid%dz, &
                                                   diff=BE%BS%vert_diff(kwb-1:kws), cnpar=BE%params%cnpar, tricoef=BE%wat_trid, ierr=ierr, &
-                                                  enforce_nonneg=enforce_nonneg, bc_bot_type=BC_NEUMANN, bc_bot_value=flux_into_water)
-
+                                                  enforce_nonneg=enforce_nonneg, bc_bot_type=BC_NEUMANN, bc_bot_value=flux_into_water)                                         
+                            
                             M_new = sum(BE%BS%interior_state(kwb:kws, ivar) * BE%wat_grid%dz(1:nwat))
                             ! Corrected flux going into the sediments. 
                             swi_flux = - max(0._rk, (M_old - M_new) / dt_sub) ! Negative to keep sign consistency
@@ -874,8 +940,8 @@ contains
                                                   diff=BE%BS%vert_diff(kwb-1:kws), cnpar=BE%params%cnpar, tricoef=BE%wat_trid, ierr=ierr)
 
                         end if
-                        BE%SED%swi_flux(ivar) = swi_flux    
-                        
+                        BE%SED%swi_flux(ivar) = swi_flux 
+                                       
                         !-------------------------------------------------------------
                         !  Bioirrigation (only for solutes)
                         !-------------------------------------------------------------
@@ -895,9 +961,9 @@ contains
                         ! NOTE: Bioturbation is modelled as a bioduiffusivity process on concentrations per solid volume
                         call scalar_diffusion_sed(Var=BE%BS%interior_state(1:nsed, ivar), N=nsed, dt=dt_sub,   &
                                                   h=BE%sed_grid%dz, phase_thickness=BE%SED%solid_thickness, &
-                                                  diff=BE%SED%Db_eff_solids, cnpar=BE%SED%params_SI%cnpar_sed, tricoef=BE%SED%sed_trid, ierr=ierr)
+                                                  diff=BE%SED%Db_eff_solids, cnpar=BE%SED%params_SI%cnpar_sed, tricoef=BE%SED%sed_trid, ierr=ierr)            
                     end if
-                end do
+                end do 
 
                 ! Convert from phase-specific concentrations to bulk-sediment volume concentrations
                 call phase_to_bulk_all(C_phase     = BE%BS%interior_state(1:kss, 1:nint), &
@@ -921,6 +987,7 @@ contains
                                                           Cbulk_sed_top = BE%SED%bulk_conc(kss, ivar))    
                     end if
                 end do
+
                 !----------------------------------------------------------------
                 !-- Burial advection in the sediments (for porewater and solids)
                 !----------------------------------------------------------------
@@ -936,6 +1003,7 @@ contains
                                                       dt_sub, bottom_outflow_only=BE%SED%params_SI%bottom_outflow)                      
                     end if
                 end do
+ 
                 ! Update phase-specific concentrations from bulk-concentrations
                 call bulk_to_phase_all(C_bulk      = BE%SED%bulk_conc(1:kss, 1:nint), &
                                        poro        = BE%SED%poro(1:kss), &
@@ -968,54 +1036,22 @@ contains
 
                     end if
                 end do
-            end if             
+            end if    
 
             !-----------------------------------------------------------------------------
             ! Repair state for interior tracers after vertical redistribution of tracers
             !----------------------------------------------------------------------------
             call check_and_repair_state(BE)
-
-            !------------------------------------------------------
-            ! Apply external events (e.g. a tracer pulse or trawling)
-            ! Obtain tendencies from external events (if any)
-            !------------------------------------------------------
-            BE%tendency_int_evt   = 0.0_rk       ! Zero before adding tendencies
-            BE%tendency_int_total = 0.0_rk
-            if (BE%Events%any_events) then
-                call BE%Events%apply(model_time_frac, dt_sub, BE%tendency_int_evt)
-            end if
-            ! Add tendencies, if any from the events
-            BE%tendency_int_total = BE%tendency_int + BE%tendency_int_evt
             
-            !-----------------------------------------------------------------------------
-            ! Integrate tracers using exflicit Forward Euler
-            !-----------------------------------------------------------------------------    
-            ! Interior
-            if (nint>0) then
-                do ivar = 1, nint
-                    do k = 1, nz
-                        BE%BS%interior_state(k,ivar) = BE%BS%interior_state(k,ivar) + dt_sub * BE%tendency_int_total(k,ivar)
-                    end do
-                end do
-            end if
+            !------------------------------------------------------
+            ! Let FABM compute any remaining outputs (diagnostics) 
+            !------------------------------------------------------
+            call BE%model%finalize_outputs()
 
-            ! Surface
-            if (nsfc>0) then
-                do ivar = 1, nsfc
-                    BE%BS%surface_state(ivar) = BE%BS%surface_state(ivar) + dt_sub * BE%tendency_sf(ivar)
-                end do
-            end if 
-
-            ! Bottom
-            if (nbtm>0) then
-                do ivar = 1, nbtm
-                    BE%BS%bottom_state(ivar)  = BE%BS%bottom_state(ivar)  + dt_sub * BE%tendency_bt(ivar)
-                end do
-            end if
-            ! Repair state, if needed, to let FABM restore all state variables within their registered bounds.
-            call check_and_repair_state(BE)    
+            call update_bio_diagnostics(BE) 
             
             ! Advance time
+            dt_done = dt_done + dt_sub
             model_time_frac = model_time_frac + dt_sub           
         end do     
         !----- End of inner loop
@@ -1304,21 +1340,96 @@ contains
     subroutine check_and_repair_state(BE)
         type(BioEnv), intent(inout) :: BE
 
-        logical :: repair
+        integer  :: k, ivar
+        real(rk) :: cmin, cmax, eps_bound, tol
+        logical  :: repair
+
         repair = BE%params%repair
+
+        ! Small tolerance for roundoff-level boundary excursions.
+        eps_bound = 100.0_rk * epsilon(1.0_rk)
+
+        !---------------------------------------------------------------
+        ! Return tiny roundoff-level excursions back to valid FABM intervals
+        ! before asking FABM to validate/repair the state.
+        !---------------------------------------------------------------
+
+        ! Interior state variables
+        if (BE%BS%n_interior > 0) then
+            do ivar = 1, BE%BS%n_interior
+                cmin = BE%model%interior_state_variables(ivar)%minimum
+                cmax = BE%model%interior_state_variables(ivar)%maximum
+
+                do k = 1, BE%grid%nz
+                    tol = eps_bound * max(1.0_rk, abs(cmin))
+                    if (BE%BS%interior_state(k,ivar) < cmin .and. &
+                        BE%BS%interior_state(k,ivar) >= cmin - tol) then
+                        BE%BS%interior_state(k,ivar) = cmin
+                    end if
+
+                    tol = eps_bound * max(1.0_rk, abs(cmax))
+                    if (BE%BS%interior_state(k,ivar) > cmax .and. &
+                        BE%BS%interior_state(k,ivar) <= cmax + tol) then
+                        BE%BS%interior_state(k,ivar) = cmax
+                    end if
+                end do
+            end do
+        end if
+
+        ! Surface state variables
+        if (BE%BS%n_surface > 0) then
+            do ivar = 1, BE%BS%n_surface
+                cmin = BE%model%surface_state_variables(ivar)%minimum
+                cmax = BE%model%surface_state_variables(ivar)%maximum
+
+                tol = eps_bound * max(1.0_rk, abs(cmin))
+                if (BE%BS%surface_state(ivar) < cmin .and. &
+                    BE%BS%surface_state(ivar) >= cmin - tol) then
+                    BE%BS%surface_state(ivar) = cmin
+                end if
+
+                tol = eps_bound * max(1.0_rk, abs(cmax))
+                if (BE%BS%surface_state(ivar) > cmax .and. &
+                    BE%BS%surface_state(ivar) <= cmax + tol) then
+                    BE%BS%surface_state(ivar) = cmax
+                end if
+            end do
+        end if
+
+        ! Bottom state variables
+        if (BE%BS%n_bottom > 0) then
+            do ivar = 1, BE%BS%n_bottom
+                cmin = BE%model%bottom_state_variables(ivar)%minimum
+                cmax = BE%model%bottom_state_variables(ivar)%maximum
+
+                tol = eps_bound * max(1.0_rk, abs(cmin))
+                if (BE%BS%bottom_state(ivar) < cmin .and. &
+                    BE%BS%bottom_state(ivar) >= cmin - tol) then
+                    BE%BS%bottom_state(ivar) = cmin
+                end if
+
+                tol = eps_bound * max(1.0_rk, abs(cmax))
+                if (BE%BS%bottom_state(ivar) > cmax .and. &
+                    BE%BS%bottom_state(ivar) <= cmax + tol) then
+                    BE%BS%bottom_state(ivar) = cmax
+                end if
+            end do
+        end if
 
         ! Repair state, if needed, to let FABM restore all state variables within their registered bounds.
         if (BE%BS%n_interior > 0) then
-             call BE%model%check_interior_state(1, BE%grid%nz, repair, BE%valid_int)
-             if (.not. BE%valid_int .and. repair) BE%nrepair_int = BE%nrepair_int + 1 ! Update counters
+            call BE%model%check_interior_state(1, BE%grid%nz, repair, BE%valid_int)
+            if (.not. BE%valid_int .and. repair) BE%nrepair_int = BE%nrepair_int + 1
         end if
+
         if (BE%BS%n_surface > 0) then
             call BE%model%check_surface_state(repair, BE%valid_sfc)
-             if (.not. BE%valid_sfc .and. repair) BE%nrepair_sfc = BE%nrepair_sfc + 1 ! Update counters
+            if (.not. BE%valid_sfc .and. repair) BE%nrepair_sfc = BE%nrepair_sfc + 1
         end if
+
         if (BE%BS%n_bottom > 0) then
             call BE%model%check_bottom_state(repair, BE%valid_btm)
-            if (.not. BE%valid_btm .and. repair) BE%nrepair_btm = BE%nrepair_btm + 1 ! Update counters
+            if (.not. BE%valid_btm .and. repair) BE%nrepair_btm = BE%nrepair_btm + 1
         end if 
 
         if (.not. (BE%valid_int .and. BE%valid_sfc .and. BE%valid_btm) .and. .not. repair) then            
