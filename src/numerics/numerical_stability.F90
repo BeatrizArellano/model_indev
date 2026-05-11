@@ -449,19 +449,8 @@ contains
          end if
       end do
 
-      if (cfl_max <= 0._rk) then
-        nsubsteps = 1
-      else
-        nsub_real = cfl_max / cfl_target   ! desired CFL_sub ~ cfl_target
-
-        if (nsub_real <= 1._rk) then
-            ! CFL already below target 
-            nsubsteps = 1
-        else
-            nsubsteps = int(nsub_real) + 1
-            if (nsubsteps < 1) nsubsteps = 1
-        end if
-      end if
+      nsub_real = cfl_max / cfl_target
+      nsubsteps = max(1, ceiling(nsub_real))
    end subroutine compute_transport_substeps
 
   !===============================================================================
@@ -521,7 +510,7 @@ contains
       real(rk), intent(out) :: dt_sub
 
       integer  :: N, k
-      real(rk) :: h_eff, Kloc, cflD, cflD_max
+      real(rk) :: Kloc, cflD, cflD_max
       real(rk) :: denom, alpha, beta
 
       real(rk), parameter :: CFL_TARGET = 0.7_rk
@@ -545,15 +534,8 @@ contains
         end if
       end do
 
-      if (cflD_max <= CFL_TARGET) then
-          nsub = 1
-          dt_sub = dt
-      else
-          ! We want cflD_sub = cflD_max / nsub ≤ 1, so nsub ≥ cflD_max
-          nsub = int(cflD_max / CFL_TARGET) + 1
-          if (nsub < 1) nsub = 1
-          dt_sub = dt / real(nsub, rk)
-      end if
+      nsub  = max(1, ceiling(cflD_max / CFL_TARGET))
+      dt_sub = dt / real(nsub, rk)
   end subroutine compute_diffusion_substeps
 
 
@@ -737,11 +719,7 @@ contains
 
       req = max(rmax / r_target, lambda / lambda_target)
 
-      if (req <= 1._rk) then
-        nsub = 1
-      else
-        nsub = ceiling(req)
-      end if
+      nsub = max(1, ceiling(req))
   end subroutine compute_bioirrigation_substeps
 
 
@@ -802,14 +780,10 @@ contains
         if (cflD > cflD_max) cflD_max = cflD
       end do
 
-      if (cflD_max <= 1._rk) then
-        nsub = 1
-      else
-        nsub = int(cflD_max) + 1
-        if (nsub < 1) nsub = 1
-      end if
 
+      nsub = max(1, ceiling(cflD_max))
       dt_sub = dt / real(nsub, rk)
+
   end subroutine compute_diffusion_substeps_sed
 
 
@@ -855,19 +829,8 @@ contains
          end if
       end do
 
-      if (cfl_max <= 0._rk) then
-        nsubsteps = 1
-      else
-        nsub_real = cfl_max / cfl_target   ! desired CFL_sub ~ cfl_target
-
-        if (nsub_real <= 1._rk) then
-            ! CFL already below target 
-            nsubsteps = 1
-        else
-            nsubsteps = max(1, ceiling(nsub_real))
-            if (nsubsteps < 1) nsubsteps = 1
-        end if
-      end if
+      nsub_real = cfl_max / cfl_target
+      nsubsteps = max(1, ceiling(nsub_real))
    end subroutine compute_transport_substeps_sed
 
 
