@@ -1,6 +1,5 @@
 module bio_params
   use precision_types,  only: rk
-  use grids,            only: VerticalGrid
   use read_config_yaml, only: ConfigParams
 
   implicit none
@@ -15,9 +14,9 @@ module bio_params
         logical  :: sediments_enabled = .false.
         logical  :: repair = .false.
         logical  :: output_conserved = .false.            ! Retrieve conserved quantities from FABM and output the column-integrated totals
-        real(rk) :: frac_max 
-        real(rk) :: cnpar 
+        integer  :: max_substeps
         real(rk) :: min_dt
+        real(rk) :: cnpar 
     end type BioParams
 
     type, public :: SedParams
@@ -62,9 +61,9 @@ module bio_params
     real(rk), parameter :: mol_diff   = 1.0e-6_rk             ! Molecular diffusivity in the water column [m2 s-1]
 
     ! ----------------- Default values for parameters ----------------------------------------------------------
-    real(rk), parameter :: def_frac_max    = 0.1_rk      ! Maximum fractional change allowed per main timestep per tracer
-    real(rk), parameter :: def_min_dt      = 10.0_rk     ! Minimum time-step in the inner loop
-    real(rk), parameter :: def_cnpar       = 0.5_rk      ! Degree of Implicitness when solving diffusive mixing [0-1]
+    integer,  parameter :: def_max_substeps = 10000   
+    real(rk), parameter :: def_min_dt       = 0.1_rk      ! Minimum time-step in the inner loop
+    real(rk), parameter :: def_cnpar        = 0.5_rk      ! Degree of Implicitness when solving diffusive mixing [0-1]
     logical,  parameter :: def_repair      = .false.     ! Indicates FABM whether to repair the state of the variables
     logical,  parameter :: def_conserv     = .false.     ! Retrieve conserved quantities from FABM and output the column-integrated totals
     logical,  parameter :: def_sed_enabled = .false.     ! Sediments enabled
@@ -103,7 +102,7 @@ contains
         ! ---------------- Mixing ----------------
         bio%cnpar = cfg_params%get_param_num('biogeochemistry.vertical_mixing.cnpar', default=def_cnpar, finite=.true., min=0._rk, max=1._rk)
         ! ---------------- Numerics ----------------
-        bio%frac_max = cfg_params%get_param_num('biogeochemistry.numerics.max_change', default=def_frac_max, finite=.true., positive=.true.)
+        bio%max_substeps = cfg_params%get_param_int('biogeochemistry.numerics.max_substeps', default=def_max_substeps, min=1)
         bio%min_dt   = cfg_params%get_param_num('biogeochemistry.numerics.min_timestep', default=def_min_dt, finite=.true., positive=.true.)
     end subroutine read_bio_parameters
 
@@ -145,8 +144,8 @@ contains
         p%sediments_enabled = def_sed_enabled
         p%repair            = def_repair
         p%output_conserved  = def_conserv
-        p%frac_max          = def_frac_max    
         p%cnpar             = def_cnpar
+        p%max_substeps      = def_max_substeps
         p%min_dt            = def_min_dt
     end function default_bio_params
 
