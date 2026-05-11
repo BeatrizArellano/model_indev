@@ -7,9 +7,8 @@ module numerical_stability
 
   implicit none
   private
-  public :: compute_phys_substeps, compute_bio_substeps
-
-
+  public :: compute_phys_substeps
+  public :: compute_transport_safe_dt, compute_reaction_safe_dt
 
 contains
 
@@ -221,50 +220,46 @@ contains
   end subroutine compute_phys_substeps
 
 
-  ! Computes the number of subcycles required while updating biogeochemistry, considering potential limiting factors for all processes. 
-  subroutine compute_bio_substeps(BE, dt_main, frac_max, dt_min, &
-                                  nsub_adv, nsub_diff, nsub_bio, &
-                                  nsub, dt_sub,                  &
-                                  nsub_burial, nsub_bioirr, nsub_dep, nsub_sed_diff)
+  !===============================================================================
+  ! compute_transport_safe_dt
+  !
+  ! Computes a safe time step for explicit transport and mixing processes.
+  !
+  ! The routine evaluates stability and positivity constraints associated with:
+  !   - vertical advection/sinking in the water column,
+  !   - vertical diffusion,
+  !   - sediment burial,
+  !   - bioirrigation,
+  !   - particulate deposition,
+  !   - sediment diffusion and bioturbation.
+  !
+  ! The most restrictive process determines the returned safe time step.
+  !
+  ! Inputs
+  ! ------
+  ! BE          Biogeochemical environment and transport state
+  ! dt_left     Remaining time in the parent time step [s]
+  !
+  ! Output
+  ! ------
+  ! dt_safe     Maximum safe transport time step [s]
+  !===============================================================================
+  subroutine compute_transport_safe_dt(BE, dt_left, dt_safe)
 
-    !--- Inputs ---
-    type(BioEnv), intent(in) :: BE
-    real(rk),     intent(in) :: dt_main
-    real(rk),     intent(in) :: frac_max
-    real(rk),     intent(in) :: dt_min
+    type(BioEnv), intent(in)  :: BE
+    real(rk),     intent(in)  :: dt_left
+    real(rk),     intent(out) :: dt_safe
 
-    !--- Outputs (core) ---
-    integer,      intent(out) :: nsub_adv, nsub_diff, nsub_bio
-    integer,      intent(out) :: nsub
-    real(rk),     intent(out) :: dt_sub
-
-    !--- Optional extra diagnostics (useful for logging) ---
-    integer,      intent(out), optional :: nsub_burial, nsub_bioirr, nsub_dep, nsub_sed_diff
-
-    !--- Locals ---
     integer  :: kwb, kws, nwat, nsed
-    real(rk) :: cfl_adv, cfl_adv_sol, cfl_adv_sld
-    real(rk) :: dt_dummy
-    real(rk) :: nsub_real_limit
-    integer  :: nsub_limit
+    integer  :: nsub
+    real(rk) :: dt_here
+    real(rk) :: cfl_dummy
 
-    integer :: ns_burial, ns_bioirr, ns_dep, ns_sed_diff, ns_sed_biot, ns_burial_sol, ns_burial_sld
+    integer :: ns_dummy
+    integer :: ns_burial_sol, ns_burial_sld
+    integer :: ns_bioirr, ns_dep
 
-
-    ! defaults
-    nsub_adv  = 1
-    nsub_diff = 1
-    nsub_bio  = 1
-    ns_burial   = 1
-    ns_bioirr   = 1
-    ns_dep      = 1
-    ns_sed_diff = 1
-    ns_sed_biot = 1
-    ns_burial_sol = 1
-    ns_burial_sld = 1
-    cfl_adv_sol   = 0._rk
-    cfl_adv_sld   = 0._rk
-
+    dt_safe = dt_left
 
     kwb  = BE%k_wat_btm
     kws  = BE%k_wat_sfc
@@ -272,105 +267,80 @@ contains
     nsed = BE%nsed
 
     !----------------------------------------------------------------
-    !  Substeps from vertical transport (sinking or rising)
-    !   Only in the Water-column 
+    ! Water-column vertical transport: sinking or rising
     !----------------------------------------------------------------
-    call compute_transport_substeps(BE%vel_faces(kwb-1:kws, :), BE%wat_grid%dz(1:nwat), &
-                                    dt_main, cfl_adv, nsub_adv)
+    call compute_transport_substeps(BE%vel_faces(kwb-1:kws,:), BE%wat_grid%dz(1:nwat), &
+                                    dt_left, cfl_dummy, nsub)
 
-    !----------------------------------------------------------------
-    ! Water-column diffusion stability 
-    !----------------------------------------------------------------
+    dt_here = dt_left / real(max(1, nsub), rk)
+    dt_safe = min(dt_safe, dt_here)
+
+    !--------------------------------------------------------------
+    ! Water-column diffusion
+    !--------------------------------------------------------------
     call compute_diffusion_substeps(BE%BS%vert_diff(kwb-1:kws), BE%wat_grid%dz(1:nwat), &
-                                    dt_main, BE%params%cnpar, nsub_diff, dt_dummy)
+                                    dt_left, BE%params%cnpar, nsub, dt_here)
 
-    !----------------------------------------------------------------
-    ! Reaction / source integration stability (explicit Euler)
-    !----------------------------------------------------------------
-    call compute_bioint_substeps(BE, BE%tendency_int, BE%tendency_sf, BE%tendency_bt, &
-                                 dt_main, frac_max, nsub_bio, dt_dummy)
+    dt_safe = min(dt_safe, dt_here)
 
-    !----------------------------------------------------------------
-    ! Sediment-related explicit operators (only if enabled)
-    !----------------------------------------------------------------
-    if (BE%params%sediments_enabled) then
+    !--------------------------------------------------------------
+    ! Sediment operators
+    !--------------------------------------------------------------
+    if (BE%params%sediments_enabled .and. nsed > 0) then
 
-      ! Sediment burial CFL (solutes + solids velocities).
-      call compute_transport_substeps_sed(BE%SED%vel_solutes(0:nsed), BE%sed_grid%dz(1:nsed), &
-                                          dt_main, cfl_adv_sol, ns_burial_sol )
+        ! Sediment burial CFL: (solutes + solids velocities).
+        call compute_transport_substeps_sed(BE%SED%vel_solutes(0:nsed), BE%sed_grid%dz(1:nsed), &
+                                            dt_left, cfl_dummy, ns_burial_sol)
 
-      call compute_transport_substeps_sed(BE%SED%vel_solids(0:nsed), BE%sed_grid%dz(1:nsed), &
-                                          dt_main, cfl_adv_sld, ns_burial_sld )
+        call compute_transport_substeps_sed(BE%SED%vel_solids(0:nsed), BE%sed_grid%dz(1:nsed), &
+                                            dt_left, cfl_dummy, ns_burial_sld)
 
-      ns_burial = max(ns_burial_sol, ns_burial_sld)
+        nsub = max(ns_burial_sol, ns_burial_sld)
+        dt_here = dt_left / real(max(1, nsub), rk)
+        dt_safe = min(dt_safe, dt_here)
 
+        ! Bioirrigation explicit stability
+        call compute_bioirrigation_substeps(alpha             = BE%SED%bioirr(1:nsed), &
+                                            porewat_thickness = BE%SED%porewat_thickness(1:nsed), &
+                                            dz_wat_btm        = BE%wat_grid%dz(1), &
+                                            dt_main           = dt_left, &
+                                            nsub              = ns_bioirr)
 
-      ! Bioirrigation explicit stability (rmax + lambda)
-      call compute_bioirrigation_substeps(alpha             = BE%SED%bioirr(1:nsed), &
-                                          porewat_thickness = BE%SED%porewat_thickness(1:nsed), &
-                                          dz_wat_btm        = BE%wat_grid%dz(1), &
-                                          dt_main           = dt_main, &
-                                          nsub              = ns_bioirr)
+        dt_here = dt_left / real(max(1, ns_bioirr), rk)
+        dt_safe = min(dt_safe, dt_here)
 
-      ! Particulate deposition explicit positivity
-      call compute_deposition_substeps(BE, kwb, BE%wat_grid%dz(1), dt_main, ns_dep)
+        ! Particulate deposition explicit positivity
+        call compute_deposition_substeps(BE, kwb, BE%wat_grid%dz(1), dt_left, ns_dep)
 
-      ! Sediment diffusion CFL 
-      ! If cnpar_sed==1, this is unconditionally stable and can be ignored.
-      if (BE%SED%params_SI%cnpar_sed < 1.0_rk) then
-        call compute_diffusion_substeps_sed(BE%SED%diff_sed_max(0:nsed), BE%sed_grid%dz(1:nsed), BE%SED%porewat_thickness(1:nsed), &
-                                            dt_main, cnpar=BE%SED%params_SI%cnpar_sed,   &
-                                            nsub=ns_sed_diff, dt_sub=dt_dummy)
+        dt_here = dt_left / real(max(1, ns_dep), rk)
+        dt_safe = min(dt_safe, dt_here)
 
-        call compute_diffusion_substeps_sed(BE%SED%Db_eff_solids(0:nsed), BE%sed_grid%dz(1:nsed), BE%SED%solid_thickness(1:nsed), &
-                                            dt_main, cnpar=BE%SED%params_SI%cnpar_sed,   &
-                                            nsub=ns_sed_biot, dt_sub=dt_dummy)
-      else
-        ns_sed_diff = 1
-        ns_sed_biot = 1
-      end if
+        ! Sediment diffusion / bioturbation
+        if (BE%SED%params_SI%cnpar_sed < 1.0_rk) then
+
+          call compute_diffusion_substeps_sed(BE%SED%diff_sed_max(0:nsed), &
+                                              BE%sed_grid%dz(1:nsed), &
+                                              BE%SED%porewat_thickness(1:nsed), &
+                                              dt_left, cnpar=BE%SED%params_SI%cnpar_sed, &
+                                              nsub=ns_dummy, dt_sub=dt_here)
+
+          dt_safe = min(dt_safe, dt_here)
+
+          call compute_diffusion_substeps_sed(BE%SED%Db_eff_solids(0:nsed), &
+                                              BE%sed_grid%dz(1:nsed), &
+                                              BE%SED%solid_thickness(1:nsed), &
+                                              dt_left, cnpar=BE%SED%params_SI%cnpar_sed, &
+                                              nsub=ns_dummy, dt_sub=dt_here)
+
+          dt_safe = min(dt_safe, dt_here)
+
+        end if
 
     end if
 
-    !----------------------------------------------------------------
-    ! Global number of substeps
-    !----------------------------------------------------------------
-    if (BE%params%sediments_enabled) then
-      nsub = max(nsub_adv, max(nsub_diff, nsub_bio) )
-      nsub = max(nsub, max(ns_burial, max(ns_bioirr, max(ns_dep, max(ns_sed_diff, ns_sed_biot)))) )
-    else
-      nsub = max(nsub_adv, max(nsub_diff, nsub_bio) )
-    end if
+    dt_safe = min(dt_safe, dt_left)
 
-    if (nsub < 1) nsub = 1
-    dt_sub = dt_main / real(nsub, rk)
-
-    !----------------------------------------------------------------
-    ! dt_sub >= dt_min (your existing clamp)
-    !----------------------------------------------------------------
-    if (dt_min > 0._rk .and. dt_sub < dt_min) then
-      nsub_real_limit = dt_main / dt_min
-      nsub_limit      = int(nsub_real_limit)  ! floor
-
-      if (nsub_limit < 1) then
-        nsub   = 1
-        dt_sub = dt_main
-      else
-        if (nsub > nsub_limit) nsub = nsub_limit
-        if (nsub < 1) nsub = 1
-        dt_sub = dt_main / real(nsub, rk)
-      end if
-    end if
-
-    !----------------------------------------------------------------
-    ! Optional diagnostics
-    !----------------------------------------------------------------
-    if (present(nsub_burial))   nsub_burial   = ns_burial
-    if (present(nsub_bioirr))   nsub_bioirr   = ns_bioirr
-    if (present(nsub_dep))      nsub_dep      = ns_dep
-    if (present(nsub_sed_diff)) nsub_sed_diff = max(ns_sed_diff, ns_sed_biot)
-
-  end subroutine compute_bio_substeps
+  end subroutine compute_transport_safe_dt  
 
 
   !===============================================================================
@@ -570,7 +540,7 @@ contains
           alpha = 2._rk*Kloc / (denom * dz(k))
           beta  = 2._rk*Kloc / (denom * dz(k+1))
 
-          cflD = (1._rk - cnpar) * dt * max(alpha, beta)
+          cflD = max(0.0_rk, 1.0_rk - cnpar) * dt * max(alpha, beta)
           cflD_max = max(cflD_max, cflD)
         end if
       end do
@@ -587,87 +557,158 @@ contains
   end subroutine compute_diffusion_substeps
 
 
-  !--------------------------------------------------------------------
-  ! Compute number of bio substeps for explicit Euler integration
-  ! based on a maximum change allowed per time-step.
-  ! The idea is to keep integration using Forward Euler stable. 
+  !===============================================================================
+  ! compute_reaction_safe_dt
   !
-  !  - tendency_int(k,ivar): Tendencies for interor tracers [dC/dt]
-  !  - tendency_sf(ivar):    tendencies for surface-only tracers [dc/dt]
-  !  - tendency_bt(ivar):    tendencies for bottom-only tracers [dC/dt]
+  ! Computes a safe explicit time step for Forward Euler integration of
+  ! biogeochemical source/sink terms.
   !
-  !  We estimate, for each variable:
-  !      r = |dt_main * sms| / max(|C|, C_min)
-  !  and choose nsub so that per substep r/nsub <= frac_max.
-  !--------------------------------------------------------------------
-  subroutine compute_bioint_substeps(BE, tendency_int, tendency_sf, tendency_bt, dt_main,          &
-                                  frac_max, nsub, dt_sub)
-      use bio_types,       only: BioEnv
+  ! The routine scans all FABM interior, surface, and bottom state variables
+  ! and estimates the maximum stable time step that prevents any variable
+  ! from crossing its registered minimum or maximum bound during the update:
+  !
+  !     C_new = C + dt * dCdt
+  !
+  ! Inputs
+  ! ------
+  ! BE              Biogeochemical environment and FABM state
+  ! tendency_int    Interior tracer tendencies [dC/dt]
+  ! tendency_sf     Surface tracer tendencies [dC/dt]
+  ! tendency_bt     Bottom tracer tendencies [dC/dt]
+  ! dt_left         Remaining time in the parent time step [s]
+  !
+  ! Output
+  ! ------
+  ! dt_safe         Maximum safe reaction time step [s]
+  !===============================================================================
+  subroutine compute_reaction_safe_dt(BE, tendency_int, tendency_sf, tendency_bt, &
+                                    dt_left, dt_safe)
+
+      use bio_types, only: BioEnv
 
       type(BioEnv), intent(in)  :: BE
       real(rk),     intent(in)  :: tendency_int(:,:), tendency_sf(:), tendency_bt(:)
-      real(rk),     intent(in)  :: dt_main
-      real(rk),     intent(in)  :: frac_max      ! e.g. 0.25_rk
-      integer,      intent(out) :: nsub
-      real(rk),     intent(out) :: dt_sub
-
-      real(rk), parameter :: C_min   = 1.0e-30_rk   ! Just to avoid dividing by zero
+      real(rk),     intent(in)  :: dt_left
+      real(rk),     intent(out) :: dt_safe
 
       integer  :: nz, nint, nsfc, nbtm
       integer  :: k, ivar
-      real(rk) :: C0, dC, r, r_max, nsub_real
+      real(rk) :: C, dCdt, Cmin, Cmax, Cnew
+      real(rk) :: dt_here
 
       nz   = BE%grid%nz
       nint = BE%BS%n_interior
       nsfc = BE%BS%n_surface
       nbtm = BE%BS%n_bottom
 
-      r_max = 0.0_rk
+      dt_safe = dt_left
 
-      ! Interuor variables
-      if (nint>0) then
-        do ivar = 1, nint
-          do k = 1, nz
-              C0   = BE%BS%interior_state(k,ivar)   ! Initial state
-              dC   = dt_main * tendency_int(k,ivar) ! Change in the variable over the main time-step
-              r    = abs(dC) / max(abs(C0), C_min)  ! How much the reported tendency is changing the state of the variable
-              if (r > r_max) r_max = r              ! Maximum fractional change found for interior variables
+      !---------------------------------------------------------------
+      ! Interior variables
+      !---------------------------------------------------------------
+      if (nint > 0) then
+          do ivar = 1, nint
+
+              Cmin = BE%model%interior_state_variables(ivar)%minimum
+              Cmax = BE%model%interior_state_variables(ivar)%maximum
+
+              do k = 1, nz
+                  C    = BE%BS%interior_state(k, ivar)
+                  dCdt = tendency_int(k, ivar)
+
+                  ! Lower bound: only restrict dt if the full remaining
+                  ! step would move the value below its registered minimum.
+                  if (C > Cmin .and. dCdt < 0.0_rk) then
+                      Cnew = C + dt_left * dCdt
+
+                      if (Cnew < Cmin) then
+                          dt_here = (C - Cmin) / (-dCdt)
+                          dt_safe = min(dt_safe, dt_here)
+                      end if
+                  end if
+
+                  ! Upper bound: only restrict dt if the full remaining
+                  ! step would move the value above its registered maximum.
+                  if (C < Cmax .and. dCdt > 0.0_rk) then
+                      Cnew = C + dt_left * dCdt
+
+                      if (Cnew > Cmax) then
+                          dt_here = (Cmax - C) / dCdt
+                          dt_safe = min(dt_safe, dt_here)
+                      end if
+                  end if
+
+              end do
           end do
-        end do
       end if
 
-      ! Surface-only variables
-      if (nsfc>0) then
-        do ivar = 1, nsfc
-          C0   = BE%BS%surface_state(ivar)
-          dC   = dt_main * tendency_sf(ivar)
-          r    = abs(dC) / max(abs(C0), C_min)
-          if (r > r_max) r_max = r
-        end do
+      !---------------------------------------------------------------
+      ! Surface variables
+      !---------------------------------------------------------------
+      if (nsfc > 0) then
+          do ivar = 1, nsfc
+
+              C    = BE%BS%surface_state(ivar)
+              dCdt = tendency_sf(ivar)
+              Cmin = BE%model%surface_state_variables(ivar)%minimum
+              Cmax = BE%model%surface_state_variables(ivar)%maximum
+
+              if (C > Cmin .and. dCdt < 0.0_rk) then
+                  Cnew = C + dt_left * dCdt
+
+                  if (Cnew < Cmin) then
+                      dt_here = (C - Cmin) / (-dCdt)
+                      dt_safe = min(dt_safe, dt_here)
+                  end if
+              end if
+
+              if (C < Cmax .and. dCdt > 0.0_rk) then
+                  Cnew = C + dt_left * dCdt
+
+                  if (Cnew > Cmax) then
+                      dt_here = (Cmax - C) / dCdt
+                      dt_safe = min(dt_safe, dt_here)
+                  end if
+              end if
+
+          end do
       end if
 
-      ! Bottom-only tracers
-      if (nbtm>0) then
-        do ivar = 1, nbtm
-          C0   = BE%BS%bottom_state(ivar)
-          dC   = dt_main * tendency_bt(ivar)
-          r    = abs(dC) / max(abs(C0), C_min)
-          if (r > r_max) r_max = r
-        end do
+      !---------------------------------------------------------------
+      ! Bottom variables
+      !---------------------------------------------------------------
+      if (nbtm > 0) then
+          do ivar = 1, nbtm
+
+              C    = BE%BS%bottom_state(ivar)
+              dCdt = tendency_bt(ivar)
+              Cmin = BE%model%bottom_state_variables(ivar)%minimum
+              Cmax = BE%model%bottom_state_variables(ivar)%maximum
+
+              if (C > Cmin .and. dCdt < 0.0_rk) then
+                  Cnew = C + dt_left * dCdt
+
+                  if (Cnew < Cmin) then
+                      dt_here = (C - Cmin) / (-dCdt)
+                      dt_safe = min(dt_safe, dt_here)
+                  end if
+              end if
+
+              if (C < Cmax .and. dCdt > 0.0_rk) then
+                  Cnew = C + dt_left * dCdt
+
+                  if (Cnew > Cmax) then
+                      dt_here = (Cmax - C) / dCdt
+                      dt_safe = min(dt_safe, dt_here)
+                  end if
+              end if
+
+          end do
       end if
 
-      ! Calculate nsub and dt_sub
-      if (r_max <= frac_max .or. r_max <= 0._rk) then
-        nsub = 1
-      else
-        nsub_real = r_max / frac_max
-        nsub = ceiling(nsub_real)
-        if (nsub < 1) nsub = 1
-      end if
+      dt_safe = min(dt_safe, dt_left)
 
-      dt_sub = dt_main / real(nsub, rk)
-
-  end subroutine compute_bioint_substeps 
+  end subroutine compute_reaction_safe_dt
 
 
   !====================================================
@@ -923,5 +964,6 @@ contains
         return
       end if
   end subroutine compute_phys_substeps_prev
+
 
 end module numerical_stability
