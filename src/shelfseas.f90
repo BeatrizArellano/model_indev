@@ -2,7 +2,7 @@
 module shelfseas
   use bio_main,          only: init_bio_fabm, integrate_bio_fabm, end_bio_fabm
   use bio_types,         only: BioEnv
-  use forcing_manager,   only: ForcingManager, ForcingSnapshot
+  use physics_forcing,   only: PhysicsForcing, ForcingSnapshot
   use geo_utils,         only: LocationInfo
   use grids,             only: VerticalGrid, build_grids
   use output_manager,    only: OutputManager
@@ -12,7 +12,7 @@ module shelfseas
   use read_config_yaml,  only: ConfigParams
   use sim_clocks,        only: init_clock, print_progress, simtime_to_datetime
   use output_static,     only: StaticProfile, clear_static_profiles
-  use time_types,        only: DateTime, CFCalendar
+  use time_types,        only: DateTime, CFCalendar, cal_unknown
   use time_utils,        only: datetime_to_str
   use validation_utils,  only: validate_input_dates, validate_location_input, print_header
   use variable_registry, only: VarMetadata 
@@ -43,7 +43,7 @@ module shelfseas
   type(DateTime)        :: start_datetime, end_datetime, current_datetime
   type(CFCalendar)      :: calendar
   type(VerticalGrid)    :: wat_grid, sed_grid, full_grid
-  type(ForcingManager)  :: ForcMan
+  type(PhysicsForcing)  :: PhysForc
   type(ForcingSnapshot) :: ForcSnp
   type(PhysicsEnv)      :: PE
   type(BioEnv), target  :: BE
@@ -59,7 +59,6 @@ contains
     ! Initialisation
     !======================
     subroutine init_shelfseas()
-        integer, parameter :: cal_unknown = 0
         if (is_main_initialized) return
         ! Load user configuration in yaml file
         call cfg_params%init()    
@@ -81,20 +80,26 @@ contains
         call build_grids(cfg_params, location%depth, is_bio_enabled, is_sed_enabled, wat_grid, sed_grid, full_grid, static_profs)
 
         ! Verify and initialise forcing data
-        call ForcMan%set_error_mode(stop_on_error)  
+        call PhysForc%set_error_mode(stop_on_error)
 
-        call ForcMan%init(cfg_params, calendar, location, start_datetime, end_datetime, ok, msg)
-        if (.not. ok) stop 'init_forcing failed: '//trim(msg)           
-        ! Sets calendar from forcing data
+        call PhysForc%init(cfg_params, calendar, location, start_datetime, end_datetime, ok, msg)
+        if (.not. ok) stop 'init_physics_forcing failed: '//trim(msg)
+        ! Set calendar from forcing data
         if (calendar%kind == cal_unknown) then
-             calendar%kind = ForcMan%get_sim_calendar()
+            calendar%kind = PhysForc%get_sim_calendar()
         end if
+        ! Calendar must be defined before initialising the simulation clock
+        if (calendar%kind == cal_unknown) then
+            stop 'Error: simulation calendar is unknown. '// &
+                 'Set the calendar explicitly in the configuration or ensure the forcing NetCDF time variable has a valid CF calendar attribute.'
+        end if
+
         ! Reference date is the start datetime for the simulation
         dt = cfg_params%get_param_int('time.dt', default=300, positive=.true.)        
         call init_clock(calendar,start_datetime, end_datetime, dt, sim_length_sec, n_steps, last_dt_length)
 
-        call ForcMan%prepare(dt, preload_pad_sec=3600_lk, ok=ok, errmsg=msg)
-        if (.not. ok) stop 'prepare_forcing failed: '//trim(msg)
+        call PhysForc%prepare(dt, ok=ok, errmsg=msg)
+        if (.not. ok) stop 'prepare_physics_forcing failed: '//trim(msg)
 
         ! Initialise physics
         call init_physics(cfg_params, location, wat_grid, PE)
@@ -160,8 +165,10 @@ contains
             ! Get current calendar time for FABM
             call simtime_to_datetime(calendar, start_datetime, model_time, current_datetime, doy)
 
-            call ForcMan%tick(model_time)                                   ! Time-manager to load yearly forcing data on time
-            call ForcMan%sample(model_time, ForcSnp)                        ! get forcing snapshot for the current model time
+            call PhysForc%tick(model_time, ok=ok, errmsg=msg)                               ! Time-manager to load yearly forcing data on time
+            if (.not. ok) stop 'physics_forcing tick failed: '//trim(msg)
+            call PhysForc%sample(model_time, ForcSnp, ok=ok, errmsg=msg)                    ! get forcing snapshot for the current model time
+            if (.not. ok) stop 'physics_forcing sample failed: '//trim(msg)
 
             call solve_physics(PE, ForcSnp, dt_now, model_time, is_first_step, ierr, errmsg)
 
@@ -203,6 +210,7 @@ contains
         if (is_bio_enabled) then
             call end_bio_fabm(BE)
         end if
+        call PhysForc%clear()
         call clear_static_profiles(static_profs)
         call cfg_params%clear()
     end subroutine end_shelfseas 
