@@ -18,7 +18,7 @@
 !=======================================================================================
 module physics_main  
   use EOS_eqns,            only: eos_density
-  use forcing_manager,     only: ForcingSnapshot
+  use physics_forcing,     only: ForcingSnapshot
   use freshwater_fluxes,   only: apply_surface_freshwater
   use geo_utils,           only: LocationInfo
   use grids,               only: VerticalGrid
@@ -168,6 +168,7 @@ contains
         dtm = real(dt_main, kind=rk)
 
         N = PE%PS%N                          ! Number of layers in the vertical grid
+        PE%FS = FS
 
         ! Initialising them with current state
         PE%u_old = PE%PS%velx;  PE%v_old = PE%PS%vely
