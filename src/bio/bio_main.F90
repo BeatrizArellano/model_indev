@@ -3,7 +3,7 @@ module bio_main
     use bio_types,           only: BioEnv, DIFF_NONE, DIFF_O2CO2_AB, DIFF_ION_LINEAR, &
                                    DIFF_ARRHENIUS, DIFF_WILKE_CHANG, DIFF_STOKES_EINSTEIN
     use fabm
-    use forcing_manager,     only: ForcingSnapshot
+    use physics_forcing,     only: ForcingSnapshot
     use geo_utils,           only: LocationInfo    
     use grids,               only: VerticalGrid
     use molecular_diffusion, only: molecular_diffusivity
@@ -1287,7 +1287,7 @@ contains
         BE%BS%short_rad = FS%short_rad
         BE%BS%wind_spd  = PS%wind_speed
         BE%BS%slp       = FS%slp * 100.0_rk   ! Converting from hPa to Pa
-        BE%BS%co2_air   = FS%co2_air
+BE%BS%co2_air   = 0.0_rk !FS%co2_air
         BE%BS%stressb   = PS%stressb
         BE%BS%par_sfc   = PS%par_sfc
 
