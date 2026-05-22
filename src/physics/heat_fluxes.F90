@@ -16,7 +16,6 @@
 !
 !=======================================================================================
 module heat_fluxes
-  use forcing_manager, only: ForcingSnapshot
   use physics_params,  only: rho0, rho_air, cp_sw, cp_air, sigma_SB
   use precision_types, only: rk  
   use radiation,       only: compute_radiation_profile
