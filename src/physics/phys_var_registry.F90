@@ -128,7 +128,39 @@ contains
                              units='N m-2', vert_coord='bottom', n_space_dims=0, data_0d=PE%PS%stressb)
 
 
-       call define_output_variables(cfg_params,PE%phys_vars)
+      !-----------------------------------
+      ! Surface forcing variables
+      !-----------------------------------
+      call register_variable(PE%phys_vars, name='surf_air_temp', &
+                             long_name='Surface air temperature.', &
+                             units='degC', vert_coord='surface', n_space_dims=0, data_0d=PE%FS%air_temp)
+
+      call register_variable(PE%phys_vars, name='sl_pressure', &
+                             long_name='Sea-level pressure.', &
+                             units='hPa', vert_coord='surface', n_space_dims=0, data_0d=PE%FS%slp)
+
+      call register_variable(PE%phys_vars, name='relative_humidity', &
+                             long_name='Relative humidity.', &
+                             units='%', vert_coord='surface', n_space_dims=0, data_0d=PE%FS%rel_hum)
+
+      call register_variable(PE%phys_vars, name='shortwave_radiation', &
+                             long_name='Surface shortwave radiation.', &
+                             units='W m-2', vert_coord='surface', n_space_dims=0, data_0d=PE%FS%short_rad)
+
+      call register_variable(PE%phys_vars, name='longwave_radiation', &
+                             long_name='Surface longwave radiation.', &
+                             units='W m-2', vert_coord='surface', n_space_dims=0, data_0d=PE%FS%long_rad)
+
+      call register_variable(PE%phys_vars, name='wind_u10', &
+                             long_name='Eastward 10 m wind speed.', &
+                             units='m s-1', vert_coord='surface', n_space_dims=0, data_0d=PE%FS%wind_u10)
+
+      call register_variable(PE%phys_vars, name='wind_v10', &
+                             long_name='Northward 10 m wind speed.', &
+                             units='m s-1', vert_coord='surface', n_space_dims=0, data_0d=PE%FS%wind_v10)
+
+
+      call define_output_variables(cfg_params,PE%phys_vars)
     end subroutine register_physics_variables
 
     subroutine define_output_variables(cfg_params,VMD)
@@ -163,4 +195,6 @@ contains
         VMD(i)%output = output_var
       end do
     end subroutine define_output_variables
+
+
 end module phys_var_registry
