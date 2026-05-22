@@ -16,12 +16,13 @@ module time_types
   !--------------------------------------------------------------------
   ! Calendar identifiers, names according to CF Metadata convention
   !--------------------------------------------------------------------
-  integer, parameter, public :: cal_gregorian        = 1  ! "gregorian" or "standard"
-  integer, parameter, public :: cal_proleptic        = 2  ! "proleptic_gregorian"
-  integer, parameter, public :: cal_noleap           = 3  ! "noleap" or "365_day"
-  integer, parameter, public :: cal_all_leap         = 4  ! "all_leap" or "366_day"
-  integer, parameter, public :: cal_360_day          = 5  ! "360_day"
-  integer, parameter, public :: cal_standard         = 6  !  equal to "gregorian"
+  integer, parameter, public :: cal_unknown     = 0  ! Unknown calendar
+  integer, parameter, public :: cal_gregorian   = 1  ! "gregorian" or "standard"
+  integer, parameter, public :: cal_proleptic   = 2  ! "proleptic_gregorian"
+  integer, parameter, public :: cal_noleap      = 3  ! "noleap" or "365_day"
+  integer, parameter, public :: cal_all_leap    = 4  ! "all_leap" or "366_day"
+  integer, parameter, public :: cal_360_day     = 5  ! "360_day"
+  integer, parameter, public :: cal_standard    = 6  !  equal to "gregorian"
 
   type, public :: CFCalendar
     ! kind : one of the calendar IDs
@@ -59,6 +60,7 @@ contains
       case (cal_noleap);    name = 'noleap'            ! aka 365_day
       case (cal_all_leap);  name = 'all_leap'          ! aka 366_day
       case (cal_360_day);   name = '360_day'
+      case (cal_unknown);   name = 'unknown'
       case default;         name = 'unknown'
       end select
     end function cfcalendar_name
@@ -69,8 +71,19 @@ contains
       integer, intent(in) :: cala, calb
 
       logical :: a_greg, b_greg
-      a_greg = (cala == cal_gregorian) .or. (cala == cal_proleptic) .or. (cala == cal_standard)
-      b_greg = (calb == cal_gregorian) .or. (calb == cal_proleptic) .or. (calb == cal_standard)
+
+      if (cala == cal_unknown .or. calb == cal_unknown) then
+          ok = .false.
+          return
+      end if
+
+      a_greg = (cala == cal_gregorian) .or. &
+               (cala == cal_proleptic) .or. &
+               (cala == cal_standard)
+
+      b_greg = (calb == cal_gregorian) .or. &
+               (calb == cal_proleptic) .or. &
+               (calb == cal_standard)
 
       if (a_greg .and. b_greg) then
           ok = .true.
@@ -78,5 +91,5 @@ contains
           ok = (cala == calb)
       end if
     end function calendar_compatible
-  
+    
 end module time_types
