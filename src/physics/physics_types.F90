@@ -1,9 +1,10 @@
 module physics_types
+    use grids,               only: VerticalGrid    
+    use physics_forcing,     only: ForcingSnapshot
+    use physics_params,      only: PhysicsParams, z0s_min
     use precision_types,     only: rk, lk
-    use grids,               only: VerticalGrid
     use tidal,               only: TidalSet
     use tridiagonal,         only: TridiagCoeff
-    use physics_params,      only: PhysicsParams, z0s_min
     use variable_registry,   only: VarMetadata
 
   implicit none
@@ -51,6 +52,7 @@ module physics_types
   type :: PhysicsEnv   
     type(VerticalGrid)   :: grid       ! per-column grid (copy or pointer to external)
     type(PhysicsState)   :: PS         ! prognostic + turbulence arrays
+    type(ForcingSnapshot):: FS         ! current sampled physics forcing
     type(PhysicsParams)  :: params     ! per-column physics params (or shared elsewhere)
     type(TidalSet)       :: Tides      ! site-specific tides
     type(TridiagCoeff)   :: trid        ! workspace for implicit solves
