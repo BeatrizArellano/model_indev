@@ -31,6 +31,7 @@ module shelfseas
   logical  :: is_sed_enabled      = .false.
   logical  :: is_main_initialized = .false.
   logical  :: stop_on_error = .true.                 ! Full stop on error  -> useful in the future when running multiple columns
+  logical  :: load_yearly   = .false.                ! To load full series at the beginning or load every year
   logical  :: ok = .false.
   character(len=256) :: msg
 
@@ -66,9 +67,12 @@ contains
         ! Read and validate location parameters
         call validate_location_input(cfg_params, location)
         ! Read and validate simulation dates and calendar
-        call validate_input_dates(cfg_params, start_datetime, end_datetime, calendar)        
+        call validate_input_dates(cfg_params, start_datetime, end_datetime, calendar)  
+        ! Load data every year or full load at the beginning.   
+        load_yearly = cfg_params%get_param_logical('data.load_yearly', default=.false.)    
         ! Print header for simulation
-        call print_header(location,start_datetime,end_datetime) 
+        call print_header(location,start_datetime,end_datetime, load_yearly) 
+        
 
         ! Verify if biogeochemistry is enabled
         is_bio_enabled = cfg_params%get_param_logical('biogeochemistry.enabled', default=.false.)
@@ -82,7 +86,7 @@ contains
         ! Verify and initialise forcing data
         call PhysForc%set_error_mode(stop_on_error)
 
-        call PhysForc%init(cfg_params, calendar, location, start_datetime, end_datetime, ok, msg)
+        call PhysForc%init(cfg_params, calendar, location, start_datetime, end_datetime, load_yearly, ok, msg)
         if (.not. ok) stop 'init_physics_forcing failed: '//trim(msg)
         ! Set calendar from forcing data
         if (calendar%kind == cal_unknown) then
@@ -107,7 +111,7 @@ contains
         ! Initialise biogeochemistry if it's the case
         if (is_bio_enabled) then
             call init_bio_fabm(cfg_params, location, wat_grid, sed_grid, full_grid, &
-                               start_datetime, end_datetime, calendar, dt, PE%PS, ForcSnp, BE, static_profs)
+                               start_datetime, end_datetime, calendar, load_yearly, dt, PE%PS, ForcSnp, BE, static_profs)
             nsed = BE%nsed
         else 
             nsed = 0
@@ -139,7 +143,7 @@ contains
 
         integer(lk)        :: istep, model_time, dt_now
         integer            :: doy
-        real(rk)           :: sec_of_day, doy_real, model_time_rk
+        real(rk)           :: sec_of_day, doy_real
         integer            :: ierr
         character(len=512) :: errmsg
         logical            :: is_first_step = .true.  
@@ -159,8 +163,7 @@ contains
                 dt_now = dt  ! Current time-step length, always the same except for the last step
             else
                 dt_now = last_dt_length
-            end if
-             model_time_rk = real(model_time, rk)
+            end if            
 
             ! Get current calendar time for FABM
             call simtime_to_datetime(calendar, start_datetime, model_time, current_datetime, doy)
@@ -181,7 +184,7 @@ contains
                 sec_of_day = real(current_datetime%hour*3600 + current_datetime%minute*60 + current_datetime%second, rk)
                 ! 0-based day-of-year + fractional day
                 doy_real = real(doy - 1, rk) + sec_of_day / 86400._rk
-                call integrate_bio_fabm(BE, PE%PS, ForcSnp, dt_now, istep, model_time_rk, current_datetime, sec_of_day, doy_real)
+                call integrate_bio_fabm(BE, PE%PS, ForcSnp, dt_now, istep, model_time, current_datetime, sec_of_day, doy_real)
                 ! Update bioattenuation coefficients in Physics
                 if (PE%params%apply_heat_bioshade) then
                     PE%atten_bio(:) = BE%BS%atten_coeff(BE%k_wat_btm:BE%k_wat_sfc)
