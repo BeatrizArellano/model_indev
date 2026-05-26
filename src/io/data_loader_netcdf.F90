@@ -295,7 +295,7 @@ contains
       integer,             intent(in)    :: i0, i1
 
       integer :: nt, i
-      integer(lk) :: dt_first, dt_last
+      integer(lk) :: dt_last
 
       nt = max(0, i1 - i0 + 1)
       if (nt <= 0) error stop 'load_netcdf_series: empty time window for '//trim(spec%name)
@@ -321,21 +321,24 @@ contains
 
       allocate(series%t_edge(nt + 1))
 
+      ! Left or step-ahead convention:
+      ! value(i) is valid over [t_axis(i), t_axis(i+1)).
+      ! The timestamp marks the beginning of the interval, not its midpoint.
       if (nt >= 2) then
-         dt_first = max(1_lk, series%t_axis(2)  - series%t_axis(1))
-         dt_last  = max(1_lk, series%t_axis(nt) - series%t_axis(nt - 1))
-
-         series%t_edge(1)      = series%t_axis(1)  - dt_first / 2_lk
-         series%t_edge(nt + 1) = series%t_axis(nt) + dt_last  / 2_lk
-
-         do i = 1, nt - 1
-            series%t_edge(i + 1) = (series%t_axis(i) + series%t_axis(i + 1)) / 2_lk
+         do i = 1, nt
+            series%t_edge(i) = series%t_axis(i)
          end do
+
+         dt_last = max(1_lk, series%t_axis(nt) - series%t_axis(nt - 1))
+         series%t_edge(nt + 1) = series%t_axis(nt) + dt_last
 
          series%t_next = series%t_edge(2)
       else
-         series%t_edge(1) = series%t_axis(1) - huge(1_lk) / 4_lk
-         series%t_edge(2) = series%t_axis(1) + huge(1_lk) / 4_lk
+         dt_last = max(1_lk, int(nint(scan%median_dt), lk))
+
+         series%t_edge(1) = series%t_axis(1)
+         series%t_edge(2) = series%t_axis(1) + dt_last
+
          series%t_next = INF_EDGE
       end if
    end subroutine load_netcdf_series
