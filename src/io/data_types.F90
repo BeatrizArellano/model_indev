@@ -34,10 +34,7 @@ module data_types
 
    type :: DataLoaderCfg
       logical :: load_yearly    = .true.
-      logical :: repeat_enabled = .false.
-      integer :: repeat_year    = -huge(1)
       integer :: cfg_calendar   = 0
-      integer :: time_mode      = DATA_TIME_ABSOLUTE
    end type DataLoaderCfg
 
    type :: DataSpec
@@ -49,6 +46,10 @@ module data_types
 
       integer :: input_type = DATA_INPUT_OFF
       integer :: format     = DATA_FORMAT_UNKNOWN
+
+      logical :: repeat_enabled = .false.
+      integer :: repeat_year    = -huge(1)
+      integer :: time_mode      = DATA_TIME_ABSOLUTE
 
       logical  :: has_location = .false.
       real(rk) :: lon = 0.0_rk
@@ -86,7 +87,7 @@ module data_types
       type(CFUnits)    :: u
       integer(lk)      :: sim_offset = 0_lk
       integer          :: time_mode = DATA_TIME_ABSOLUTE
-      integer          :: repeat_year = -1
+      integer          :: repeat_year = -huge(1)
 
       integer     :: idx = 1
       integer     :: n   = 0
