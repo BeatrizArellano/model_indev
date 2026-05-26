@@ -138,11 +138,12 @@ contains
         loc%name = trim(name_str)
     end subroutine validate_location_input
 
-    subroutine print_header(location, start_datetime, end_datetime)
+    subroutine print_header(location, start_datetime, end_datetime, load_yearly)
         use, intrinsic :: iso_fortran_env, only: output_unit
         implicit none
         type(LocationInfo), intent(in) :: location
         type(DateTime),     intent(in) :: start_datetime, end_datetime
+        logical,            intent(in) :: load_yearly
 
         character(len=32) :: slat, slon, sdep
 
@@ -157,6 +158,12 @@ contains
         ! Simulation start / end
         write(output_unit,'("start: ",A,"   end: ",A)') trim(datetime_to_str(start_datetime)), &
                                                             trim(datetime_to_str(end_datetime))
+
+        if (load_yearly) then
+            write(output_unit,'("Data loading mode: yearly")')
+        else
+            write(output_unit,'("Data loading mode: full simulation interval.")')
+        end if
     end subroutine print_header
 
 
