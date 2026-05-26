@@ -1,6 +1,7 @@
 module bio_params
   use precision_types,  only: rk
   use read_config_yaml, only: ConfigParams
+  use str_utils,        only: to_lower
 
   implicit none
   private
@@ -11,6 +12,7 @@ module bio_params
 
     type, public :: BioParams
         character(:), allocatable :: config_file          ! FABM configuration file
+        character(:), allocatable :: input_cfg_file       ! Configuration file to fulfill FABM dependencies
         logical  :: sediments_enabled = .false.
         logical  :: repair = .false.
         logical  :: output_conserved = .false.            ! Retrieve conserved quantities from FABM and output the column-integrated totals
@@ -95,6 +97,7 @@ contains
         type(BioParams), intent(out)      :: bio
         bio = default_bio_params()
         bio%config_file = cfg_params%get_param_str('biogeochemistry.config_file', default='fabm.yaml', trim_value=.true.)
+        bio%input_cfg_file = remove_null_name(cfg_params%get_param_str('biogeochemistry.input_config', default='off', trim_value=.true.))
         ! ---------------- Flags ----------------
         bio%sediments_enabled = cfg_params%get_param_logical('biogeochemistry.sediments.enabled', default=def_sed_enabled)
         bio%repair  = cfg_params%get_param_logical('biogeochemistry.repair_state', default=def_repair)
@@ -170,5 +173,21 @@ contains
 
         p%cnpar_sed   = def_cnpar_sed
     end function default_sed_params
+
+
+    pure function remove_null_name(raw) result(out)
+        character(*), intent(in) :: raw
+        character(:), allocatable :: out
+        character(:), allocatable :: low
+
+        low = to_lower(trim(raw))
+
+        if (low == 'off' .or. low == 'false' .or. low == 'null' .or. &
+            low == 'none' .or. low == '~' .or. low == '') then
+            out = ''
+        else
+            out = trim(raw)
+        end if
+    end function remove_null_name
 
 end module bio_params
