@@ -5,7 +5,7 @@ module data_manager
                               print_data_summary, find_data_index, init_series_cursor, &
                               value_at_step
    use data_types,      only: DataLoaderCfg, DataSpec, InputData, DataVarSeries, &
-                              DATA_TIME_ABSOLUTE, DATA_TIME_REPEAT_YEAR   
+                              DATA_TIME_ABSOLUTE, DATA_TIME_REPEAT_YEAR, DATA_INPUT_FILE  
    use geo_utils,       only: LocationInfo   
    use precision_types, only: rk, lk
    use sim_clocks,      only: year_to_simyear, simtime_to_datetime
@@ -208,7 +208,8 @@ contains
          if (k > 0) then
             if (.not. allocated(self%data_next)) allocate(self%data_next)
 
-            call load_input_data(self%state, k, self%data_next, lok, lmsg)
+            call copy_loaded_repeat_series(self%state, self%data_curr, self%data_next)
+            call load_input_data(self%state, k, self%data_next, lok, lmsg, skip_loaded_repeats=.true.)
 
             if (.not. lok) then
                if (present(ok))     ok = .false.
@@ -235,7 +236,7 @@ contains
             if (k > 0) then
                if (.not. allocated(self%data_curr)) allocate(self%data_curr)
 
-               call load_input_data(self%state, k, self%data_curr, lok, lmsg)
+               call load_input_data(self%state, k, self%data_curr, lok, lmsg, skip_loaded_repeats=.true.)
 
                if (.not. lok) then
                   if (present(ok))     ok = .false.
@@ -539,8 +540,39 @@ contains
          dst%values = src%values
       end if
 
+      if (allocated(src%t_edge)) then
+         allocate(dst%t_edge(size(src%t_edge)))
+         dst%t_edge = src%t_edge
+      end if
+
       ! Edges are rebuilt after full concatenation.
    end subroutine copy_var_series
+
+   subroutine copy_loaded_repeat_series(state, src, dst)
+      type(DataLoaderState), intent(in)    :: state
+      type(InputData),       intent(in)    :: src
+      type(InputData),       intent(inout) :: dst
+
+      integer :: i
+
+      if (.not. allocated(src%vars)) return
+
+      if (.not. allocated(dst%vars)) then
+         allocate(dst%vars(size(src%vars)))
+      else if (size(dst%vars) /= size(src%vars)) then
+         deallocate(dst%vars)
+         allocate(dst%vars(size(src%vars)))
+      end if
+
+      do i = 1, size(state%specs)
+         dst%vars(i)%name = state%specs(i)%name
+
+         if (state%specs(i)%input_type == DATA_INPUT_FILE .and. &
+            state%specs(i)%repeat_enabled) then
+            call copy_var_series(src%vars(i), dst%vars(i))
+         end if
+      end do
+   end subroutine copy_loaded_repeat_series
 
 
    subroutine initialise_full_cursors(input)
