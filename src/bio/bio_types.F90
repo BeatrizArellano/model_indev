@@ -1,4 +1,5 @@
 module bio_types
+    use bio_inputs,        only: BioInputs
     use bio_params,        only: BioParams, SedParams
     use event_manager,     only: EventManager   
     use fabm,              only: type_fabm_model, type_fabm_interior_variable_id, &
@@ -45,11 +46,9 @@ module bio_types
     real(rk) :: short_rad  = 0._rk
     real(rk) :: par_sfc    = 0._rk                          ! surface PAR [W/m2] (optional)
     real(rk) :: wind_spd   = 0._rk
-    real(rk) :: co2_air    = 0._rk
     real(rk) :: slp        = 0._rk
     real(rk) :: cloud      = 0._rk                          ! cloud fraction [0-1], optional
     real(rk) :: stressb    = 0._rk                          ! bottom stress magnitude [Pa], optional
-    real(rk) :: ice_af     = 0._rk                          ! Ice area fraction (Always 0 for now)
     ! Bottom variables for the sediments
     real(rk) :: u_taub     = 0._rk                          ! Friction velocity
     real(rk) :: z0b        = 0._rk                          ! Bottom roughness length
@@ -145,6 +144,8 @@ module bio_types
     !----------- State and parameters
     type(BioState)         :: BS                               ! State of tracers
     type(BioParams)        :: params                           ! Biogeochemical configuration parameters
+    ! --- Inputs 
+    type(BioInputs)        :: inputs
     ! --- Sediment environment
     type(SedimentEnv)      :: SED
     ! ---------- Grids
@@ -161,7 +162,7 @@ module bio_types
     !------------ FABM environment variable ids
     type (type_interior_standard_variable)  :: porosity = type_interior_standard_variable(name='porosity', units='1')
     type (type_fabm_interior_variable_id)   :: id_temp, id_salt, id_rho, id_swr, id_par, id_pres, id_atten
-    type (type_fabm_horizontal_variable_id) :: id_windspd, id_par_sfc, id_slp, id_cloud, id_stressb, id_swr_sfc, id_co2, id_ice_af
+    type (type_fabm_horizontal_variable_id) :: id_windspd, id_par_sfc, id_slp, id_cloud, id_stressb, id_swr_sfc
     type (type_fabm_scalar_variable_id)     :: id_yearday
     
     ! Which env vars are actually needed?
@@ -177,14 +178,15 @@ module bio_types
     logical :: need_swr_sfc  = .false.
     logical :: need_cloud    = .false.
     logical :: need_stressb  = .false.
-    logical :: need_co2      = .false.
-    logical :: need_ice_af   = .false.                          ! Ice area fraction
+
     logical :: is_init = .false.                               ! has biogeochemistry been initialised?
+    ! ---------- Optional biogeochemical inputs
+    logical :: has_input     = .false.                         ! Are there input data to be applied?
     ! Pointer to attenuation coefficient
     real(rk), pointer :: atten_ptr(:) => null()
 
     ! Working space
-    type(TridiagCoeff)     :: wat_trid                             ! workspace for solving scalar diffusion
+    type(TridiagCoeff)     :: wat_trid                         ! workspace for solving scalar diffusion
     ! Interior diagnostics 
     integer :: n_diag_int = 0
     integer,   allocatable :: diag_int_index(:)                ! FABM indices of interior diagnostics
