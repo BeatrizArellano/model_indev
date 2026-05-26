@@ -94,8 +94,8 @@ module read_config_yaml
  
    public :: ConfigParams
 
-   integer, parameter :: PARAMLEN = 256
-   integer, parameter :: STRLEN = 512
+   integer, parameter, public :: PARAMLEN = 256
+   integer, parameter, public :: STRLEN = 512
 
    type cfg_real_t
       character(len=PARAMLEN) :: key = ''
@@ -130,8 +130,10 @@ module read_config_yaml
       procedure :: init                => cfg_init
       procedure :: clear               => cfg_clear
       procedure :: load_yaml_content   => cfg_load_yaml_content
+      procedure :: has_key             => cfg_has_key
       procedure :: has_param           => cfg_has_param
       procedure :: list_params         => cfg_list_params
+      procedure :: get_child_keys      => cfg_get_child_keys
       procedure :: is_absent           => cfg_is_absent
       procedure :: is_null             => cfg_is_null
       procedure :: is_disabled         => cfg_is_disabled
@@ -142,7 +144,7 @@ module read_config_yaml
       procedure :: get_param_str       => cfg_get_param_str
       procedure :: get_param_num       => cfg_get_param_num
       procedure :: get_param_int       => cfg_get_param_int
-      procedure :: get_param_logical   => cfg_get_param_logical
+      procedure :: get_param_logical   => cfg_get_param_logical      
       ! internals
       procedure, private :: walk_dictionary
       procedure, private :: store_scalar
@@ -569,6 +571,69 @@ contains
       end if
    end function cfg_has_param
 
+   logical function cfg_has_key(self, key) result(tf)
+      class(ConfigParams), intent(in) :: self
+      character(len=*),    intent(in) :: key
+
+      character(len=PARAMLEN) :: search_prefix
+      integer :: i
+
+      tf = .false.
+
+      if (self%has_param(key)) then
+         tf = .true.
+         return
+      end if
+
+      search_prefix = trim(key)
+
+      if (len_trim(search_prefix) > 0) then
+         if (search_prefix(len_trim(search_prefix):len_trim(search_prefix)) /= '.') then
+            search_prefix = trim(search_prefix)//'.'
+         end if
+      end if
+
+      if (allocated(self%store_reals)) then
+         do i = 1, size(self%store_reals)
+            if (startswith(self%store_reals(i)%key, trim(search_prefix))) then
+               tf = .true.; return
+            end if
+         end do
+      end if
+
+      if (allocated(self%store_ints)) then
+         do i = 1, size(self%store_ints)
+            if (startswith(self%store_ints(i)%key, trim(search_prefix))) then
+               tf = .true.; return
+            end if
+         end do
+      end if
+
+      if (allocated(self%store_logs)) then
+         do i = 1, size(self%store_logs)
+            if (startswith(self%store_logs(i)%key, trim(search_prefix))) then
+               tf = .true.; return
+            end if
+         end do
+      end if
+
+      if (allocated(self%store_strs)) then
+         do i = 1, size(self%store_strs)
+            if (startswith(self%store_strs(i)%key, trim(search_prefix))) then
+               tf = .true.; return
+            end if
+         end do
+      end if
+
+      if (allocated(self%store_nulls)) then
+         do i = 1, size(self%store_nulls)
+            if (startswith(self%store_nulls(i)%key, trim(search_prefix))) then
+               tf = .true.; return
+            end if
+         end do
+      end if
+   end function cfg_has_key
+
 
    function cfg_list_params(self, prefix) result(list)
       class(ConfigParams), intent(in) :: self
@@ -625,6 +690,56 @@ contains
          end do
       end if
    end function cfg_list_params
+
+   function cfg_get_child_keys(self, prefix) result(children)
+      class(ConfigParams), intent(in) :: self
+      character(len=*),    intent(in) :: prefix
+      character(len=PARAMLEN), allocatable :: children(:)
+
+      character(len=PARAMLEN) :: search_prefix
+      integer :: i
+
+      search_prefix = trim(prefix)
+
+      if (len_trim(search_prefix) > 0) then
+         if (search_prefix(len_trim(search_prefix):len_trim(search_prefix)) /= '.') then
+            search_prefix = trim(search_prefix)//'.'
+         end if
+      end if
+
+      allocate(children(0))
+
+      if (allocated(self%store_reals)) then
+         do i = 1, size(self%store_reals)
+            call add_child_from_key(children, self%store_reals(i)%key, search_prefix)
+         end do
+      end if
+
+      if (allocated(self%store_ints)) then
+         do i = 1, size(self%store_ints)
+            call add_child_from_key(children, self%store_ints(i)%key, search_prefix)
+         end do
+      end if
+
+      if (allocated(self%store_logs)) then
+         do i = 1, size(self%store_logs)
+            call add_child_from_key(children, self%store_logs(i)%key, search_prefix)
+         end do
+      end if
+
+      if (allocated(self%store_strs)) then
+         do i = 1, size(self%store_strs)
+            call add_child_from_key(children, self%store_strs(i)%key, search_prefix)
+         end do
+      end if
+
+      if (allocated(self%store_nulls)) then
+         do i = 1, size(self%store_nulls)
+            call add_child_from_key(children, self%store_nulls(i)%key, search_prefix)
+         end do
+      end if
+   end function cfg_get_child_keys
+
    
    logical function cfg_is_absent(self, key) result(tf)
       class(ConfigParams), intent(in) :: self
@@ -1042,6 +1157,76 @@ contains
          if (i < lt) b(1:lt-i) = k(i+1:lt)
       end if
    end function basename
+
+   pure function remove_prefix(s, prefix) result(out)
+      character(len=*), intent(in) :: s, prefix
+      character(len=PARAMLEN) :: out
+      integer :: lp, ls
+
+      out = ''
+      lp = len_trim(prefix)
+      ls = len_trim(s)
+
+      if (lp == 0) then
+         out = left_trim_to(s, PARAMLEN)
+      else if (ls > lp .and. s(1:lp) == prefix(1:lp)) then
+         out = left_trim_to(s(lp+1:ls), PARAMLEN)
+      end if
+   end function remove_prefix
+
+   pure function first_token(s) result(tok)
+      character(len=*), intent(in) :: s
+      character(len=PARAMLEN) :: tok
+      integer :: i, lt
+
+      tok = ''
+      lt = len_trim(s)
+
+      if (lt == 0) return
+
+      do i = 1, lt
+         if (s(i:i) == '.') exit
+      end do
+
+      if (i > lt) then
+         tok = left_trim_to(s, PARAMLEN)
+      else if (i > 1) then
+         tok = left_trim_to(s(1:i-1), PARAMLEN)
+      end if
+   end function first_token
+
+   subroutine add_child_from_key(children, full_key, search_prefix)
+      character(len=PARAMLEN), allocatable, intent(inout) :: children(:)
+      character(len=*), intent(in) :: full_key
+      character(len=*), intent(in) :: search_prefix
+
+      character(len=PARAMLEN) :: rest, child
+
+      if (.not. startswith(full_key, trim(search_prefix))) return
+
+      rest = remove_prefix(full_key, trim(search_prefix))
+      child = first_token(rest)
+
+      if (len_trim(child) == 0) return
+
+      if (.not. contains_key(children, child)) then
+         children = [children, child]
+      end if
+   end subroutine add_child_from_key
+
+   pure logical function contains_key(list, key)
+      character(len=PARAMLEN), intent(in) :: list(:)
+      character(len=*),        intent(in) :: key
+      integer :: i
+
+      contains_key = .false.
+      do i = 1, size(list)
+         if (trim(list(i)) == trim(key)) then
+            contains_key = .true.
+            return
+         end if
+      end do
+   end function contains_key
 
    pure logical function is_true_string(s)
       character(len=*), intent(in) :: s
