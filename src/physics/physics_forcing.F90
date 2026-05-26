@@ -78,12 +78,13 @@ module physics_forcing
 contains
 
 
-   subroutine init(self, params, calendar_cfg, location, start_datetime, end_datetime, ok, errmsg)
+   subroutine init(self, params, calendar_cfg, location, start_datetime, end_datetime, load_yearly, ok, errmsg)
       class(PhysicsForcing), intent(inout) :: self
       type(ConfigParams),    intent(in)    :: params
       type(CFCalendar),      intent(in)    :: calendar_cfg
       type(LocationInfo),    intent(in)    :: location
       type(DateTime),        intent(in)    :: start_datetime, end_datetime
+      logical,               intent(in)    :: load_yearly
       logical,               intent(out)   :: ok
       character(*),          intent(out)   :: errmsg
 
@@ -103,7 +104,7 @@ contains
       !-----------------------------
       ! Read forcing parameters. 
       !-----------------------------
-      call read_physics_forcing_config(params, calendar_cfg, start_datetime, end_datetime, specs, cfg, lok, lmsg)
+      call read_physics_forcing_config(params, calendar_cfg, start_datetime, end_datetime, load_yearly, specs, cfg, lok, lmsg)
       if (.not. lok) then
          errmsg = trim(lmsg)
          call stop_fatal('init/read_physics_forcing_config', errmsg, self%stop_on_error)
@@ -148,12 +149,13 @@ contains
       end if
 
       ! In case a year is repeated 
-      if (cfg%repeat_enabled) then
+      if (any(specs%repeat_enabled)) then
+         i = find_first_repeated_spec(specs)
          write(*,'(a,i0,a)') &
             'Physics forcing: repeat-year mode enabled. Forcing data from year ', &
-            cfg%repeat_year, ' will be reused for all simulation years.'
+            specs(i)%repeat_year, ' will be reused for all simulation years.'
          if (calendar_compatible(self%dm%sim_cal%kind, cal_gregorian) .and. &
-             .not. is_leap_gregorian(cfg%repeat_year)) then
+             .not. is_leap_gregorian(specs(i)%repeat_year)) then
 
             write(*,'(a)') &
                ' Warning: Repeating a non-leap Gregorian year. Feb 29 forcing will use Feb 28 values.'
@@ -315,10 +317,11 @@ contains
         call stop_fatal(where, message, stop_on_error)
     end subroutine fail_sample
 
-   subroutine read_physics_forcing_config(params, calendar, start_datetime, end_datetime, specs, cfg, ok, errmsg)
+   subroutine read_physics_forcing_config(params, calendar, start_datetime, end_datetime, load_yearly, specs, cfg, ok, errmsg)
       type(ConfigParams),        intent(in)  :: params
       type(CFCalendar),          intent(in)  :: calendar
       type(DateTime),            intent(in)  :: start_datetime, end_datetime
+      logical,                   intent(in) :: load_yearly
       type(DataSpec), allocatable, intent(out) :: specs(:)
       type(DataLoaderCfg),       intent(out) :: cfg
       logical,                   intent(out) :: ok
@@ -328,6 +331,9 @@ contains
       character(:), allocatable :: sal_mode
       character(len=8), dimension(2) :: sal_choices
       integer :: i, ip, ie
+      logical :: repeat_enabled
+      integer :: repeat_year
+      integer :: time_mode
 
       ok = .false.
       errmsg = ''
@@ -337,16 +343,17 @@ contains
       allocate(specs(N_PHYS_FORCING))
 
       cfg%cfg_calendar = calendar%kind
-      cfg%load_yearly  = params%get_param_logical('forcing.load_yearly', default=.false., strict=.false.)
-      cfg%time_mode    = DATA_TIME_ABSOLUTE
+      cfg%load_yearly  = load_yearly  
 
-      if (.not. params%is_disabled('forcing.repeat_forcing_year')) then
-         cfg%repeat_year    = params%get_param_int('forcing.repeat_forcing_year')
-         cfg%repeat_enabled = .true.
-         cfg%time_mode      = DATA_TIME_REPEAT_YEAR
+      time_mode = DATA_TIME_ABSOLUTE
+
+      if (params%is_disabled('forcing.repeat_forcing_year')) then
+         repeat_enabled = .false.
+         repeat_year    = -huge(1)
       else
-         cfg%repeat_enabled = .false.
-         cfg%repeat_year    = -huge(1)
+         repeat_year    = params%get_param_int('forcing.repeat_forcing_year', min=1000, max=9999)
+         repeat_enabled = .true.
+         time_mode      = DATA_TIME_REPEAT_YEAR
       end if
 
       global_file = normalise_optional_string(params%get_param_str('forcing.filename', default='', empty_ok=.true.))
@@ -354,6 +361,14 @@ contains
       do i = 1, N_PHYS_FORCING
          call read_one_forcing_var(params, trim(phys_forcing_names(i)), global_file, specs(i), ok, errmsg)
          if (.not. ok) return
+      end do
+
+      do i = 1, size(specs)
+         if (specs(i)%input_type == DATA_INPUT_FILE) then
+            specs(i)%repeat_enabled = repeat_enabled
+            specs(i)%repeat_year    = repeat_year
+            specs(i)%time_mode      = time_mode
+         end if
       end do
 
       ! Freshwater forcing is loaded only if salinity is prognostic/computed.
@@ -498,6 +513,9 @@ contains
       specs(i)%path       = ''
       specs(i)%time_var   = ''
       specs(i)%const_value = 0.0_rk
+      specs(i)%repeat_enabled = .false.
+      specs(i)%repeat_year    = -huge(1)
+      specs(i)%time_mode      = DATA_TIME_ABSOLUTE
    end subroutine force_spec_off
 
 
@@ -531,6 +549,20 @@ contains
          out = ''
       end if
    end function normalise_optional_string
+
+   integer function find_first_repeated_spec(specs) result(idx)
+      type(DataSpec), intent(in) :: specs(:)
+
+      integer :: i
+
+      idx = 0
+      do i = 1, size(specs)
+         if (specs(i)%repeat_enabled) then
+            idx = i
+            return
+         end if
+      end do
+   end function find_first_repeated_spec
 
 
    subroutine stop_fatal(where, msg, stop_on_error)
