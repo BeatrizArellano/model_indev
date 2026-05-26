@@ -5,10 +5,16 @@
 ! externally prescribed source fluxes.
 !
 module bio_inputs
+    use data_manager,     only: DataManager
+    use data_types,       only: DataLoaderCfg, DataSpec, &
+                                DATA_INPUT_FILE, DATA_INPUT_CONSTANT, &
+                                DATA_TIME_ABSOLUTE, DATA_TIME_REPEAT_YEAR
     use fabm,             only: type_fabm_model
-    use precision_types,  only: rk
+    use geo_utils,        only: LocationInfo
+    use precision_types,  only: rk, lk
     use read_config_yaml, only: ConfigParams, PARAMLEN
     use str_utils,        only: to_lower  
+    use time_types,       only: DateTime, CFCalendar, cal_unknown
     use time_utils,       only: sec_per_day, sec_per_hour
 
     implicit none
@@ -23,7 +29,7 @@ module bio_inputs
         character(:), allocatable :: filename      ! input file
         character(:), allocatable :: name          ! variable name inside file
         character(:), allocatable :: domain        ! FABM storage domain: interior/surface/bottom/horizontal/scalar
-        character(:), allocatable :: target_domain ! Source application target: water_surface/water_bottom/sediment_surface
+        character(:), allocatable :: target_domain ! Source application target: water_surface/water_bottom
 
         real(rk) :: constant = 0.0_rk
         ! FABM index for state variables (Only applicable to sources)
@@ -32,6 +38,9 @@ module bio_inputs
         character(:), allocatable :: time_unit
         real(rk) :: time_scale = 1.0_rk   ! converts input flux to per second
         integer :: k_target = -1   ! Index in the vertical grid where the source flux will be applied
+
+        character(:), allocatable :: data_name
+        character(:), allocatable :: time_name
 
         logical :: active = .false.   
         logical :: has_constant = .false.
@@ -44,44 +53,59 @@ module bio_inputs
  
  
     type :: BioInputs
-       logical :: is_init = .false.
-       logical :: has_active_dependencies = .false.
-       logical :: has_active_sources = .false.
+        logical :: is_init = .false.
+        logical :: has_active_dependencies = .false.
+        logical :: has_active_sources = .false.
 
-       character(:), allocatable :: config_file
-       type(ConfigParams) :: cfg
- 
-       type(BioInputSpec), allocatable :: dependencies(:)
-       type(BioInputSpec), allocatable :: sources(:)
+        character(:), allocatable :: config_file
+        type(ConfigParams) :: cfg
 
-       character(len=PARAMLEN), allocatable  :: dependency_keys(:)
-       character(len=PARAMLEN), allocatable :: source_keys(:)
+        type(DataManager) :: dm
+
+        logical :: is_prepared = .false.
+
+        real(rk), allocatable :: dep_values(:)
+        real(rk), allocatable :: source_values(:)
+    
+        type(BioInputSpec), allocatable :: dependencies(:)
+        type(BioInputSpec), allocatable :: sources(:)
+
+        character(len=PARAMLEN), allocatable  :: dependency_keys(:)
+        character(len=PARAMLEN), allocatable :: source_keys(:)
  
     contains
-       procedure :: init  => bio_inputs_init
-       procedure :: clear => bio_inputs_clear
+        procedure :: init         => bio_inputs_init
+        procedure :: link_to_fabm => bio_inputs_link_to_fabm
+        procedure :: prepare      => bio_inputs_prepare   ! set up the DataManager for the simulation timestep
+        procedure :: tick         => bio_inputs_tick      ! let the DataManager load/advance data for the current model time
+        procedure :: update       => bio_inputs_update    ! copy sampled values into BioInputs arrays
+        procedure :: clear        => bio_inputs_clear
     end type BioInputs
 
 contains
 
-    subroutine bio_inputs_init(self, input_cfg_file, FabmMod, has_input, &
-                               sediments_enabled, k_wat_sfc, k_wat_btm, k_sed_sfc, &
-                               ok, errmsg)
+    subroutine bio_inputs_init(self, input_cfg_file, FabmMod, has_input, k_wat_sfc, k_wat_btm, &                               
+                               calendar_cfg, location, start_datetime, end_datetime, load_yearly, ok, errmsg)
         class(BioInputs),        intent(inout) :: self
         character(*),            intent(in)    :: input_cfg_file
         class(type_fabm_model),  pointer, intent(in) :: FabmMod
         logical,                 intent(out)   :: has_input
-        logical,                 intent(in)    :: sediments_enabled
         integer,                 intent(in)    :: k_wat_sfc
         integer,                 intent(in)    :: k_wat_btm
-        integer,                 intent(in)    :: k_sed_sfc
+        type(CFCalendar),        intent(in)    :: calendar_cfg
+        type(LocationInfo),      intent(in)    :: location
+        type(DateTime),          intent(in)    :: start_datetime, end_datetime
+        logical,                 intent(in)    :: load_yearly
         logical,       optional, intent(out)   :: ok
         character(*),  optional, intent(out)   :: errmsg
 
         logical :: lok
         character(len=512) :: msg
 
-        lok = .false.        
+        lok = .false.    
+        
+        has_input = .false.
+        if (present(ok)) ok = .false.
 
         if (present(errmsg)) errmsg = ''
 
@@ -149,7 +173,7 @@ contains
         self%has_active_sources      = any_active_specs(self%sources)   
 
         if (self%has_active_sources) then
-            call set_target_index(self, sediments_enabled, k_wat_sfc, k_wat_btm, k_sed_sfc)
+            call set_target_index(self, k_wat_sfc, k_wat_btm)
         end if
         
         ! Keep only entries that survived validation
@@ -161,14 +185,105 @@ contains
 
         has_input = self%has_active_dependencies .or. self%has_active_sources
 
-        self%is_init = .true.
-        lok = .true.
-        if (present(ok)) ok = lok
-
         if (.not. has_input) then
             write(*,'(A)') 'No active Bio input data remain after validation.'
+            self%is_init = .true.
+            if (present(ok)) ok = .true.
+            return
         end if
+
+        call initialise_data_manager(self, calendar_cfg, location, start_datetime, end_datetime, load_yearly, lok, msg)
+        if (.not. lok) then
+            if (present(errmsg)) errmsg = trim(msg)
+            if (present(ok)) ok = .false.
+            return
+        end if
+
+        call allocate_live_storage(self)
+
+        self%is_init = .true.
+        lok = .true.
+        if (present(ok)) ok = lok        
     end subroutine bio_inputs_init
+
+    subroutine bio_inputs_prepare(self, dt_main, ok, errmsg)
+        class(BioInputs), intent(inout) :: self
+        integer(lk), intent(in) :: dt_main
+        logical, intent(out) :: ok
+        character(*), intent(out) :: errmsg
+
+        if (.not. self%is_init) then
+            ok = .false.
+            errmsg = 'BioInputs not initialized.'
+            return
+        end if
+
+        call self%dm%prepare(dt_main, ok, errmsg)
+        if (ok) self%is_prepared = .true.
+    end subroutine bio_inputs_prepare
+
+    subroutine bio_inputs_tick(self, model_time, ok, errmsg)
+        class(BioInputs), intent(inout) :: self
+        integer(lk), intent(in) :: model_time
+        logical, optional, intent(out) :: ok
+        character(*), optional, intent(out) :: errmsg
+
+        if (.not. self%is_prepared) return
+
+        call self%dm%tick(model_time, ok, errmsg)
+    end subroutine bio_inputs_tick
+
+    subroutine bio_inputs_update(self, model_time, ok, errmsg)
+        class(BioInputs), intent(inout) :: self
+        integer(lk), intent(in) :: model_time
+        logical, optional, intent(out) :: ok
+        character(*), optional, intent(out) :: errmsg
+
+        real(rk) :: input_value
+        integer  :: i
+        logical  :: lok
+        character(len=512) :: lmsg
+
+        if (present(ok)) ok = .false.
+        if (present(errmsg)) errmsg = ''
+
+        do i = 1, size(self%dependencies)
+
+            self%dep_values(i) = self%dm%value( &
+                                    self%dependencies(i)%data_name, &
+                                    model_time, lok, lmsg)
+            if (.not. lok) then
+                if (present(errmsg)) then
+                    errmsg = trim(lmsg)
+                else
+                    write(*,*) 'ERROR: ', trim(lmsg)
+                    stop 1
+                end if
+                return
+            end if
+        end do
+
+        do i = 1, size(self%sources)
+            input_value = self%dm%value(self%sources(i)%data_name, model_time, lok, lmsg)
+
+            if (.not. lok) then
+                if (present(errmsg)) then
+                    errmsg = trim(lmsg)
+                else
+                    write(*,*) 'ERROR: ', trim(lmsg)
+                    stop 1
+                end if
+                return
+            end if
+
+            ! Multiply by the time_scale to convert to flux per second
+            self%source_values(i) = input_value * self%sources(i)%time_scale
+        end do
+
+        if (present(ok)) ok = .true.
+        if (present(errmsg)) errmsg = ''
+
+    end subroutine bio_inputs_update
 
 
     subroutine bio_inputs_clear(self)
@@ -177,6 +292,7 @@ contains
         self%is_init = .false.
         self%has_active_dependencies = .false.
         self%has_active_sources = .false.
+        self%is_prepared = .false.
 
         if (allocated(self%config_file))  deallocate(self%config_file)
         if (allocated(self%dependencies)) deallocate(self%dependencies)
@@ -185,9 +301,39 @@ contains
         if (allocated(self%dependency_keys)) deallocate(self%dependency_keys)
         if (allocated(self%source_keys))     deallocate(self%source_keys)
 
+        if (allocated(self%dep_values)) deallocate(self%dep_values)
+        if (allocated(self%source_values)) deallocate(self%source_values)
+
+        call self%dm%clear()
         call self%cfg%clear()
 
     end subroutine bio_inputs_clear
+
+    ! Link dependencies to FABM
+    subroutine bio_inputs_link_to_fabm(self, FabmMod)
+        class(BioInputs), intent(inout) :: self
+        class(type_fabm_model), pointer, intent(in) :: FabmMod
+
+        integer :: i
+        character(:), allocatable :: name
+
+        do i = 1, size(self%dependencies)
+            name = trim(self%dependencies(i)%key)
+
+            select case (trim(self%dependencies(i)%domain))
+            case ('horizontal')
+                call FabmMod%link_horizontal_data(FabmMod%get_horizontal_variable_id_by_name(name), &
+                                                  self%dep_values(i))
+
+            case ('scalar')
+                call FabmMod%link_scalar(FabmMod%get_scalar_variable_id_by_name(name), &
+                                         self%dep_values(i))
+
+            case ('interior')
+                error stop 'File/constant interior dependencies are not connected yet: need depth-resolved storage.'
+            end select
+        end do
+    end subroutine bio_inputs_link_to_fabm
 
 
     !===========================================================================
@@ -258,6 +404,12 @@ contains
                 specs(nactive)%active = .true.
 
                 if (is_source) then
+                    specs(nactive)%data_name = 'src:'//trim(keys(i))
+                else
+                    specs(nactive)%data_name = 'dep:'//trim(keys(i))
+                end if
+
+                if (is_source) then
                     specs(nactive)%target_domain = normalise_source_target(self%cfg%get_param_str(base//'.target_domain', required=.true., trim_value=.true.))
                     specs(nactive)%time_unit = normalise_time_unit(self%cfg%get_param_str(base//'.time_unit', required=.false., default='second', trim_value=.true.))
                     select case (to_lower(trim(specs(nactive)%time_unit)))
@@ -274,11 +426,21 @@ contains
 
                 select case (to_lower(trim(mode)))
                     case ('file')
-                        specs(nactive)%filename = self%cfg%get_param_str(base//'.filename', required=.true.)
-                        specs(nactive)%name     = self%cfg%get_param_str(base//'.name',     required=.true.)
+                        specs(nactive)%filename  = self%cfg%get_param_str(base//'.filename', required=.true.)
+                        specs(nactive)%name      = self%cfg%get_param_str(base//'.name',     required=.true.)
+                        specs(nactive)%time_name = self%cfg%get_param_str(base//'.time_name', default='time')
+                        if (.not. self%cfg%is_disabled(base//'.climatology_year')) then
+                            specs(nactive)%repeat_year = self%cfg%get_param_int(base//'.climatology_year')
+                            specs(nactive)%has_repeat_year = .true.
+                        else
+                            specs(nactive)%repeat_year = -1
+                            specs(nactive)%has_repeat_year = .false.
+                        end if
                     case ('constant')
                         specs(nactive)%constant = self%cfg%get_param_num(base//'.constant', finite=.true., required=.true.)
                         specs(nactive)%has_constant = .true.
+                        specs(nactive)%has_repeat_year = .false.
+                        specs(nactive)%repeat_year = -1
                 end select
             end select
         end do
@@ -361,6 +523,11 @@ contains
                 write(*,'(A,A,A)') 'WARNING: Dependency "', trim(name), &
                     '" was found in FABM but does not require externally supplied values. No values will be supplied for this variable.'
                 self%dependencies(i)%active = .false.
+
+            else if (trim(self%dependencies(i)%domain) == 'interior') then
+                write(*,'(A,A,A)') 'WARNING: Interior dependency "', trim(name), &
+                    '" is configured but BioInputs does not yet support depth-resolved interior input. This dependency will not be supplied here.'
+                self%dependencies(i)%active = .false.
             else
                 write(*,'(A,A,A,A)') ' - ', trim(name), ' is a FABM ', trim(self%dependencies(i)%domain)//' dependency.'
             end if
@@ -427,6 +594,21 @@ contains
 
             if (nfound == 1) then
                 self%sources(i)%target_found = .true.
+                ! --------------------------------------------------------
+                ! External source fluxes are currently only supported
+                ! for interior FABM state variables.
+                !
+                ! Surface and bottom FABM variables are area-attached
+                ! quantities and might not treated as volumetric tracers.
+                ! --------------------------------------------------------
+                if (trim(self%sources(i)%domain) /= 'interior') then
+                    write(*,'(A,A,A,A,A)') &
+                        'WARNING: External source "', trim(name), &
+                        '" targets a FABM ', trim(self%sources(i)%domain), &
+                        ' state variable. External source fluxes are currently only supported for interior variables. This source will be ignored.'
+                    self%sources(i)%active = .false.
+                    cycle
+                end if
                 self%sources(i)%active = .true.
 
             else if (nfound == 0) then
@@ -459,12 +641,9 @@ contains
             case ('water_bottom', 'bottom')
                 out = 'water_bottom'
 
-            case ('sediment_surface', 'sed_surface', 'sediment_top')
-                out = 'sediment_surface'
-
             case default
                 error stop 'Invalid source target_domain "'//trim(value)// &
-                    '". Valid values are water_surface, water_bottom, sediment_surface.'
+                    '". Valid values are water_surface, water_bottom.'
         end select
     end function normalise_source_target
 
@@ -491,10 +670,9 @@ contains
         end select
     end function normalise_time_unit
 
-    subroutine set_target_index(self, sediments_enabled, k_wat_sfc, k_wat_btm, k_sed_sfc)
+    subroutine set_target_index(self, k_wat_sfc, k_wat_btm)
         class(BioInputs), intent(inout) :: self
-        logical, intent(in) :: sediments_enabled
-        integer, intent(in) :: k_wat_sfc, k_wat_btm, k_sed_sfc
+        integer, intent(in) :: k_wat_sfc, k_wat_btm
         integer :: i
 
         if (.not. allocated(self%sources)) return
@@ -505,26 +683,7 @@ contains
             select case (trim(self%sources(i)%domain))
 
                 case ('interior')
-                    ! Interior variables can receive fluxes at water_surface,
-                    ! water_bottom, or sediment_surface.
-
-                case ('surface')
-                    if (trim(self%sources(i)%target_domain) /= 'water_surface') then
-                        error stop 'Surface state variable source "'//trim(self%sources(i)%key)// &
-                            '" must use target_domain water_surface.'
-                    end if
-
-                case ('bottom')
-                    if (sediments_enabled) then
-                        error stop 'Bottom state variable source "'//trim(self%sources(i)%key)// &
-                            '" cannot be used when sediments are enabled.'
-                    end if
-
-                    if (trim(self%sources(i)%target_domain) /= 'water_bottom') then
-                        error stop 'Bottom state variable source "'//trim(self%sources(i)%key)// &
-                            '" must use target_domain water_bottom.'
-                    end if
-
+                    ! Interior variables can receive fluxes at water_surface or water_bottom.
                 case default
                     error stop 'Source "'//trim(self%sources(i)%key)// &
                         '" has unsupported FABM state domain "'//trim(self%sources(i)%domain)//'".'
@@ -537,12 +696,6 @@ contains
 
                 case ('water_bottom')
                     self%sources(i)%k_target = k_wat_btm
-
-                case ('sediment_surface')
-                    if (.not. sediments_enabled) then
-                        error stop 'Source target_domain sediment_surface requested, but sediments are disabled.'
-                    end if
-                    self%sources(i)%k_target = k_sed_sfc
 
                 case default
                     error stop 'Unknown source target_domain "'// &
@@ -581,6 +734,99 @@ contains
 
         call move_alloc(tmp, specs)
     end subroutine compact_active_entries
+
+    subroutine initialise_data_manager(self, calendar_cfg, location, start_datetime, end_datetime, load_yearly, ok, errmsg)
+        class(BioInputs),   intent(inout) :: self
+        type(CFCalendar),   intent(in)    :: calendar_cfg
+        type(LocationInfo), intent(in)    :: location
+        type(DateTime),     intent(in)    :: start_datetime, end_datetime
+        logical,            intent(in)    :: load_yearly
+        logical,            intent(out)   :: ok
+        character(*),       intent(out)   :: errmsg
+
+        type(DataLoaderCfg) :: cfg
+        type(DataSpec), allocatable :: specs(:)
+
+        if (calendar_cfg%kind == cal_unknown) then
+            ok = .false.
+            errmsg = 'BioInputs requires a known simulation calendar; it cannot derive the calendar from biogeochemical input files.'
+            return
+        end if
+
+        cfg%cfg_calendar = calendar_cfg%kind
+        cfg%load_yearly  = load_yearly
+
+        call build_bio_data_specs(self, specs)
+
+        call self%dm%init(specs, cfg, calendar_cfg, location, start_datetime, end_datetime, ok, errmsg)
+    end subroutine initialise_data_manager
+
+    subroutine build_bio_data_specs(self, specs)
+        class(BioInputs), intent(in) :: self
+        type(DataSpec), allocatable, intent(out) :: specs(:)
+
+        integer :: n, i, j
+
+        n = size(self%dependencies) + size(self%sources)
+        allocate(specs(n))
+
+        j = 0
+
+        do i = 1, size(self%dependencies)
+            j = j + 1
+            call spec_from_bio_entry(self%dependencies(i), specs(j))
+        end do
+
+        do i = 1, size(self%sources)
+            j = j + 1
+            call spec_from_bio_entry(self%sources(i), specs(j))
+        end do
+    end subroutine build_bio_data_specs
+
+    subroutine spec_from_bio_entry(entry, spec)
+        type(BioInputSpec), intent(in) :: entry
+        type(DataSpec), intent(out) :: spec
+
+        spec%name = trim(entry%data_name)
+
+        select case (trim(entry%mode))
+        case ('file')
+            spec%input_type = DATA_INPUT_FILE
+            spec%source_var = trim(entry%name)
+            spec%path       = trim(entry%filename)
+            spec%time_var   = trim(entry%time_name)
+
+            if (entry%has_repeat_year) then
+                spec%repeat_enabled = .true.
+                spec%repeat_year    = entry%repeat_year
+                spec%time_mode      = DATA_TIME_REPEAT_YEAR
+            else
+                spec%repeat_enabled = .false.
+                spec%repeat_year    = -huge(1)
+                spec%time_mode      = DATA_TIME_ABSOLUTE
+            end if
+
+        case ('constant')
+            spec%input_type  = DATA_INPUT_CONSTANT
+            spec%const_value = entry%constant
+            spec%source_var  = ''
+            spec%path        = ''
+            spec%time_var    = ''
+        end select
+    end subroutine spec_from_bio_entry
+
+    subroutine allocate_live_storage(self)
+        class(BioInputs), intent(inout) :: self
+
+        if (allocated(self%dep_values)) deallocate(self%dep_values)
+        if (allocated(self%source_values)) deallocate(self%source_values)
+
+        allocate(self%dep_values(size(self%dependencies)))
+        allocate(self%source_values(size(self%sources)))
+
+        self%dep_values = 0.0_rk
+        self%source_values = 0.0_rk
+    end subroutine allocate_live_storage
 
 end module bio_inputs
 
