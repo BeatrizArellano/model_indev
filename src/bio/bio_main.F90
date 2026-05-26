@@ -33,7 +33,7 @@ module bio_main
 
 contains
 
-    subroutine init_bio_fabm(cfg, location, wat_grid, sed_grid, full_grid, sim_startdate, sim_enddate, cal, timestep, PS, FS, BE, static_prof)
+    subroutine init_bio_fabm(cfg, location, wat_grid, sed_grid, full_grid, sim_startdate, sim_enddate, cal, load_yearly, timestep, PS, FS, BE, static_prof)
         type(ConfigParams),       intent(in) :: cfg
         type(LocationInfo),       intent(in) :: location
         type(VerticalGrid),       intent(in) :: wat_grid
@@ -41,6 +41,7 @@ contains
         type(VerticalGrid),       intent(in) :: full_grid
         type(DateTime),           intent(in) :: sim_startdate, sim_enddate
         type(CFCalendar),         intent(in) :: cal
+        logical,                  intent(in) :: load_yearly
         integer(lk), intent(in)              :: timestep
         type(PhysicsState),       intent(in) :: PS
         type(ForcingSnapshot),    intent(in) :: FS
@@ -52,9 +53,17 @@ contains
         integer  :: n_total_hz_diag, n_save_hz
         real(rk) :: dt_main
 
+        logical :: ok
+        character(len=512) :: msg
+
         write(*,'(A)') 'Initialising biogeochemistry via FABM...'
 
         call read_bio_parameters(cfg,BE%params)
+        ! Check whether there is a configuration file for input data set
+        BE%has_input = .false.
+        if (allocated(BE%params%input_cfg_file)) then
+            BE%has_input = len_trim(BE%params%input_cfg_file) > 0
+        end if
 
         dt_main     = real(timestep, rk)
         BE%wat_grid = wat_grid               ! Water grid
@@ -93,15 +102,33 @@ contains
             BE%k_wat_sfc = BE%nwat
         end if
          
-
         ! Initialize (reads FABM configuration from fabm.yaml)
         ! After this the number of biogeochemical variables is fixed.
         BE%model => fabm_create_model(BE%params%config_file)
-    
 
         ! Provide extents of the spatial domain (number of layers nz for a 1D column)
         call BE%model%set_domain(nz, seconds_per_time_unit=dt_main)
 
+        !--------------------------------------------------------
+        !  Scan Input configuration file and validate input data
+        !--------------------------------------------------------
+        if (BE%has_input) then
+            call BE%inputs%init(BE%params%input_cfg_file, BE%model, BE%has_input, k_wat_sfc=BE%k_wat_sfc, k_wat_btm=BE%k_wat_btm, &
+                                calendar_cfg=cal, location=location, start_datetime=sim_startdate, end_datetime=sim_enddate, &
+                                load_yearly=load_yearly, ok=ok, errmsg=msg)
+
+            if (.not. ok) stop 'BioInputs init failed: '//trim(msg)
+        end if
+
+        !--------------------------------------------------------
+        !  Prepare external input data
+        !--------------------------------------------------------
+        if (BE%has_input) then
+            if (BE%inputs%has_active_dependencies .or. BE%inputs%has_active_sources) then
+                call BE%inputs%prepare(timestep, ok=ok, errmsg=msg)
+                if (.not. ok) stop 'BioInputs init failed: '//trim(msg)
+            end if
+        end if
 
         ! ---- Interior state variables ---------------
         nint = size(BE%model%interior_state_variables)
@@ -393,6 +420,7 @@ contains
         BE%id_par     = BE%model%get_interior_variable_id(fabm_standard_variables%downwelling_photosynthetic_radiative_flux)
         BE%id_swr     = BE%model%get_interior_variable_id(fabm_standard_variables%downwelling_shortwave_flux)
         BE%id_pres    = BE%model%get_interior_variable_id(fabm_standard_variables%pressure)
+       
         ! Horizontal variables
         BE%id_windspd = BE%model%get_horizontal_variable_id(fabm_standard_variables%wind_speed)
         BE%id_slp     = BE%model%get_horizontal_variable_id(fabm_standard_variables%surface_air_pressure)
@@ -400,8 +428,7 @@ contains
         BE%id_swr_sfc = BE%model%get_horizontal_variable_id(fabm_standard_variables%surface_downwelling_shortwave_flux)
         BE%id_cloud   = BE%model%get_horizontal_variable_id(fabm_standard_variables%cloud_area_fraction)
         BE%id_stressb = BE%model%get_horizontal_variable_id(fabm_standard_variables%bottom_stress)
-        BE%id_co2     = BE%model%get_horizontal_variable_id(fabm_standard_variables%mole_fraction_of_carbon_dioxide_in_air)
-        BE%id_ice_af  = BE%model%get_horizontal_variable_id(fabm_standard_variables%ice_area_fraction)
+
         ! Scalar
         BE%id_yearday = BE%model%get_scalar_variable_id(fabm_standard_variables%number_of_days_since_start_of_the_year)
         call BE%model%link_scalar(BE%id_yearday, BE%BS%doy)
@@ -419,8 +446,6 @@ contains
         BE%need_swr_sfc = BE%model%is_variable_used(BE%id_swr_sfc)
         BE%need_cloud   = BE%model%is_variable_used(BE%id_cloud)
         BE%need_stressb = BE%model%is_variable_used(BE%id_stressb)
-        BE%need_co2     = BE%model%is_variable_used(BE%id_co2) .or. BE%model%variable_needs_values(BE%id_co2)
-        BE%need_ice_af  = BE%model%is_variable_used(BE%id_ice_af) .or. BE%model%variable_needs_values(BE%id_ice_af)
 
         if (BE%need_pres) BE%need_rho = .true.    ! if pressure is needed, then we need density too
 
@@ -519,16 +544,13 @@ contains
         call BE%model%link_horizontal_data(BE%id_windspd, BE%BS%wind_spd)
         call BE%model%link_horizontal_data(BE%id_slp,     BE%BS%slp)
         call BE%model%link_horizontal_data(BE%id_swr_sfc, BE%BS%short_rad)
-        call BE%model%link_horizontal_data(BE%id_co2,     BE%BS%co2_air)        
-        call BE%model%link_horizontal_data(BE%id_par_sfc, BE%BS%par_sfc)
-        if (BE%need_stressb) call BE%model%link_horizontal_data(BE%id_stressb, BE%BS%stressb)
-        if (BE%need_ice_af) then
-            write(*,*) "WARNING: Using constant value ice_area_fraction = 0.0 (ice-free assumption)."
-            call BE%model%link_horizontal_data(BE%id_ice_af,  BE%BS%ice_af)   ! Ice area fraction, for now it's a constant 0
-        end if
 
-        ! Check other potential variables needed -> Implement a way to provide those variables. 
-        ! Loop over a section within biogeochemistry in the yaml file to load those variables. 
+        if (BE%need_stressb) call BE%model%link_horizontal_data(BE%id_stressb, BE%BS%stressb)
+
+        ! Linking external dependencies provided by input data
+        if (BE%has_input .and. BE%inputs%has_active_dependencies) then
+            call BE%inputs%link_to_fabm(BE%model)            
+        end if
 
         ! Require FABM to obtain attenuation coefficients from bio/particles
         call BE%model%require_data(fabm_standard_variables%attenuation_coefficient_of_photosynthetic_radiative_flux)
@@ -604,20 +626,20 @@ contains
     !   - Applies vertical mixing and moves tracers according to reported velocities.
     !   - Integrates tracer tendencies (sources: dC/dt) subcycling if needed for stability.
     !=====================================================================================
-    subroutine integrate_bio_fabm(BE, PS, FS, timestep, istep_main, model_time, date, sec_of_day, doy_fraction)
+    subroutine integrate_bio_fabm(BE, PS, FS, timestep, istep_main, model_time_int, date, sec_of_day, doy_fraction)
         type(BioEnv),          intent(inout) :: BE
         type(PhysicsState),    intent(in)    :: PS
         type(ForcingSnapshot), intent(in)    :: FS
         integer(lk),           intent(in)    :: timestep
         integer(lk),           intent(in)    :: istep_main
-        real(rk),              intent(in)    :: model_time
+        integer(lk),           intent(in)    :: model_time_int
         type(DateTime),        intent(in)    :: date
         real(rk),              intent(in)    :: sec_of_day
         real(rk),              intent(in)    :: doy_fraction   ! 0-based day of year + fraction
 
 
-        integer  :: nz, ivar, k, nint, nsfc, nbtm
-        real(rk) :: istep_rk, dt_main, dt_sub, model_time_frac
+        integer  :: nz, i, ivar, k, nint, nsfc, nbtm
+        real(rk) :: istep_rk, dt_main, dt_sub, model_time, model_time_frac
         integer  :: isub
         real(rk) :: dt_done, dt_left
         real(rk) :: dt_transport_safe, dt_reaction_safe
@@ -636,12 +658,13 @@ contains
             return
         end if
 
-        nz       = BE%grid%nz              ! Total number of vertical layers       
-        istep_rk = real(istep_main, rk)    ! Current time-step number in the main loop
-        dt_main  = real(timestep, rk)
-        nint     = BE%BS%n_interior        ! Number of interior tracers
-        nsfc     = BE%BS%n_surface
-        nbtm     = BE%BS%n_bottom;
+        nz         = BE%grid%nz              ! Total number of vertical layers       
+        istep_rk   = real(istep_main, rk)    ! Current time-step number in the main loop
+        dt_main    = real(timestep, rk)
+        model_time = real(model_time_int, rk)
+        nint       = BE%BS%n_interior        ! Number of interior tracers
+        nsfc       = BE%BS%n_surface
+        nbtm       = BE%BS%n_bottom;
 
         ! Local aliases for location indices
         kwb = BE%k_wat_btm                ! Index for water bottom layer
@@ -661,6 +684,16 @@ contains
         ! Update FABM with environment data
         !--------------------------------------------
         call update_environment_data(PS, FS, BE)
+
+        !-------------------------------------------
+        ! Update external input data
+        !-------------------------------------------
+        if (BE%has_input) then
+            if (BE%inputs%has_active_dependencies .or. BE%inputs%has_active_sources) then
+                call BE%inputs%tick(model_time_int)
+                call BE%inputs%update(model_time_int)
+            end if
+        end if
 
         ! Repair state, if needed, to let FABM restore all state variables within their registered bounds.
         call check_and_repair_state(BE)      
@@ -758,6 +791,18 @@ contains
                     BE%tendency_int(nz,ivar) = BE%tendency_int(nz,ivar) + BE%flux_sf(ivar) / BE%grid%dz(nz)
                 end do
             end if    
+
+            !------------------------------------------------------
+            ! Include contribution of external source fluxes to interior tendencies
+            !------------------------------------------------------
+            ! Source values are interpreted as area fluxes: mass/(Area*time).
+            if (BE%has_input .and. BE%inputs%has_active_sources) then
+                do i = 1, size(BE%inputs%sources)
+                    ivar = BE%inputs%sources(i)%state_index
+                    k    = BE%inputs%sources(i)%k_target
+                    BE%tendency_int(k,ivar) = BE%tendency_int(k,ivar) + (BE%inputs%source_values(i) / BE%grid%dz(k))
+                end do
+            end if
 
             !------------------------------------------------------
             ! Apply external events (e.g. a tracer pulse or trawling)
@@ -1226,9 +1271,7 @@ contains
         BE%need_par_sfc = .false.
         BE%need_swr_sfc = .false.
         BE%need_cloud   = .false.
-        BE%need_stressb = .false.
-        BE%need_co2     = .false.  
-        BE%need_ice_af  = .false.      
+        BE%need_stressb = .false. 
 
         BE%is_init = .false.
     end subroutine end_bio_fabm
@@ -1287,7 +1330,6 @@ contains
         BE%BS%short_rad = FS%short_rad
         BE%BS%wind_spd  = PS%wind_speed
         BE%BS%slp       = FS%slp * 100.0_rk   ! Converting from hPa to Pa
-BE%BS%co2_air   = 0.0_rk !FS%co2_air
         BE%BS%stressb   = PS%stressb
         BE%BS%par_sfc   = PS%par_sfc
 
