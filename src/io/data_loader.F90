@@ -2,7 +2,7 @@ module data_loader
    use data_types,          only: DataLoaderCfg, DataSpec, DataFileInfo, DataVarSeries, InputData, &
                                   DATA_INPUT_FILE, DATA_INPUT_CONSTANT, DATA_INPUT_COMPUTE, DATA_INPUT_OFF, &
                                   DATA_FORMAT_UNKNOWN, DATA_FORMAT_NETCDF, DATA_FORMAT_CSV, &
-                                  DATA_TIME_ABSOLUTE, DATA_TIME_REPEAT_YEAR
+                                  DATA_TIME_ABSOLUTE
    use data_loader_netcdf,  only: NetcdfScan, scan_netcdf_file, &
                                   build_netcdf_year_windows, load_netcdf_series
    use geo_utils,           only: LocationInfo
@@ -89,13 +89,8 @@ contains
          select case (files(j)%format)
 
          case (DATA_FORMAT_NETCDF)
-            if (cfg%repeat_enabled) then
-               scan_start_datetime = DateTime(cfg%repeat_year, 1, 1, 0, 0, 0)
-               scan_end_datetime   = DateTime(cfg%repeat_year + 1, 1, 1, 0, 0, 0)
-            else
-               scan_start_datetime = start_datetime
-               scan_end_datetime   = end_datetime
-            end if
+            call get_file_scan_period(specs, files(j)%path, start_datetime, end_datetime, &
+                                      scan_start_datetime, scan_end_datetime)
 
             call scan_netcdf_file(files(j)%path, specs, location, scan_start_datetime, scan_end_datetime, &
                                  calendar_cfg%name(), state%nc_scans(j), lok, lmsg)
@@ -167,10 +162,11 @@ contains
             case (DATA_FORMAT_NETCDF)
                if (.not. cfg%load_yearly) then
                   call build_full_window(specs(i), state%nc_scans(j))
-               else if (cfg%repeat_enabled) then
+               else if (specs(i)%repeat_enabled) then
                   call build_netcdf_year_windows(specs(i), state%nc_scans(j), &
-                                                 cfg%repeat_year, cfg%repeat_year, &
-                                                 scan_start_datetime, scan_end_datetime)
+                                                specs(i)%repeat_year, specs(i)%repeat_year, &
+                                                DateTime(specs(i)%repeat_year,     1, 1, 0, 0, 0), &
+                                                DateTime(specs(i)%repeat_year + 1, 1, 1, 0, 0, 0))
                else
                   call build_netcdf_year_windows(specs(i), state%nc_scans(j), &
                                                  state%sim_y_start, state%sim_y_end, &
@@ -181,7 +177,6 @@ contains
       end do
 
       state%cfg = cfg
-      if (state%cfg%repeat_enabled) state%cfg%time_mode = DATA_TIME_REPEAT_YEAR
 
       allocate(state%specs(size(specs)))
       state%specs = specs
@@ -193,18 +188,22 @@ contains
    end subroutine scan_and_init_data
 
 
-   subroutine load_input_data(state, year_k, input, ok, errmsg)
+   subroutine load_input_data(state, year_k, input, ok, errmsg, skip_loaded_repeats)
       type(DataLoaderState), intent(in)    :: state
       integer,               intent(in)    :: year_k
-      type(InputData),       intent(inout) :: input
+      type(InputData),       intent(inout) :: input      
       logical,               intent(out)   :: ok
       character(*),          intent(out)   :: errmsg
+      logical, optional,     intent(in)    :: skip_loaded_repeats
 
       type(NcFile) :: db
       integer :: i, j, i0, i1, nt, win_k
+      logical :: skip_repeats
 
       ok = .false.
       errmsg = ''
+      skip_repeats = .false.
+      if (present(skip_loaded_repeats)) skip_repeats = skip_loaded_repeats
 
       call ensure_input_data_size(input, size(state%specs))
 
@@ -222,13 +221,17 @@ contains
                if (state%specs(i)%input_type /= DATA_INPUT_FILE) cycle
                if (state%specs(i)%file_index /= j) cycle
 
+               if (skip_repeats .and. state%specs(i)%repeat_enabled) then
+                  if (series_has_data(input%vars(i))) cycle
+               end if
+
                if (.not. allocated(state%specs(i)%idx_window)) then
                   errmsg = 'load_input_data: idx_window not built for '//trim(state%specs(i)%name)
                   call nc_close(db)
                   return
                end if
 
-               if ((.not. state%cfg%load_yearly) .or. state%cfg%repeat_enabled) then
+               if ((.not. state%cfg%load_yearly) .or. state%specs(i)%repeat_enabled) then
                   win_k = 1
                else
                   win_k = year_k
@@ -258,8 +261,8 @@ contains
                input%vars(i)%cal         = state%nc_scans(j)%cal
                input%vars(i)%u           = state%nc_scans(j)%u
                input%vars(i)%sim_offset  = state%nc_scans(j)%sim_offset
-               input%vars(i)%time_mode   = state%cfg%time_mode
-               input%vars(i)%repeat_year = state%cfg%repeat_year
+               input%vars(i)%time_mode   = state%specs(i)%time_mode
+               input%vars(i)%repeat_year = state%specs(i)%repeat_year
             end do
 
             call nc_close(db)
@@ -342,7 +345,7 @@ contains
       series%t_next      = INF_EDGE
 
       series%time_mode   = DATA_TIME_ABSOLUTE
-      series%repeat_year = -1
+      series%repeat_year = -huge(1)
       series%sim_offset  = 0_lk
 
       if (allocated(series%t_axis)) deallocate(series%t_axis)
@@ -372,6 +375,9 @@ contains
       if (series%n <= 1) then
          series%t_next = INF_EDGE
       else
+         if (.not. allocated(series%t_edge)) then
+            error stop 'init_series_cursor: t_edge is not allocated for '//trim(series%name)
+         end if
          series%t_next = series%t_edge(2)
       end if
    end subroutine init_series_cursor
@@ -449,12 +455,6 @@ contains
       if (any_off)     write(output_unit,'(2X,"Off variables: ",A)')       trim(list_off)
 
       write(output_unit,'(2X,"Calendar: ",A)') trim(state%sim_cal%name())
-
-      if (state%cfg%load_yearly) then
-         write(output_unit,'(2X,"Loading mode: yearly")')
-      else
-         write(output_unit,'(2X,"Loading mode: full")')
-      end if
    end subroutine print_data_summary
 
 
@@ -639,6 +639,13 @@ contains
                return
             end if
 
+            if (specs(i)%repeat_enabled) then
+               if (specs(i)%repeat_year == -huge(1)) then
+                  errmsg = 'DataSpec '//trim(specs(i)%name)//' has repeat_enabled=.true. but no valid repeat_year.'
+                  return
+               end if
+            end if
+
          case (DATA_INPUT_CONSTANT)
             ! const_value is already stored.
 
@@ -696,12 +703,80 @@ contains
       end select
    end function infer_format_from_extension
 
+   subroutine get_file_scan_period(specs, path, sim_start, sim_end, scan_start, scan_end)
+      type(DataSpec), intent(in)  :: specs(:)
+      character(*),   intent(in)  :: path
+      type(DateTime), intent(in)  :: sim_start, sim_end
+      type(DateTime), intent(out) :: scan_start, scan_end
+
+      integer :: i
+      logical :: first
+      type(DateTime) :: s, e
+
+      first = .true.
+
+      do i = 1, size(specs)
+         if (specs(i)%input_type /= DATA_INPUT_FILE) cycle
+         if (.not. allocated(specs(i)%path)) cycle
+         if (trim(specs(i)%path) /= trim(path)) cycle
+
+         if (specs(i)%repeat_enabled) then
+            s = DateTime(specs(i)%repeat_year,     1, 1, 0, 0, 0)
+            e = DateTime(specs(i)%repeat_year + 1, 1, 1, 0, 0, 0)
+         else
+            s = sim_start
+            e = sim_end
+         end if
+
+         if (first) then
+            scan_start = s
+            scan_end   = e
+            first = .false.
+         else
+            if (datetime_less(s, scan_start)) scan_start = s
+            if (datetime_less(scan_end, e))   scan_end   = e
+         end if
+      end do
+
+      if (first) then
+         scan_start = sim_start
+         scan_end   = sim_end
+      end if
+   end subroutine get_file_scan_period
+
+   pure logical function datetime_less(a, b) result(is_less)
+      type(DateTime), intent(in) :: a, b
+
+      is_less = .false.
+
+      if (a%year   /= b%year)   then; is_less = a%year   < b%year;   return; end if
+      if (a%month  /= b%month)  then; is_less = a%month  < b%month;  return; end if
+      if (a%day    /= b%day)    then; is_less = a%day    < b%day;    return; end if
+      if (a%hour   /= b%hour)   then; is_less = a%hour   < b%hour;   return; end if
+      if (a%minute /= b%minute) then; is_less = a%minute < b%minute; return; end if
+
+      is_less = a%second < b%second
+   end function datetime_less
+
+   logical function series_has_data(series) result(has_data)
+      type(DataVarSeries), intent(in) :: series
+
+      has_data = .false.
+
+      if (series%is_const) then
+         has_data = .true.
+         return
+      end if
+
+      if (allocated(series%values) .and. allocated(series%t_axis)) then
+         has_data = size(series%values) > 0 .and. size(series%t_axis) > 0
+      end if
+   end function series_has_data
+
 
    subroutine clear_state(state)
       type(DataLoaderState), intent(inout) :: state
 
-      state%cfg%repeat_enabled = .false.
-      state%cfg%repeat_year    = -huge(1)
       state%cfg%cfg_calendar   = cal_unknown
       state%cfg%load_yearly    = .true.
 
