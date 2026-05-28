@@ -18,7 +18,6 @@
 !=======================================================================================
 module physics_main  
   use EOS_eqns,            only: eos_density
-  use physics_forcing,     only: ForcingSnapshot
   use freshwater_fluxes,   only: apply_surface_freshwater
   use geo_utils,           only: LocationInfo
   use grids,               only: VerticalGrid
@@ -27,6 +26,7 @@ module physics_main
                                  compute_surface_stress, compute_bottom_stress
   use nan_checks,          only: check_nan_physics                               
   use numerical_stability, only: compute_phys_substeps
+  use physics_forcing,     only: ForcingSnapshot
   use physics_params,      only: read_physics_parameters, &
                                  gravity, kappa, mol_nu, mol_diff_T, rho0
   use physics_types,       only: PhysicsState, PhysicsEnv       
@@ -34,8 +34,7 @@ module physics_main
   use precision_types,     only: rk, lk               
   use radiation,           only: compute_par_profile    
   use read_config_yaml,    only: ConfigParams 
-  use tidal_readers,       only: read_tidal_parameters
-  use tidal,               only: TidalSet, create_tidal_set, tide_pressure_accel
+  use tidal,               only: TidalSet
   use tridiagonal,         only: init_tridiag, clear_tridiag
   use turbulence,          only: TURBULENCE_ke, tke_min
   use vertical_mixing,     only: scalar_diffusion, BC_NEUMANN  
@@ -67,9 +66,8 @@ contains
       !---- Read Physics parameters and initial values
       call read_physics_parameters(cfg_params, PE%params)
   
-      !--- Reading  tidal parameters ----
-      call read_tidal_parameters(cfg_params, location%lat,location%lon, PE%Tides)   ! Reads tidal parameters
-      call create_tidal_set(PE%Tides,location%lat)
+      !--- Reading  tidal parameters and creating tidal set ----
+      call PE%Tides%init(cfg_params, location%lat,location%lon)
 
       PE%grid = grid
 
@@ -245,7 +243,7 @@ contains
 
     
             ! Calculate current profile from tidal currents
-            call tide_pressure_accel(PE%Tides, t_sub, Pxsum, Pysum)             ! Pressure-gradient accelerations from tidal constituents at this time
+            call PE%Tides%acceleration(t_sub, Pxsum, Pysum)    ! Pressure-gradient accelerations from tidal constituents at this time      
     
             ! Accelerate by pressure gradients (x and y components)
             call EQN_PRESSURE(dt_sub, Pxsum, Pysum, PE%u_old, PE%v_old) ! Already updates u_old inplace
