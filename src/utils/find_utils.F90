@@ -46,8 +46,6 @@ contains
         end do
     end function find_nearest_index
 
-
-
     ! Returns the index of the name to find in a vector of strings
     integer function find_name(list, name) result(idx)
         character(len=:), allocatable, intent(in) :: list(:)
