@@ -6,6 +6,7 @@ module str_utils
   private
 
   public :: to_lower, to_upper, replace_char_inplace, remove_whitespaces
+  public :: starts_with, ends_with
   public :: inttostr, realtostr
   public :: list_to_str, append_string
 contains
@@ -49,7 +50,7 @@ contains
     ! Replace character a with b in string s
     subroutine replace_char_inplace(s, a, b)
         character(len=:), allocatable, intent(inout) :: s
-        character(*), intent(in) :: a, b
+        character(len=1), intent(in) :: a, b
         integer :: i
         do i=1, len(s)
             if (s(i:i) == a) s(i:i) = b
@@ -158,6 +159,36 @@ contains
             arr(n+1) = trim(item)
         end if
     end subroutine append_string
+
+    ! Returns .true. if text starts with prefix
+    pure logical function starts_with(text, prefix) result(match)
+        character(*), intent(in) :: text, prefix
+        integer :: lt, lp
+
+        lt = len_trim(text)
+        lp = len_trim(prefix)
+
+        if (lp > lt) then
+            match = .false.
+        else
+            match = text(1:lp) == prefix(1:lp)
+        end if
+    end function starts_with
+
+    ! Returns .true. if text ends with suffix
+    pure logical function ends_with(text, suffix) result(match)
+        character(*), intent(in) :: text, suffix
+        integer :: lt, ls
+
+        lt = len_trim(text)
+        ls = len_trim(suffix)
+
+        if (ls > lt) then
+            match = .false.
+        else
+            match = text(lt-ls+1:lt) == suffix(1:ls)
+        end if
+    end function ends_with
 
     !----------------------------------
     ! Local Helpers
