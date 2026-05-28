@@ -1,16 +1,17 @@
 module data_loader_netcdf
-   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
-   use precision_types, only: rk, lk
+   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite   
+   
+   use cf_time_utils,   only: parse_cf_time, seconds_since_datetime_file
+   use data_types,      only: DataSpec, DataVarSeries, DATA_INPUT_FILE
+   use find_utils,      only: find_name, has_name, argmin_abs_vec
+   use geo_utils,       only: LocationInfo, simple_distance_deg
    use netcdf
-   use netcdf_io, only: NcFile, nc_open, nc_close, nc_has_var, nc_check, &
-                        nc_var_dims, nc_read_real_1d, nc_get_att_str
-   use data_types, only: DataSpec, DataVarSeries, DATA_INPUT_FILE
-   use time_types, only: CFUnits, TimeAxis, CFCalendar, DateTime
-   use cf_time_utils, only: parse_cf_time, seconds_since_datetime_file
-   use time_utils, only: detect_frequency, index_at_or_before, index_at_or_after, check_time_monotonic
-   use str_utils, only: inttostr, realtostr, list_to_str, append_string
-   use find_utils, only: find_name, has_name, argmin_abs_vec
-   use geo_utils, only: LocationInfo, simple_distance_deg
+   use netcdf_io,       only: NcFile, nc_open, nc_close, nc_has_var, nc_check, &
+                              nc_var_dims, nc_read_real_1d, nc_get_att_str   
+   use precision_types, only: rk, lk
+   use str_utils,       only: inttostr, realtostr, list_to_str, append_string   
+   use time_types,      only: CFUnits, TimeAxis, CFCalendar, DateTime
+   use time_utils,      only: detect_frequency, index_at_or_before, index_at_or_after, check_time_monotonic
 
    implicit none
    private
