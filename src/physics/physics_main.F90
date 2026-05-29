@@ -97,8 +97,6 @@ contains
       PE%PS%cmue1 = 0.0_rk
 
       !--- Allocate working arrays
-      if (allocated(PE%u_old)) deallocate(PE%u_old, PE%u_new, PE%v_old, PE%v_new)
-      allocate(PE%u_old(N), PE%u_new(N), PE%v_old(N), PE%v_new(N))
       if (allocated(PE%Nz_tot)) deallocate(PE%Nz_tot, PE%Kz_T)   
       allocate(PE%Nz_tot(0:N), PE%Kz_T(0:N))  ! Arrays for viscosity and diffusivity plus molecular values
       if (allocated(PE%dTdt_heat)) deallocate(PE%dTdt_heat)   
@@ -168,9 +166,6 @@ contains
         N = PE%PS%N                          ! Number of layers in the vertical grid
         PE%FS = FS
 
-        ! Initialising them with current state
-        PE%u_old = PE%PS%velx;  PE%v_old = PE%PS%vely
-
         ! Calculating wind stress, surface friction velocity and roughness length
         call compute_surface_stress(u10= FS%wind_u10, v10= FS%wind_v10, charnock= PE%params%charnock,   &
                                      tau_x= PE%PS%tau_x, tau_y= PE%PS%tau_y, u_taus= PE%PS%u_taus,      &
@@ -197,7 +192,7 @@ contains
         ! Turbulence: once per main step     
         ! Solves turbulence using the Canuto k-eps closure scheme and calculates Kz and Nz
         call TURBULENCE_ke(N, dtm, PE%params, PE%grid%dz,                                &
-                          density = PE%PS%rho, velx = PE%u_old, vely = PE%v_old,         &
+                          density = PE%PS%rho, velx = PE%PS%velx, vely = PE%PS%vely,     &
                           u_taus = PE%PS%u_taus, u_taub = PE%PS%u_taub,                  &
                           z0s = PE%PS%z0s, z0b = PE%PS%z0b,                              &
                           Kz = PE%PS%Kz, Nz = PE%PS%Nz, tke = PE%PS%tke,                 &
@@ -209,7 +204,7 @@ contains
         PE%Kz_T   = PE%PS%Kz + mol_diff_T 
 
         ! Compute bed stress components (N/m^2) 
-        call compute_bottom_stress(u=PE%u_old, v=PE%v_old, dz_btm=PE%grid%dz(1), h0b=PE%params%h0b, &
+        call compute_bottom_stress(u=PE%PS%velx, v=PE%PS%vely, dz_btm=PE%grid%dz(1), h0b=PE%params%h0b, &
                                   tau_bx=PE%PS%tau_bx, tau_by=PE%PS%tau_by, u_taub=PE%PS%u_taub, z0b=PE%PS%z0b, stressb=PE%PS%stressb)
 
         ! Calculates the optimum size of the time-steps  for the inner loop
@@ -246,10 +241,10 @@ contains
             call PE%Tides%acceleration(t_sub, Pxsum, Pysum)    ! Pressure-gradient accelerations from tidal constituents at this time      
     
             ! Accelerate by pressure gradients (x and y components)
-            call EQN_PRESSURE(dt_sub, Pxsum, Pysum, PE%u_old, PE%v_old) ! Already updates u_old inplace
+            call EQN_PRESSURE(dt_sub, Pxsum, Pysum, PE%PS%velx, PE%PS%vely) ! Already updates vel inplace
 
             ! Compute bed stress components (N/m^2) 
-            call compute_bottom_stress(u=PE%u_old, v=PE%v_old, dz_btm=PE%grid%dz(1), h0b=PE%params%h0b, &
+            call compute_bottom_stress(u=PE%PS%velx, v=PE%PS%vely, dz_btm=PE%grid%dz(1), h0b=PE%params%h0b, &
                                        tau_bx=PE%PS%tau_bx, tau_by=PE%PS%tau_by, u_taub=PE%PS%u_taub, z0b=PE%PS%z0b, stressb=PE%PS%stressb)
 
             ! Convert dynamic stresses (Pa) to kinematic momentum fluxes (m^2 s^-2)
@@ -258,24 +253,16 @@ contains
             flux_u_sfc  = PE%PS%tau_x  / rho0; flux_v_sfc  = PE%PS%tau_y  / rho0
 
             ! Apply surface/bottom stresses and vertical diffusivity of momentum (using a semi-implicit scheme)
-            ! u_old and v_old are updated inplace
-            call scalar_diffusion(PE%u_old, N, dt_sub, PE%grid%dz, PE%Nz_tot, PE%params%cnpar, PE%trid, ierr_l, &
+            call scalar_diffusion(PE%PS%velx, N, dt_sub, PE%grid%dz, PE%Nz_tot, PE%params%cnpar, PE%trid, ierr_l, &
                                   bc_bot_type=BC_NEUMANN, bc_bot_value=flux_u_bot, &
                                   bc_top_type=BC_NEUMANN, bc_top_value=flux_u_sfc)
 
-            call scalar_diffusion(PE%v_old, N, dt_sub, PE%grid%dz, PE%Nz_tot, PE%params%cnpar, PE%trid, ierr_l, &
+            call scalar_diffusion(PE%PS%vely, N, dt_sub, PE%grid%dz, PE%Nz_tot, PE%params%cnpar, PE%trid, ierr_l, &
                                   bc_bot_type=BC_NEUMANN, bc_bot_value=flux_v_bot, &
                                   bc_top_type=BC_NEUMANN, bc_top_value=flux_v_sfc)
-
-            PE%u_new = PE%u_old
-            PE%v_new = PE%v_old
     
             ! Rotate velocities due to the Coriolis force
-            call EQN_CORIOLIS(PE%u_old, PE%v_old, dt_sub, PE%Tides%f0)
-    
-            ! Update the state of velocities
-            PE%PS%velx = PE%u_old
-            PE%PS%vely = PE%v_old  
+            call EQN_CORIOLIS(PE%PS%velx, PE%PS%vely, dt_sub, PE%Tides%f0)   
 
             call check_nan_physics(PE%PS)
         end do
@@ -312,11 +299,6 @@ contains
 
       if (allocated(PE%PS%Lscale)) deallocate(PE%PS%Lscale)
       if (allocated(PE%PS%cmue1))  deallocate(PE%PS%cmue1)
-
-      if (allocated(PE%u_old)) deallocate(PE%u_old)
-      if (allocated(PE%u_new)) deallocate(PE%u_new)
-      if (allocated(PE%v_old)) deallocate(PE%v_old)
-      if (allocated(PE%v_new)) deallocate(PE%v_new)
 
       if (allocated(PE%Nz_tot))    deallocate(PE%Nz_tot)
       if (allocated(PE%Kz_T))      deallocate(PE%Kz_T)
