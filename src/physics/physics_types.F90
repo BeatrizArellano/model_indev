@@ -16,7 +16,7 @@ module physics_types
   !======================
 
   type :: PhysicsState
-    integer              :: N                     ! Number of layers in the water column
+    integer              :: N                         ! Number of layers in the water column
     ! --- Prognostic variables at layers' centres (1..N) 
     real(rk), allocatable :: temp(:), sal(:), rho(:)  ! temperature, salinity and density
     real(rk), allocatable :: velx(:), vely(:)         ! Velocity components
@@ -59,7 +59,6 @@ module physics_types
     type(VarMetadata), allocatable :: phys_vars(:)   ! Metadata for Physics variables
     logical              :: is_init = .false. ! Flag to indicate that the physics is initialised for this water column
     !--- Working arrays
-    real(rk), allocatable :: u_old(:), u_new(:), v_old(:), v_new(:)
     real(rk), allocatable :: Kz_T(:), Nz_tot(:)
     real(rk), allocatable :: dTdt_heat(:)     ! Temperature tendencies from heat fluxes 
     real(rk), allocatable :: atten_bio(:)     ! Attenuation coefficients from biogeochemistry (m-1)
