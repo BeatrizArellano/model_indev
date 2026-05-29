@@ -9,9 +9,6 @@ module time_utils
   implicit none
   private
 
-  
-
-
   public :: is_leap_gregorian, check_time_monotonic
   public :: parse_datetime_str, datetime_from_string, datetime_to_str
   public :: validate_datetime, validate_calendar
