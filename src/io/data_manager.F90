@@ -634,7 +634,7 @@ contains
 
       if (.not. stop_on_error) return
 
-      write(*,*) 'FATAL DataManager['//trim(where)//']: ', trim(msg)
+      write(*,*) 'ERROR: DataManager['//trim(where)//']: ', trim(msg)
       stop 1
    end subroutine stop_fatal
 
