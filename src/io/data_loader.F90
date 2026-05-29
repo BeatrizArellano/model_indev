@@ -2,9 +2,10 @@ module data_loader
    use data_types,          only: DataLoaderCfg, DataSpec, DataFileInfo, DataVarSeries, InputData, &
                                   DATA_INPUT_FILE, DATA_INPUT_CONSTANT, DATA_INPUT_COMPUTE, DATA_INPUT_OFF, &
                                   DATA_FORMAT_UNKNOWN, DATA_FORMAT_NETCDF, DATA_FORMAT_CSV, &
-                                  DATA_TIME_ABSOLUTE
+                                  DATA_FORMAT_WHITESPACE, DATA_TIME_ABSOLUTE
    use data_loader_netcdf,  only: NetcdfScan, scan_netcdf_file, &
                                   build_netcdf_year_windows, load_netcdf_series
+   use data_loader_text,    only: TextScan, scan_text_file, build_text_full_window, load_text_series
    use geo_utils,           only: LocationInfo
    use netcdf_io,           only: NcFile, nc_open, nc_close
    use precision_types,     only: rk, lk
@@ -30,6 +31,7 @@ module data_loader
       type(DataSpec),     allocatable :: specs(:)
       type(DataFileInfo), allocatable :: files(:)
       type(NetcdfScan),   allocatable :: nc_scans(:)
+      type(TextScan),     allocatable :: text_scans(:)
 
       type(CFCalendar) :: sim_cal
 
@@ -45,7 +47,7 @@ contains
       type(CFCalendar),    intent(in)  :: calendar_cfg
       type(LocationInfo),  intent(in)  :: location
       type(DateTime),      intent(in)  :: start_datetime, end_datetime
-      type(DataLoaderState), intent(out) :: state
+      type(DataLoaderState), intent(out) :: state     
       logical,             intent(out) :: ok
       character(*),        intent(out) :: errmsg
 
@@ -67,10 +69,22 @@ contains
       specs = specs_in
 
       call normalise_specs(specs)
-      call validate_specs(specs, ok, errmsg)
-      if (.not. ok) return
+      call validate_specs(specs, lok, lmsg)
+      if (.not. lok) then
+         errmsg = trim(lmsg)
+         return
+      end if
 
       call build_file_list(specs, files)
+
+      if (any_text_files(files) .and. cfg%cfg_calendar == cal_unknown) then
+         errmsg = 'Text input files require an explicit calendar in the configuration; calendar cannot be derived from CSV/TXT/DAT files.'
+         return
+      end if
+
+      if (any_text_files(files) .and. cfg%load_yearly) then
+         write(*,'(A)') 'WARNING DataLoader: load_yearly applies only to NetCDF data; text/CSV/DAT inputs are loaded once over the full simulation window.'
+      end if
 
       do i = 1, size(specs)
          if (specs(i)%input_type == DATA_INPUT_FILE) then
@@ -84,6 +98,7 @@ contains
       end do
 
       allocate(state%nc_scans(size(files)))
+      allocate(state%text_scans(size(files)))
 
       do j = 1, size(files)
          select case (files(j)%format)
@@ -100,9 +115,19 @@ contains
                return
             end if
 
-         case (DATA_FORMAT_CSV)
-            errmsg = 'CSV input files are recognised but not implemented yet: '//trim(files(j)%path)
-            return
+         case (DATA_FORMAT_CSV, DATA_FORMAT_WHITESPACE)            
+
+            call get_file_scan_period(specs, files(j)%path, start_datetime, end_datetime, &
+                                      scan_start_datetime, scan_end_datetime)
+
+            call scan_text_file(files(j)%path, specs, calendar_cfg, &
+                                scan_start_datetime, scan_end_datetime, &
+                                state%text_scans(j), lok, lmsg)
+
+            if (.not. lok) then
+               errmsg = trim(lmsg)
+               return
+            end if
 
          case default
             errmsg = 'Unsupported input file format for '//trim(files(j)%path)
@@ -115,10 +140,16 @@ contains
             j = specs(i)%file_index
 
             select case (files(j)%format)
+
             case (DATA_FORMAT_NETCDF)
                specs(i)%calendar   = state%nc_scans(j)%cal%kind
                specs(i)%first_time = state%nc_scans(j)%axis%t_first
                specs(i)%last_time  = state%nc_scans(j)%axis%t_last
+
+            case (DATA_FORMAT_CSV, DATA_FORMAT_WHITESPACE)
+               specs(i)%calendar   = state%text_scans(j)%cal%kind
+               specs(i)%first_time = state%text_scans(j)%axis%t_first
+               specs(i)%last_time  = state%text_scans(j)%axis%t_last
             end select
          end if
       end do
@@ -159,6 +190,7 @@ contains
             j = specs(i)%file_index
 
             select case (files(j)%format)
+
             case (DATA_FORMAT_NETCDF)
                if (.not. cfg%load_yearly) then
                   call build_full_window(specs(i), state%nc_scans(j))
@@ -172,15 +204,21 @@ contains
                                                  state%sim_y_start, state%sim_y_end, &
                                                  start_datetime, end_datetime)
                end if
+
+            case (DATA_FORMAT_CSV, DATA_FORMAT_WHITESPACE)
+               call build_text_full_window(specs(i), state%text_scans(j))  
+
             end select
          end if
       end do
 
       state%cfg = cfg
 
+      if (allocated(state%specs)) deallocate(state%specs)
       allocate(state%specs(size(specs)))
       state%specs = specs
 
+      if (allocated(state%files)) deallocate(state%files)
       allocate(state%files(size(files)))
       state%files = files
 
@@ -267,9 +305,30 @@ contains
 
             call nc_close(db)
 
-         case (DATA_FORMAT_CSV)
-            errmsg = 'CSV loading is recognised but not implemented yet: '//trim(state%files(j)%path)
-            return
+         case (DATA_FORMAT_CSV, DATA_FORMAT_WHITESPACE)
+            do i = 1, size(state%specs)
+               if (state%specs(i)%input_type /= DATA_INPUT_FILE) cycle
+               if (state%specs(i)%file_index /= j) cycle
+
+               ! Text files are loaded as full-window time series.
+               ! If already present, do not reload them for yearly windows.
+               if (series_has_data(input%vars(i))) cycle
+
+               if (.not. allocated(state%specs(i)%idx_window)) then
+                  errmsg = 'load_input_data: idx_window not built for '//trim(state%specs(i)%name)
+                  return
+               end if
+
+               i0 = state%specs(i)%idx_window(1, 1)
+               i1 = state%specs(i)%idx_window(2, 1)
+
+               call load_text_series(input%vars(i), state%text_scans(j), state%specs(i), i0, i1)
+
+               input%vars(i)%name        = state%specs(i)%name
+               input%vars(i)%units       = state%specs(i)%units
+               input%vars(i)%time_mode   = state%specs(i)%time_mode
+               input%vars(i)%repeat_year = state%specs(i)%repeat_year
+            end do
 
          case default
             errmsg = 'Unsupported input file format for '//trim(state%files(j)%path)
@@ -433,6 +492,11 @@ contains
       any_const   = .false.
       any_off     = .false.
       any_compute = .false.
+
+      if (.not. allocated(state%specs)) then
+         write(output_unit,'(A)') '  ✗ Input data configuration was not completed.'
+         return
+      end if
 
       do i = 1, size(state%specs)
          select case (state%specs(i)%input_type)
@@ -689,6 +753,22 @@ contains
       if (ext == 'nc4' .or. ext == 'cdf') ext = 'nc'
    end function get_file_extension
 
+   logical function any_text_files(files)
+      type(DataFileInfo), intent(in) :: files(:)
+
+      integer :: i
+
+      any_text_files = .false.
+
+      do i = 1, size(files)
+         select case (files(i)%format)
+         case (DATA_FORMAT_CSV, DATA_FORMAT_WHITESPACE)
+            any_text_files = .true.
+            return
+         end select
+      end do
+   end function any_text_files
+
 
    integer function infer_format_from_extension(extension) result(format)
       character(*), intent(in) :: extension
@@ -698,6 +778,8 @@ contains
          format = DATA_FORMAT_NETCDF
       case ('csv')
          format = DATA_FORMAT_CSV
+      case ('txt', 'dat')
+         format = DATA_FORMAT_WHITESPACE
       case default
          format = DATA_FORMAT_UNKNOWN
       end select
@@ -784,9 +866,10 @@ contains
       state%sim_y_end   = 0
       state%sim_cal%kind = cal_unknown
 
-      if (allocated(state%specs))    deallocate(state%specs)
-      if (allocated(state%files))    deallocate(state%files)
-      if (allocated(state%nc_scans)) deallocate(state%nc_scans)
+      if (allocated(state%specs))      deallocate(state%specs)
+      if (allocated(state%files))      deallocate(state%files)
+      if (allocated(state%nc_scans))   deallocate(state%nc_scans)
+      if (allocated(state%text_scans)) deallocate(state%text_scans)
    end subroutine clear_state
 
 end module data_loader
