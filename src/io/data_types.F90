@@ -6,7 +6,7 @@ module data_types
    private
 
    public :: DATA_INPUT_FILE, DATA_INPUT_CONSTANT, DATA_INPUT_COMPUTE, DATA_INPUT_OFF
-   public :: DATA_FORMAT_UNKNOWN, DATA_FORMAT_NETCDF, DATA_FORMAT_CSV
+   public :: DATA_FORMAT_UNKNOWN, DATA_FORMAT_NETCDF, DATA_FORMAT_CSV, DATA_FORMAT_WHITESPACE
    public :: DATA_TIME_ABSOLUTE, DATA_TIME_REPEAT_YEAR
    public :: TimeWindow
    public :: DataLoaderCfg
@@ -20,9 +20,10 @@ module data_types
    integer, parameter :: DATA_INPUT_COMPUTE  = 3
    integer, parameter :: DATA_INPUT_OFF      = 4
 
-   integer, parameter :: DATA_FORMAT_UNKNOWN = 0
-   integer, parameter :: DATA_FORMAT_NETCDF  = 1
-   integer, parameter :: DATA_FORMAT_CSV     = 2
+   integer, parameter :: DATA_FORMAT_UNKNOWN    = 0
+   integer, parameter :: DATA_FORMAT_NETCDF     = 1
+   integer, parameter :: DATA_FORMAT_CSV        = 2
+   integer, parameter :: DATA_FORMAT_WHITESPACE = 3
 
    integer, parameter :: DATA_TIME_ABSOLUTE    = 1
    integer, parameter :: DATA_TIME_REPEAT_YEAR = 2
