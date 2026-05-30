@@ -159,13 +159,14 @@ contains
                 ! Point FABM to the current concentration state for biogeochemical tracers
                 call BE%model%link_interior_state_data(ivar, BE%BS%interior_state(:,ivar))
                 ! Register metadata for variables
-                call register_variable(BE%int_vars, name=trim(BE%model%interior_state_variables(ivar)%name),  &
-                                       long_name=trim(BE%model%interior_state_variables(ivar)%long_name),        &
-                                       units=trim(BE%model%interior_state_variables(ivar)%units),               &
-                                       minimum=BE%model%interior_state_variables(ivar)%minimum,                 &
-                                       maximum=BE%model%interior_state_variables(ivar)%maximum,                 &
-                                       missing_value=BE%model%interior_state_variables(ivar)%missing_value,     &
-                                       vert_coord='centre', n_space_dims=1, data_1d=BE%BS%interior_state(:,ivar))   
+                call register_variable(BE%int_vars, name=trim(BE%model%interior_state_variables(ivar)%name),      &
+                                       long_name=trim(BE%model%interior_state_variables(ivar)%long_name),         &
+                                       units=trim(BE%model%interior_state_variables(ivar)%units),                 &
+                                       minimum=BE%model%interior_state_variables(ivar)%minimum,                   &
+                                       maximum=BE%model%interior_state_variables(ivar)%maximum,                   &
+                                       missing_value=BE%model%interior_state_variables(ivar)%missing_value,       &
+                                       vert_coord='centre', n_space_dims=1, data_1d=BE%BS%interior_state(:,ivar), &
+                                       state_var=.true.)   
 
                 ! Retrieve useful properties 
                 BE%tracer_info(ivar)%fabm_index = ivar 
@@ -267,13 +268,14 @@ contains
             ! Link FABM to the bottom state vector
             call BE%model%link_all_bottom_state_data(BE%BS%bottom_state)
             do ivar=1, nbtm
-                call register_variable(BE%btm_vars, name=trim(BE%model%bottom_state_variables(ivar)%name),  &
-                                       long_name=trim(BE%model%bottom_state_variables(ivar)%long_name),        &
+                call register_variable(BE%btm_vars, name=trim(BE%model%bottom_state_variables(ivar)%name),    &
+                                       long_name=trim(BE%model%bottom_state_variables(ivar)%long_name),       &
                                        units=trim(BE%model%bottom_state_variables(ivar)%units),               &
                                        minimum=BE%model%bottom_state_variables(ivar)%minimum,                 &
                                        maximum=BE%model%bottom_state_variables(ivar)%maximum,                 &
                                        missing_value=BE%model%bottom_state_variables(ivar)%missing_value,     &
-                                       vert_coord='bottom', n_space_dims=0, data_0d=BE%BS%bottom_state(ivar)) 
+                                       vert_coord='bottom', n_space_dims=0, data_0d=BE%BS%bottom_state(ivar), &
+                                       state_var=.true.) 
             end do
             if (allocated(BE%btm_vars)) call output_all_variables(BE%btm_vars)
         end if
@@ -289,13 +291,14 @@ contains
             ! Link FABM to the surface state vector
             call BE%model%link_all_surface_state_data(BE%BS%surface_state)
             do ivar=1, nsfc
-                call register_variable(BE%sfc_vars, name=trim(BE%model%surface_state_variables(ivar)%name),  &
+                call register_variable(BE%sfc_vars, name=trim(BE%model%surface_state_variables(ivar)%name),     &
                                        long_name=trim(BE%model%surface_state_variables(ivar)%long_name),        &
-                                       units=trim(BE%model%surface_state_variables(ivar)%units),               &
-                                       minimum=BE%model%surface_state_variables(ivar)%minimum,                 &
-                                       maximum=BE%model%surface_state_variables(ivar)%maximum,                 &
-                                       missing_value=BE%model%surface_state_variables(ivar)%missing_value,     &
-                                       vert_coord='surface', n_space_dims=0, data_0d=BE%BS%surface_state(ivar)) 
+                                       units=trim(BE%model%surface_state_variables(ivar)%units),                &
+                                       minimum=BE%model%surface_state_variables(ivar)%minimum,                  &
+                                       maximum=BE%model%surface_state_variables(ivar)%maximum,                  &
+                                       missing_value=BE%model%surface_state_variables(ivar)%missing_value,      &
+                                       vert_coord='surface', n_space_dims=0, data_0d=BE%BS%surface_state(ivar), &
+                                       state_var=.true.) 
             end do
             if (allocated(BE%sfc_vars)) call output_all_variables(BE%sfc_vars)
         end if
@@ -392,13 +395,13 @@ contains
                 BE%conserved_total    = 0.0_rk
                 ! register variables for output      
                 do ivar=1, BE%n_conserved
-                    call register_variable(BE%conserved_vars,                                 &
-                                            name='conserved_'//trim(BE%model%conserved_quantities(ivar)%name),  &
+                    call register_variable(BE%conserved_vars,                                                       &
+                                            name='conserved_'//trim(BE%model%conserved_quantities(ivar)%name),      &
                                             long_name='Column-integrated total of '//trim(BE%model%conserved_quantities(ivar)%long_name),        &
-                                            units=trim(BE%model%conserved_quantities(ivar)%units)//'*m',         &
-                                            minimum=BE%model%conserved_quantities(ivar)%minimum,                 &
-                                            maximum=BE%model%conserved_quantities(ivar)%maximum,                 &
-                                            missing_value=BE%model%conserved_quantities(ivar)%missing_value,     &
+                                            units=trim(BE%model%conserved_quantities(ivar)%units)//'*m',            &
+                                            minimum=BE%model%conserved_quantities(ivar)%minimum,                    &
+                                            maximum=BE%model%conserved_quantities(ivar)%maximum,                    &
+                                            missing_value=BE%model%conserved_quantities(ivar)%missing_value,        &
                                             vert_coord='surface', n_space_dims=0, data_0d=BE%conserved_total(ivar)) 
                 end do
                 if (allocated(BE%conserved_vars)) call output_all_variables(BE%conserved_vars)
@@ -464,22 +467,22 @@ contains
         allocate(BE%BS%vert_diff(0:nz))
         allocate(BE%BS%atten_coeff(nz)) ! Allocate array for attenuation coefficients
         BE%BS%atten_coeff = 0.0_rk 
-        call register_variable(BE%env_int_vars,                      &
-                                name='env_atten_bio',                                       &
-                                long_name='Attenuation coefficient of PAR by biogeochemistry',      &
-                                units='m-1',                                               &
-                                vert_coord='centre', n_space_dims=1,                       &
+        call register_variable(BE%env_int_vars,                                                &
+                                name='env_atten_bio',                                          &
+                                long_name='Attenuation coefficient of PAR by biogeochemistry', &
+                                units='m-1',                                                   &
+                                vert_coord='centre', n_space_dims=1,                           &
                                 data_1d=BE%BS%atten_coeff)
 
         if (BE%need_pres .or. BE%params%sediments_enabled) then
             if (.not. allocated(BE%BS%pres)) allocate(BE%BS%pres(nz))
-            call register_variable(BE%env_int_vars, name='env_pressure', &
-                                   long_name='Pressure', units='dbar',   &
+            call register_variable(BE%env_int_vars, name='env_pressure',                      &
+                                   long_name='Pressure', units='dbar',                        &
                                    vert_coord='centre', n_space_dims=1, data_1d=BE%BS%pres)
         end if
         if (BE%need_par .and. .not. allocated(BE%BS%par)) then
             allocate(BE%BS%par(nz))
-            call register_variable(BE%env_int_vars,                                &
+            call register_variable(BE%env_int_vars,                                                 &
                                     name='env_par',                                                 &
                                     long_name='Downwelling Photosynthetic Active Radiation',        &
                                     units='W m-2',                                                  &
@@ -488,9 +491,9 @@ contains
         end if
         if (BE%need_swr .and. .not. allocated(BE%BS%swr)) then
             allocate(BE%BS%swr(nz))
-            call register_variable(BE%env_int_vars,                    &
+            call register_variable(BE%env_int_vars,                                         &
                                     name='env_swr',                                         &
-                                    long_name='Downwelling shortwave flux', &
+                                    long_name='Downwelling shortwave flux',                 &
                                     units='W m-2',                                          &
                                     vert_coord='centre', n_space_dims=1,                    &
                                     data_1d=BE%BS%swr)
@@ -506,22 +509,24 @@ contains
                 if(allocated(BE%BS%full_bioirr)) deallocate(BE%BS%full_bioirr)
                 allocate(BE%BS%full_bioirr(nz)) 
                 BE%BS%full_bioirr = get_nan_rk()
-                call register_variable(BE%env_int_vars, name='bioirrigation', &
-                                       long_name='Bioirrigation coefficient', &
+                call register_variable(BE%env_int_vars, name='bioirrigation',            &
+                                       long_name='Bioirrigation coefficient',            &
                                        units='s-1', vert_coord='centre', n_space_dims=1, &
-                                       data_1d=BE%BS%full_bioirr,             &
-                                       minimum=0.0_rk, missing_value=get_nan_rk())
+                                       data_1d=BE%BS%full_bioirr,                        &
+                                       minimum=0.0_rk, missing_value=get_nan_rk(),       &
+                                       state_var=.true.)                                 ! Mark as state variables so dynamic sediment properties can be written to restart files.
             end if
             if(BE%SED%output_bioturb_dynamic) then
                 if(allocated(BE%BS%full_biotur)) deallocate(BE%BS%full_biotur)
                 allocate(BE%BS%full_biotur(0:nz)) 
                 BE%BS%full_biotur = get_nan_rk()
                 
-                call register_variable(BE%env_int_vars, name='bioturbation', &
-                                       long_name='Bioturbation coefficient (Db)', &
+                call register_variable(BE%env_int_vars, name='bioturbation',                   &
+                                       long_name='Bioturbation coefficient (Db)',              &
                                        units='m2 s-1', vert_coord='interface', n_space_dims=1, &
-                                       data_1d=BE%BS%full_biotur,             &
-                                       minimum=0.0_rk, missing_value=get_nan_rk())
+                                       data_1d=BE%BS%full_biotur,                              &
+                                       minimum=0.0_rk, missing_value=get_nan_rk(),             &
+                                       state_var=.true.)
             end if
         end if
 
