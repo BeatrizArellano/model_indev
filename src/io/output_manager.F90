@@ -1,12 +1,15 @@
 module output_manager  
-  use geo_utils,         only: LocationInfo
-  use grids,             only: VerticalGrid  
-  use output_writer,     only: OutputWriter
-  use precision_types,   only: rk, lk
-  use read_config_yaml,  only: ConfigParams
-  use output_static,     only: StaticProfile
-  use time_utils,        only: parse_interval_to_seconds, sec_per_hour, sec_per_day
-  use variable_registry, only: VarMetadata
+  use final_state_writer, only: write_final_state_csv
+  use geo_utils,          only: LocationInfo
+  use grids,              only: VerticalGrid  
+  use output_static,      only: StaticProfile
+  use output_writer,      only: OutputWriter
+  use path_utils,         only: path_dirname, path_join, path_replace_extension, path_basename
+  use precision_types,    only: rk, lk
+  use read_config_yaml,   only: ConfigParams
+  use str_utils,          only: replace_char_inplace
+  use time_utils,         only: parse_interval_to_seconds, sec_per_hour, sec_per_day
+  use variable_registry,  only: VarMetadata
   use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_quiet_nan
   implicit none
   private
@@ -14,14 +17,16 @@ module output_manager
 
   ! ---- Configuration parameters
   type :: OutputConfig
-     character(:), allocatable :: file          ! base filename (no .nc)
-     logical                   :: overwrite     ! Whether to overwrite the file or not
-     character(:), allocatable :: frequency     ! 'hourly'|'daily'|'custom'
-     character(:), allocatable :: statistic     ! 'mean'|'instant'
-     character(:), allocatable :: interval_txt  ! e.g. '12h' (only for custom)
+     character(:), allocatable :: file                     ! base filename (no .nc)
+     logical                   :: overwrite                ! Whether to overwrite the file or not
+     character(:), allocatable :: frequency                ! 'hourly'|'daily'|'custom'
+     character(:), allocatable :: statistic                ! 'mean'|'instant'
+     character(:), allocatable :: interval_txt             ! e.g. '12h' (only for custom)
      integer(lk)               :: interval_s = 0_lk
      integer                   :: sync_frequency_d = 0     ! Sync frequency in days
      integer(lk)               :: sync_frequency_s = 0_lk  ! Sync frequency in seconds: 0 is no periodic sync
+     logical                   :: write_final_state = .false.
+     character(:), allocatable :: final_state_path
   end type OutputConfig
 
   ! ---- Scheduler
@@ -72,6 +77,8 @@ module output_manager
      type(OutputData)      :: acc
      type(OutputWriter)    :: writer
 
+     type(VerticalGrid)    :: grid
+
      integer(lk)          :: N  = 0_lk
      integer(lk)          :: Ni = 0_lk
      logical              :: is_mean = .true.
@@ -94,49 +101,51 @@ module output_manager
 
 contains
   !================ CONFIGuration parameters ===
-  subroutine read_output_config(params, cfg)
-    type(ConfigParams), intent(in)  :: params
-    type(OutputConfig), intent(out) :: cfg
+   subroutine read_output_config(params, cfg)
+      type(ConfigParams), intent(in)  :: params
+      type(OutputConfig), intent(out) :: cfg
 
-    character(:), allocatable :: fname, frequency, statistic, interval
-    logical                   :: overwrite
-    character(len=6) :: freq_choices(3) = ['hourly','daily ','custom']
-    character(len=7) :: stat_choices(2) = ['mean   ','instant']
+      character(:), allocatable :: fname, frequency, statistic, interval
+      logical                   :: overwrite
+      character(len=6) :: freq_choices(3) = ['hourly','daily ','custom']
+      character(len=7) :: stat_choices(2) = ['mean   ','instant']
 
-    integer(lk) :: interval_s
+      integer(lk) :: interval_s
 
-    fname = params%get_param_str('output.file', default='output')             ! Filename
-    overwrite = params%get_param_logical('output.overwrite', default=.false.) 
+      fname = params%get_param_str('output.file', default='output')             ! Filename
+      overwrite = params%get_param_logical('output.overwrite', default=.false.) 
 
-    frequency  = params%get_param_str('output.frequency', default='daily', &
-                                      choices=freq_choices, trim_value=.true., match_case=.false.)
+      frequency  = params%get_param_str('output.frequency', default='daily', &
+                                       choices=freq_choices, trim_value=.true., match_case=.false.)
 
-    statistic = params%get_param_str('output.statistic', default='mean', &
-                                     choices=stat_choices, trim_value=.true., match_case=.false.)
+      statistic = params%get_param_str('output.statistic', default='mean', &
+                                       choices=stat_choices, trim_value=.true., match_case=.false.)
 
-    select case (frequency)
-      case ('hourly')
-         interval_s = sec_per_hour
-      case ('daily')
-         interval_s = sec_per_day
-      case ('custom')
-         interval = params%get_param_str('output.interval', default='12h', trim_value=.true.)
-         call parse_interval_to_seconds(interval, interval_s)   ! e.g., "12h" -> 43200
-         if (interval_s <= 0_lk) then
-            error stop 'output.interval is invalid; use forms like 900s, 15m, 12h, 2d'
-         end if
-         cfg%interval_txt = trim(interval)
-    end select
+      select case (frequency)
+         case ('hourly')
+            interval_s = sec_per_hour
+         case ('daily')
+            interval_s = sec_per_day
+         case ('custom')
+            interval = params%get_param_str('output.interval', default='12h', trim_value=.true.)
+            call parse_interval_to_seconds(interval, interval_s)   ! e.g., "12h" -> 43200
+            if (interval_s <= 0_lk) then
+               error stop 'output.interval is invalid; use forms like 900s, 15m, 12h, 2d'
+            end if
+            cfg%interval_txt = trim(interval)
+      end select
 
-    cfg%sync_frequency_d = params%get_param_int('output.sync_frequency',default=30, min=0)
-    cfg%sync_frequency_s = int(cfg%sync_frequency_d, lk) * sec_per_day
+      cfg%sync_frequency_d = params%get_param_int('output.sync_frequency',default=30, min=0)
+      cfg%sync_frequency_s = int(cfg%sync_frequency_d, lk) * sec_per_day
 
-    cfg%file       = fname
-    cfg%overwrite  = overwrite
-    cfg%frequency  = trim(frequency)
-    cfg%statistic  = trim(statistic)
-    cfg%interval_s = interval_s
-  end subroutine read_output_config
+      cfg%write_final_state = params%get_param_logical('output.write_final_state', default=.false.)
+
+      cfg%file       = fname
+      cfg%overwrite  = overwrite
+      cfg%frequency  = trim(frequency)
+      cfg%statistic  = trim(statistic)
+      cfg%interval_s = interval_s
+   end subroutine read_output_config
 
   !================ SCHEDULER ================
   ! Initialise the scheduler with model timestep, output interval, and starting time.
@@ -196,334 +205,353 @@ contains
    end subroutine sched_reset_window
 
 
-  ! Return the length of the output window in seconds.
+   ! Return the length of the output window in seconds.
    integer(lk) function sched_window_len_s(this) result(wlen)
       class(OutputScheduler), intent(in) :: this
       wlen = min(this%acc_time_s, this%interval_s)
    end function sched_window_len_s
 
 
-  !================ Data storage for each interval ================
-  ! Initialise data arrays for all varables
-  subroutine outdata_init(this, N, Ni, statistic, n_centre, n_iface, n_scalar)
-    class(OutputData), intent(inout) :: this
-    integer(lk),       intent(in)    :: N, Ni
-    character(*),      intent(in)    :: statistic
-    integer,           intent(in)    :: n_centre, n_iface, n_scalar
+   !================ Data storage for each interval ================
+   ! Initialise data arrays for all varables
+   subroutine outdata_init(this, N, Ni, statistic, n_centre, n_iface, n_scalar)
+      class(OutputData), intent(inout) :: this
+      integer(lk),       intent(in)    :: N, Ni
+      character(*),      intent(in)    :: statistic
+      integer,           intent(in)    :: n_centre, n_iface, n_scalar
 
-    this%statistic = trim(statistic)
-    this%steps     = 0_lk
-    this%N         = N
-    this%Ni        = Ni
-    this%n_centre  = n_centre
-    this%n_iface   = n_iface
-    this%n_scalar  = n_scalar
+      this%statistic = trim(statistic)
+      this%steps     = 0_lk
+      this%N         = N
+      this%Ni        = Ni
+      this%n_centre  = n_centre
+      this%n_iface   = n_iface
+      this%n_scalar  = n_scalar
 
-    ! Deallocate any previous content
-    if (allocated(this%centre_sum))  deallocate(this%centre_sum)
-    if (allocated(this%iface_sum))   deallocate(this%iface_sum)
-    if (allocated(this%scalar_sum))  deallocate(this%scalar_sum)
-    if (allocated(this%centre_last)) deallocate(this%centre_last)
-    if (allocated(this%iface_last))  deallocate(this%iface_last)
-    if (allocated(this%scalar_last)) deallocate(this%scalar_last)
+      ! Deallocate any previous content
+      if (allocated(this%centre_sum))  deallocate(this%centre_sum)
+      if (allocated(this%iface_sum))   deallocate(this%iface_sum)
+      if (allocated(this%scalar_sum))  deallocate(this%scalar_sum)
+      if (allocated(this%centre_last)) deallocate(this%centre_last)
+      if (allocated(this%iface_last))  deallocate(this%iface_last)
+      if (allocated(this%scalar_last)) deallocate(this%scalar_last)
 
-   if (this%statistic == 'mean') then
-      ! Allocate only sums
-      if (n_centre > 0) then
-         allocate(this%centre_sum(N, n_centre))
-         this%centre_sum = 0.0_rk
+      if (this%statistic == 'mean') then
+         ! Allocate only sums
+         if (n_centre > 0) then
+            allocate(this%centre_sum(N, n_centre))
+            this%centre_sum = 0.0_rk
+         end if
+         if (n_iface > 0) then
+            allocate(this%iface_sum(Ni, n_iface))
+            this%iface_sum = 0.0_rk
+         end if
+         if (n_scalar > 0) then
+            allocate(this%scalar_sum(n_scalar))
+            this%scalar_sum = 0.0_rk
+         end if
+      else
+         ! 'instant': allocate only last
+         if (n_centre > 0) then
+            allocate(this%centre_last(N, n_centre))
+            this%centre_last = 0.0_rk
+         end if
+         if (n_iface > 0) then
+            allocate(this%iface_last(Ni, n_iface))
+            this%iface_last = 0.0_rk
+         end if
+         if (n_scalar > 0) then
+            allocate(this%scalar_last(n_scalar))
+            this%scalar_last = 0.0_rk
+         end if
       end if
-      if (n_iface > 0) then
-         allocate(this%iface_sum(Ni, n_iface))
-         this%iface_sum = 0.0_rk
+   end subroutine outdata_init
+
+      ! Add a new model time step to the data arrays or update last values.
+   subroutine outdata_update_from_vars(this, vars)
+      class(OutputData),   intent(inout) :: this
+      type(VarMetadata),   intent(in)    :: vars(:)
+
+      real(rk) :: fillv
+      real(rk), allocatable :: tmp(:)
+      integer :: nsrc, k0
+      integer :: j, ic, ii, is
+
+      ic = 0; ii = 0; is = 0
+
+      do j = 1, size(vars)
+         if (.not. vars(j)%output) cycle
+
+         select case (vars(j)%n_space_dims)
+         case (1)
+            select case (trim(vars(j)%vert_coord))
+            case ('centre')
+               ic = ic + 1
+               if (.not. associated(vars(j)%data_1d)) error stop 'OutputData:update: centre var has no data_1d'
+               nsrc = size(vars(j)%data_1d)
+               fillv = ieee_value(0.0_rk, ieee_quiet_nan)
+   
+               if (nsrc == this%N) then
+                  if (allocated(this%centre_sum)) then
+                     this%centre_sum(:, ic) = this%centre_sum(:, ic) + vars(j)%data_1d(:)
+                  else
+                     this%centre_last(:, ic) = vars(j)%data_1d(:)
+                  end if
+               else if (nsrc < this%N) then
+                  allocate(tmp(this%N))
+                  tmp(:) = fillv
+                  k0 = this%N - nsrc + 1              ! start index for water part in full column
+                  tmp(k0:this%N) = vars(j)%data_1d(:)
+   
+                  if (allocated(this%centre_sum)) then
+                     this%centre_sum(:, ic) = this%centre_sum(:, ic) + tmp
+                  else
+                     this%centre_last(:, ic) = tmp
+                  end if
+                  deallocate(tmp)
+               else
+                  error stop 'OutputData:update: centre var longer than output grid.'
+               end if
+
+            case ('interface')
+               ii = ii + 1
+               if (.not. associated(vars(j)%data_1d)) error stop 'OutputData:update: iface var has no data_1d'
+               nsrc = size(vars(j)%data_1d)
+               fillv = ieee_value(0.0_rk, ieee_quiet_nan)
+   
+               if (nsrc == this%Ni) then
+                  if (allocated(this%iface_sum)) then
+                     this%iface_sum(:, ii) = this%iface_sum(:, ii) + vars(j)%data_1d(:)
+                  else
+                     this%iface_last(:, ii) = vars(j)%data_1d(:)
+                  end if
+               else if (nsrc < this%Ni) then
+                  allocate(tmp(this%Ni))
+                  tmp(:) = fillv
+                  k0 = this%Ni - nsrc + 1             ! start index for water interfaces in full column
+                  tmp(k0:this%Ni) = vars(j)%data_1d(:)
+   
+                  if (allocated(this%iface_sum)) then
+                     this%iface_sum(:, ii) = this%iface_sum(:, ii) + tmp
+                  else
+                     this%iface_last(:, ii) = tmp
+                  end if
+                  deallocate(tmp)
+               else
+                  error stop 'OutputData:update: iface var longer than output grid.'
+               end if
+
+            case default
+               error stop 'OutputData:update: unsupported vert_coord for profile.'
+            end select
+
+         case (0)
+            is = is + 1
+            if (.not. associated(vars(j)%data_0d)) error stop 'OutputData:update: scalar var has no data_0d'
+            if (allocated(this%scalar_sum)) then
+               this%scalar_sum(is) = this%scalar_sum(is) + vars(j)%data_0d
+            else
+               this%scalar_last(is) = vars(j)%data_0d
+            end if
+
+         case default
+            error stop 'OutputData:update: unsupported n_space_dims.'
+         end select
+      end do
+
+      this%steps = this%steps + 1_lk
+   end subroutine outdata_update_from_vars
+
+   ! Produce the final interval values (mean or last) for all variables
+   subroutine outdata_finalize(this, centre_out, iface_out, scalar_out)
+      class(OutputData), intent(in)  :: this
+      real(rk),          intent(out), optional :: centre_out(:,:)
+      real(rk),          intent(out), optional :: iface_out(:,:)
+      real(rk),          intent(out), optional :: scalar_out(:)
+
+      real(rk) :: denom
+
+      if (this%steps <= 0_lk) error stop 'OutputData: finalize empty window'
+
+      if (this%statistic == 'mean') then
+         denom = real(max(1_lk, this%steps), rk)
+      else
+         denom = 1.0_rk
       end if
-      if (n_scalar > 0) then
-         allocate(this%scalar_sum(n_scalar))
-         this%scalar_sum = 0.0_rk
+
+      if (present(centre_out) .and. this%n_centre > 0) then
+         if (allocated(this%centre_sum)) then
+            centre_out = this%centre_sum / denom
+         else
+            centre_out = this%centre_last
+         end if
       end if
-   else
-      ! 'instant': allocate only last
-      if (n_centre > 0) then
-         allocate(this%centre_last(N, n_centre))
-         this%centre_last = 0.0_rk
+
+      if (present(iface_out) .and. this%n_iface > 0) then
+         if (allocated(this%iface_sum)) then
+            iface_out = this%iface_sum / denom
+         else
+            iface_out = this%iface_last
+         end if
       end if
-      if (n_iface > 0) then
-         allocate(this%iface_last(Ni, n_iface))
-         this%iface_last = 0.0_rk
+
+      if (present(scalar_out) .and. this%n_scalar > 0) then
+         if (allocated(this%scalar_sum)) then
+            scalar_out = this%scalar_sum / denom
+         else
+            scalar_out = this%scalar_last
+         end if
       end if
-      if (n_scalar > 0) then
-         allocate(this%scalar_last(n_scalar))
-         this%scalar_last = 0.0_rk
+   end subroutine outdata_finalize
+
+
+   ! Reset accumulated sums and counters at the start of a new output interval.
+   subroutine outdata_reset(this)
+      class(OutputData), intent(inout) :: this
+      this%steps = 0_lk
+      if (allocated(this%centre_sum)) this%centre_sum = 0.0_rk
+      if (allocated(this%iface_sum))  this%iface_sum  = 0.0_rk
+      if (allocated(this%scalar_sum)) this%scalar_sum = 0.0_rk
+      if (allocated(this%centre_last)) this%centre_last = 0.0_rk
+      if (allocated(this%iface_last))  this%iface_last  = 0.0_rk
+      if (allocated(this%scalar_last)) this%scalar_last = 0.0_rk
+   end subroutine outdata_reset
+
+   !================ OUTPUT MANAGER ================
+   ! Read output config, set up scheduler and data storage, and open the NetCDF file.
+   subroutine om_init(this, params, grid, dt_s, time_units, calendar_name, vars, loc, final_timestamp, static_profiles)
+      class(OutputManager), intent(inout) :: this
+      type(ConfigParams),   intent(in)    :: params
+      type(VerticalGrid),   intent(in)    :: grid
+      integer(lk),          intent(in)    :: dt_s
+      character(*),         intent(in)    :: time_units      ! "seconds since [datetime]"
+      character(*),         intent(in)    :: calendar_name
+      type(VarMetadata),    intent(in)    :: vars(:)
+      type(LocationInfo),   intent(in)    :: loc
+      character(*),         intent(in)    :: final_timestamp
+      type(StaticProfile),  intent(in), optional :: static_profiles(:)
+      
+
+      character(:), allocatable :: path
+      character(:), allocatable :: title_str
+      character(:), allocatable :: dirname
+      character(:), allocatable :: basename
+      character(len=:), allocatable :: timestamp
+      logical :: exists
+      integer :: ios
+      integer :: j
+      
+
+      ! Read config
+      call read_output_config(params, this%cfg)
+
+      ! Build full output path (base name + .nc)
+      path = path_replace_extension(this%cfg%file, 'nc')
+
+      this%grid = grid
+
+      inquire(file=trim(path), exist=exists)
+      if (exists) then
+         if (.not. this%cfg%overwrite) then
+            write(*,*) 'ERROR: output file ', trim(path), ' already exists and overwrite = no.'
+            stop 1
+         else
+            write(*,*) 'Overwriting existing output file: ', trim(path)
+            call delete_file_if_exists(path, ios)
+            if (ios /= 0) then
+               write(*,*) 'ERROR: Failed to delete old output file: ', trim(path), ' iostat=', ios
+               stop 1
+            end if
+         end if
+      else
+         write(*,*) 'Creating new output file: ', trim(path)
       end if
-   end if
-  end subroutine outdata_init
 
-   ! Add a new model time step to the data arrays or update last values.
-  subroutine outdata_update_from_vars(this, vars)
-    class(OutputData),   intent(inout) :: this
-    type(VarMetadata),   intent(in)    :: vars(:)
+      ! Buld the name for the final state file including the timestamp
+      if (this%cfg%write_final_state) then
+         dirname   = path_dirname(this%cfg%file, include_separator=.true.)
+         basename  = path_replace_extension(path_basename(this%cfg%file),'')
+         timestamp = trim(final_timestamp)
+         call replace_char_inplace(timestamp, ':', '-')   ! Replace : with -
+         this%cfg%final_state_path = path_join(dirname, basename // '_' // trim(timestamp) // '.csv')
+         write(*,'(A)') ' Final state will be written to: '//trim(this%cfg%final_state_path)
+      end if
 
-    real(rk) :: fillv
-    real(rk), allocatable :: tmp(:)
-    integer :: nsrc, k0
-    integer :: j, ic, ii, is
+      this%N      = grid%nz
+      this%Ni     = grid%nz + 1
+      this%is_mean = (this%cfg%statistic == 'mean')
 
-    ic = 0; ii = 0; is = 0
+      ! Store metadata (shallow copy: pointers stay pointing to live arrays)
+      if (allocated(this%vars)) deallocate(this%vars)
+      allocate(this%vars(size(vars)))
+      this%vars = vars
 
-    do j = 1, size(vars)
-       if (.not. vars(j)%output) cycle
+      ! Count how many of each type we have (centre/interface/scalar)
+      this%n_centre = 0
+      this%n_iface  = 0
+      this%n_scalar = 0
 
-       select case (vars(j)%n_space_dims)
-       case (1)
-          select case (trim(vars(j)%vert_coord))
-          case ('centre')
-             ic = ic + 1
-             if (.not. associated(vars(j)%data_1d)) error stop 'OutputData:update: centre var has no data_1d'
-             nsrc = size(vars(j)%data_1d)
-             fillv = ieee_value(0.0_rk, ieee_quiet_nan)
- 
-             if (nsrc == this%N) then
-                if (allocated(this%centre_sum)) then
-                   this%centre_sum(:, ic) = this%centre_sum(:, ic) + vars(j)%data_1d(:)
-                else
-                   this%centre_last(:, ic) = vars(j)%data_1d(:)
-                end if
-             else if (nsrc < this%N) then
-                allocate(tmp(this%N))
-                tmp(:) = fillv
-                k0 = this%N - nsrc + 1              ! start index for water part in full column
-                tmp(k0:this%N) = vars(j)%data_1d(:)
- 
-                if (allocated(this%centre_sum)) then
-                   this%centre_sum(:, ic) = this%centre_sum(:, ic) + tmp
-                else
-                   this%centre_last(:, ic) = tmp
-                end if
-                deallocate(tmp)
-             else
-                error stop 'OutputData:update: centre var longer than output grid.'
-             end if
+      do j = 1, size(this%vars)
+         if (.not. this%vars(j)%output) cycle
 
-          case ('interface')
-             ii = ii + 1
-             if (.not. associated(vars(j)%data_1d)) error stop 'OutputData:update: iface var has no data_1d'
-             nsrc = size(vars(j)%data_1d)
-             fillv = ieee_value(0.0_rk, ieee_quiet_nan)
- 
-             if (nsrc == this%Ni) then
-                if (allocated(this%iface_sum)) then
-                   this%iface_sum(:, ii) = this%iface_sum(:, ii) + vars(j)%data_1d(:)
-                else
-                   this%iface_last(:, ii) = vars(j)%data_1d(:)
-                end if
-             else if (nsrc < this%Ni) then
-                allocate(tmp(this%Ni))
-                tmp(:) = fillv
-                k0 = this%Ni - nsrc + 1             ! start index for water interfaces in full column
-                tmp(k0:this%Ni) = vars(j)%data_1d(:)
- 
-                if (allocated(this%iface_sum)) then
-                   this%iface_sum(:, ii) = this%iface_sum(:, ii) + tmp
-                else
-                   this%iface_last(:, ii) = tmp
-                end if
-                deallocate(tmp)
-             else
-                error stop 'OutputData:update: iface var longer than output grid.'
-             end if
+         select case (this%vars(j)%n_space_dims)
+         case (1)
+            select case (trim(this%vars(j)%vert_coord))
+            case ('centre')
+               this%n_centre = this%n_centre + 1
+            case ('interface')
+               this%n_iface  = this%n_iface  + 1
+            case default
+               error stop 'OutputManager:init: unsupported vert_coord for profile.'
+            end select
+         case (0)
+            this%n_scalar = this%n_scalar + 1
+         case default
+            error stop 'OutputManager:init: unsupported n_space_dims.'
+         end select
+      end do
 
-          case default
-             error stop 'OutputData:update: unsupported vert_coord for profile.'
-          end select
+      ! Init scheduler and arrays for sums (for mean statistic)
+      call this%sched%init(dt_s, this%cfg%interval_s, model_time=0_lk)
+      call this%acc%init(N       = this%N,         &
+                        Ni      = this%Ni,        &
+                        statistic = this%cfg%statistic, &
+                        n_centre = this%n_centre, &
+                        n_iface  = this%n_iface,  &
+                        n_scalar = this%n_scalar)
 
-       case (0)
-          is = is + 1
-          if (.not. associated(vars(j)%data_0d)) error stop 'OutputData:update: scalar var has no data_0d'
-          if (allocated(this%scalar_sum)) then
-             this%scalar_sum(is) = this%scalar_sum(is) + vars(j)%data_0d
-          else
-             this%scalar_last(is) = vars(j)%data_0d
-          end if
+      ! Allocate persistent record arrays
+      if (allocated(this%centre_rec)) deallocate(this%centre_rec)
+      if (allocated(this%iface_rec))  deallocate(this%iface_rec)
+      if (allocated(this%scalar_rec)) deallocate(this%scalar_rec)
 
-       case default
-          error stop 'OutputData:update: unsupported n_space_dims.'
-       end select
-    end do
+      allocate(this%centre_rec(this%N,  max(0,this%n_centre)))
+      allocate(this%iface_rec (this%Ni, max(0,this%n_iface)))
+      allocate(this%scalar_rec(max(0,this%n_scalar)))
 
-    this%steps = this%steps + 1_lk
-  end subroutine outdata_update_from_vars
+      ! Periodic sync if requested
+      if (this%cfg%sync_frequency_s > 0_lk) then
+         this%next_sync_time_s = this%cfg%sync_frequency_s
+      else
+         this%next_sync_time_s = -1_lk
+      end if
 
-  ! Produce the final interval values (mean or last) for all variables
-  subroutine outdata_finalize(this, centre_out, iface_out, scalar_out)
-    class(OutputData), intent(in)  :: this
-    real(rk),          intent(out), optional :: centre_out(:,:)
-    real(rk),          intent(out), optional :: iface_out(:,:)
-    real(rk),          intent(out), optional :: scalar_out(:)
+      call build_output_title(loc, title_str)
 
-    real(rk) :: denom
+      ! Open NetCDF file and define structure using the same vars
+      call this%writer%open_file(path              = path,              &
+                                 grid              = grid,              &
+                                 interval_statistic= this%cfg%statistic,&
+                                 time_units        = time_units,        &
+                                 calendar_name     = calendar_name,     &
+                                 vars              = this%vars,         &
+                                 title             = title_str,         &
+                                 static_profiles   = static_profiles)
 
-    if (this%steps <= 0_lk) error stop 'OutputData: finalize empty window'
+      this%is_init = .true.
+   end subroutine om_init
 
-    if (this%statistic == 'mean') then
-       denom = real(max(1_lk, this%steps), rk)
-    else
-       denom = 1.0_rk
-    end if
-
-    if (present(centre_out) .and. this%n_centre > 0) then
-       if (allocated(this%centre_sum)) then
-          centre_out = this%centre_sum / denom
-       else
-          centre_out = this%centre_last
-       end if
-    end if
-
-    if (present(iface_out) .and. this%n_iface > 0) then
-       if (allocated(this%iface_sum)) then
-          iface_out = this%iface_sum / denom
-       else
-          iface_out = this%iface_last
-       end if
-    end if
-
-    if (present(scalar_out) .and. this%n_scalar > 0) then
-       if (allocated(this%scalar_sum)) then
-          scalar_out = this%scalar_sum / denom
-       else
-          scalar_out = this%scalar_last
-       end if
-    end if
-  end subroutine outdata_finalize
-  ! Reset accumulated sums and counters at the start of a new output interval.
-  subroutine outdata_reset(this)
-    class(OutputData), intent(inout) :: this
-    this%steps = 0_lk
-    if (allocated(this%centre_sum)) this%centre_sum = 0.0_rk
-    if (allocated(this%iface_sum))  this%iface_sum  = 0.0_rk
-    if (allocated(this%scalar_sum)) this%scalar_sum = 0.0_rk
-    if (allocated(this%centre_last)) this%centre_last = 0.0_rk
-    if (allocated(this%iface_last))  this%iface_last  = 0.0_rk
-    if (allocated(this%scalar_last)) this%scalar_last = 0.0_rk
-  end subroutine outdata_reset
-
-  !================ OUTPUT MANAGER ================
-  ! Read output config, set up scheduler and data storage, and open the NetCDF file.
-  subroutine om_init(this, params, grid, dt_s, time_units, calendar_name, vars, loc, static_profiles)
-    class(OutputManager), intent(inout) :: this
-    type(ConfigParams),   intent(in)    :: params
-    type(VerticalGrid),   intent(in)    :: grid
-    integer(lk),          intent(in)    :: dt_s
-    character(*),         intent(in)    :: time_units      ! "seconds since [datetime]"
-    character(*),         intent(in)    :: calendar_name
-    type(VarMetadata),    intent(in)    :: vars(:)
-    type(LocationInfo),   intent(in)    :: loc
-    type(StaticProfile),  intent(in), optional :: static_profiles(:)
-
-    character(:), allocatable :: path
-    character(:), allocatable :: title_str
-    logical :: exists
-    integer :: ios
-    integer :: j
-    
-
-    ! Read config
-    call read_output_config(params, this%cfg)
-
-    ! Build full output path (base name + .nc)
-    path = trim(this%cfg%file)//'.nc'
-
-    inquire(file=trim(path), exist=exists)
-    if (exists) then
-       if (.not. this%cfg%overwrite) then
-          write(*,*) 'ERROR: output file ', trim(path), ' already exists and overwrite = no.'
-          stop 1
-       else
-          write(*,*) 'Overwriting existing output file: ', trim(path)
-          call delete_file_if_exists(path, ios)
-          if (ios /= 0) then
-             write(*,*) 'ERROR: Failed to delete old output file: ', trim(path), ' iostat=', ios
-             stop 1
-          end if
-       end if
-    else
-       write(*,*) 'Creating new output file: ', trim(path)
-    end if
-
-    this%N      = grid%nz
-    this%Ni     = grid%nz + 1
-    this%is_mean = (this%cfg%statistic == 'mean')
-
-    ! Store metadata (shallow copy: pointers stay pointing to live arrays)
-    if (allocated(this%vars)) deallocate(this%vars)
-    allocate(this%vars(size(vars)))
-    this%vars = vars
-
-    ! Count how many of each type we have (centre/interface/scalar)
-    this%n_centre = 0
-    this%n_iface  = 0
-    this%n_scalar = 0
-
-    do j = 1, size(this%vars)
-       if (.not. this%vars(j)%output) cycle
-
-       select case (this%vars(j)%n_space_dims)
-       case (1)
-          select case (trim(this%vars(j)%vert_coord))
-          case ('centre')
-             this%n_centre = this%n_centre + 1
-          case ('interface')
-             this%n_iface  = this%n_iface  + 1
-          case default
-             error stop 'OutputManager:init: unsupported vert_coord for profile.'
-          end select
-       case (0)
-          this%n_scalar = this%n_scalar + 1
-       case default
-          error stop 'OutputManager:init: unsupported n_space_dims.'
-       end select
-    end do
-
-    ! Init scheduler and arrays for sums (for mean statistic)
-    call this%sched%init(dt_s, this%cfg%interval_s, model_time=0_lk)
-    call this%acc%init(N       = this%N,         &
-                       Ni      = this%Ni,        &
-                       statistic = this%cfg%statistic, &
-                       n_centre = this%n_centre, &
-                       n_iface  = this%n_iface,  &
-                       n_scalar = this%n_scalar)
-
-    ! Allocate persistent record arrays
-    if (allocated(this%centre_rec)) deallocate(this%centre_rec)
-    if (allocated(this%iface_rec))  deallocate(this%iface_rec)
-    if (allocated(this%scalar_rec)) deallocate(this%scalar_rec)
-
-    allocate(this%centre_rec(this%N,  max(0,this%n_centre)))
-    allocate(this%iface_rec (this%Ni, max(0,this%n_iface)))
-    allocate(this%scalar_rec(max(0,this%n_scalar)))
-
-    ! Periodic sync if requested
-    if (this%cfg%sync_frequency_s > 0_lk) then
-       this%next_sync_time_s = this%cfg%sync_frequency_s
-    else
-       this%next_sync_time_s = -1_lk
-    end if
-
-    call build_output_title(loc, title_str)
-
-    ! Open NetCDF file and define structure using the same vars
-    call this%writer%open_file(path              = path,              &
-                               grid              = grid,              &
-                               interval_statistic= this%cfg%statistic,&
-                               time_units        = time_units,        &
-                               calendar_name     = calendar_name,     &
-                               vars              = this%vars,         &
-                               title             = title_str,         &
-                               static_profiles   = static_profiles)
-
-    this%is_init = .true.
-  end subroutine om_init
-
-  ! Update data storage arrays each timestep and write a record when an output interval closes.
+   ! Update data storage arrays each timestep and write a record when an output interval closes.
    subroutine om_step(this, dt_s)
       class(OutputManager), intent(inout) :: this
       integer(lk),          intent(in)    :: dt_s
@@ -568,50 +596,54 @@ contains
    end subroutine om_step
 
 
-  ! Finalise and close the NetCDF output file (optionally syncing to disk).
-  subroutine om_close(this, sync_now)
-    class(OutputManager), intent(inout) :: this
-    logical, intent(in), optional :: sync_now
-    logical :: do_sync
+   ! Finalise and close the NetCDF output file (optionally syncing to disk).
+   subroutine om_close(this, sync_now)
+      class(OutputManager), intent(inout) :: this
+      logical, intent(in), optional :: sync_now
+      logical :: do_sync
 
-   if (.not. this%is_init) return
+      if (.not. this%is_init) return
 
-   if (present(sync_now)) then
-      do_sync = sync_now
-   else
-      do_sync = .false.
-   end if
+         if (this%cfg%write_final_state) then
+         call write_final_state_csv(this%cfg%final_state_path, this%grid, this%vars)
+      end if
 
-   call this%writer%close_file(do_sync=do_sync)
+      if (present(sync_now)) then
+         do_sync = sync_now
+      else
+         do_sync = .false.
+      end if
 
-    this%is_init = .false.
-  end subroutine om_close
+      call this%writer%close_file(do_sync=do_sync)
 
-  ! Delete an existing file if it is present on disk.
-  subroutine delete_file_if_exists(path, iostat_out)
-    character(*), intent(in)  :: path
-    integer,      intent(out) :: iostat_out
+      this%is_init = .false.
+   end subroutine om_close
 
-    logical :: exists
-    integer :: u, ios
+   ! Delete an existing file if it is present on disk.
+   subroutine delete_file_if_exists(path, iostat_out)
+      character(*), intent(in)  :: path
+      integer,      intent(out) :: iostat_out
 
-    iostat_out = 0
-    inquire(file=trim(path), exist=exists)
-    if (.not. exists) return
+      logical :: exists
+      integer :: u, ios
 
-    open(newunit=u, file=trim(path), status='old', iostat=ios)
-    if (ios /= 0) then
-       iostat_out = ios
-       return
-    end if
+      iostat_out = 0
+      inquire(file=trim(path), exist=exists)
+      if (.not. exists) return
 
-    close(u, status='delete', iostat=ios)
-    if (ios /= 0) then
-       iostat_out = ios
-    end if
-  end subroutine delete_file_if_exists
+      open(newunit=u, file=trim(path), status='old', iostat=ios)
+      if (ios /= 0) then
+         iostat_out = ios
+         return
+      end if
 
-    ! Build a title from LocationInfo
+      close(u, status='delete', iostat=ios)
+      if (ios /= 0) then
+         iostat_out = ios
+      end if
+   end subroutine delete_file_if_exists
+
+   ! Build a title from LocationInfo
    subroutine build_output_title(loc, title)
       type(LocationInfo), intent(in)  :: loc
       character(:), allocatable, intent(out) :: title
@@ -631,6 +663,5 @@ contains
 
       title = trim(buf)
    end subroutine build_output_title
-
 
 end module output_manager
