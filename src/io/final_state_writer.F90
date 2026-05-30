@@ -57,11 +57,11 @@ contains
 
 
     subroutine write_profile(unit, grid, var)
-        integer,           intent(in) :: unit
-        type(VerticalGrid),intent(in) :: grid
-        type(VarMetadata), intent(in) :: var
+        integer,            intent(in) :: unit
+        type(VerticalGrid), intent(in) :: grid
+        type(VarMetadata),  intent(in) :: var
 
-        integer :: k, n
+        integer :: kg, iv, nvals, grid_n, k_start
         real(rk), allocatable :: zcoord(:)
 
         if (.not. associated(var%data_1d)) then
@@ -69,25 +69,17 @@ contains
             stop 1
         end if
 
-        n = size(var%data_1d)
+        nvals = size(var%data_1d)
 
         select case (trim(var%vert_coord))
         case ('centre')
-            if (n /= size(grid%z)) then
-                write(*,*) 'ERROR: centre final state variable has wrong length: ', trim(var%name)
-                write(*,*) '       size(data)=', n, ' size(grid%z)=', size(grid%z)
-                stop 1
-            end if
-            allocate(zcoord(n))
+            grid_n = size(grid%z)
+            allocate(zcoord(grid_n))
             zcoord = grid%z
 
         case ('interface')
-            if (n /= size(grid%z_w)) then
-                write(*,*) 'ERROR: interface final state variable has wrong length: ', trim(var%name)
-                write(*,*) '       size(data)=', n, ' size(grid%z_w)=', size(grid%z_w)
-                stop 1
-            end if
-            allocate(zcoord(n))
+            grid_n = size(grid%z_w)
+            allocate(zcoord(grid_n))
             zcoord = grid%z_w
 
         case default
@@ -96,8 +88,22 @@ contains
             stop 1
         end select
 
-        do k = 1, n
-            call write_row(unit, var, k, zcoord(k), var%data_1d(k))
+        if (nvals > grid_n) then
+            write(*,*) 'ERROR: final state variable is longer than the grid: ', trim(var%name)
+            write(*,*) '       size(data)=', nvals, ' size(grid)=', grid_n
+            stop 1
+        end if
+
+        k_start = grid_n - nvals + 1
+
+        ! Some variables may be shorter than the output grid, e.g. physics
+        ! profiles live only on water layers while biogeochemistry may use the
+        ! full water+sediment grid. Shorter profiles are assumed to occupy the
+        ! upper part of the grid, so we skip unmatched bottom levels.
+
+        do iv = 1, nvals                       ! bottom -> surface, native variable indexing
+            kg = k_start + iv - 1              ! matching full-grid index for depth lookup
+            call write_row(unit, var, iv, zcoord(kg), var%data_1d(iv))
         end do
 
         deallocate(zcoord)
@@ -180,7 +186,7 @@ contains
         character(len=512) :: iomsg
 
         write(unit,'(A)', iostat=ios, iomsg=iomsg) &
-            'name,vert_coord,depth_index,depth,value,units,long_name'
+            'name,vert_coord,index,depth,value,units,long_name'
 
         if (ios /= 0) then
             write(*,*) 'ERROR: failed writing final state CSV header.'
