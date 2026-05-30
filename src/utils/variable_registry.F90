@@ -13,7 +13,8 @@ module variable_registry
         character(len=16) :: vert_coord                  ! none, centre, interface, surface, bottom
         integer           :: n_space_dims                ! 0 = scalar, 1 = profile (depth)       
 
-        logical           :: output = .false.            ! Whether to include this variable in the output file
+        logical           :: output    = .false.         ! Whether to include this variable in the output file
+        logical           :: state_var = .false.         ! Is this a state variable?
 
          ! Optional value metadata
         logical           :: has_min      = .false.
@@ -29,7 +30,7 @@ module variable_registry
 
     public :: VarMetadata
     public :: register_variable
-    public :: output_all_variables, enable_named_variables
+    public :: output_all_variables, enable_named_variables, get_state_variables
 
     interface register_variable
         module procedure register_variable_0d
@@ -38,13 +39,14 @@ module variable_registry
 
 contains
     subroutine register_variable_1d(registry, name, long_name, units, vert_coord, n_space_dims, data_1d, &
-                                    standard_name, minimum, maximum, missing_value)
-        type(VarMetadata), allocatable, intent(inout) :: registry(:)
+                                    standard_name, minimum, maximum, missing_value, state_var)
+        type(VarMetadata), allocatable,  intent(inout) :: registry(:)
         character(len=*),                intent(in)    :: name, long_name, units, vert_coord
         character(len=*),      optional, intent(in)    :: standard_name
         integer,                         intent(in)    :: n_space_dims
-        real(rk),         target,        intent(in)    :: data_1d(:)
-        real(rk),         optional,      intent(in)    :: minimum, maximum, missing_value
+        real(rk),                target, intent(in)    :: data_1d(:)
+        real(rk),              optional, intent(in)    :: minimum, maximum, missing_value
+        logical,               optional, intent(in)    :: state_var
 
 
         type(VarMetadata), allocatable :: tmp(:)
@@ -73,6 +75,13 @@ contains
         registry(n)%vert_coord  = trim(vert_coord)
         registry(n)%n_space_dims = n_space_dims
         registry(n)%output   = .false.
+
+        if (present(state_var)) then
+            registry(n)%state_var = state_var
+        else
+            registry(n)%state_var = .false.
+        end if
+
         ! Value metadata
         if (present(minimum) .and. .not. ieee_is_nan(minimum)) then
             registry(n)%has_min   = .true.
@@ -102,13 +111,14 @@ contains
     end subroutine register_variable_1d
 
     subroutine register_variable_0d(registry, name, long_name, units, vert_coord, n_space_dims, data_0d, &
-                                    standard_name, minimum, maximum, missing_value)
-        type(VarMetadata), allocatable, intent(inout) :: registry(:)
+                                    standard_name, minimum, maximum, missing_value, state_var)
+        type(VarMetadata), allocatable,  intent(inout) :: registry(:)
         character(len=*),                intent(in)    :: name, long_name, units, vert_coord
         character(len=*),      optional, intent(in)    :: standard_name
         integer,                         intent(in)    :: n_space_dims
-        real(rk),         target,        intent(in)    :: data_0d
-        real(rk),         optional,      intent(in)    :: minimum, maximum, missing_value
+        real(rk),                target, intent(in)    :: data_0d
+        real(rk),              optional, intent(in)    :: minimum, maximum, missing_value
+        logical,               optional, intent(in)    :: state_var
 
         type(VarMetadata), allocatable :: tmp(:)
         integer :: n
@@ -134,6 +144,12 @@ contains
         registry(n)%vert_coord   = trim(vert_coord)
         registry(n)%n_space_dims = n_space_dims
         registry(n)%output   = .false.
+
+        if (present(state_var)) then
+            registry(n)%state_var = state_var
+        else
+            registry(n)%state_var = .false.
+        end if
 
         ! Value metadata
         if (present(minimum) .and. .not. ieee_is_nan(minimum)) then
@@ -189,5 +205,27 @@ contains
             end do
         end do
     end subroutine enable_named_variables
+
+    subroutine get_state_variables(registry, state_vars)
+        type(VarMetadata), intent(in)  :: registry(:)
+        type(VarMetadata), allocatable, intent(out) :: state_vars(:)
+
+        integer :: i, n
+
+        n = 0
+        do i = 1, size(registry)
+            if (registry(i)%state_var) n = n + 1
+        end do
+
+        allocate(state_vars(n))
+
+        n = 0
+        do i = 1, size(registry)
+            if (registry(i)%state_var) then
+                n = n + 1
+                state_vars(n) = registry(i)
+            end if
+        end do
+    end subroutine get_state_variables
 
 end module variable_registry
