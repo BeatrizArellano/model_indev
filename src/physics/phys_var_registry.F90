@@ -15,13 +15,13 @@ contains
 
       ! Temperature [°C] 
       call register_variable(PE%phys_vars, name='temperature', standard_name='sea_water_temperature', &
-                             long_name='Sea water temperature (in-situ).',                                       &
-                             units='degC', vert_coord='centre', n_space_dims=1, data_1d=PE%PS%temp)
+                             long_name='Sea water temperature (in-situ).',  units='degC',             &
+                             vert_coord='centre', n_space_dims=1, data_1d=PE%PS%temp, state_var=.true.)
 
       ! Salinity 
       call register_variable(PE%phys_vars, name='salinity', standard_name='sea_water_practical_salinity', &
-                             long_name='Sea water practical salinity.',                             &
-                             units='PSU', vert_coord='centre', n_space_dims=1, data_1d=PE%PS%sal)
+                             long_name='Sea water practical salinity.', units='PSU',                      &
+                             vert_coord='centre', n_space_dims=1, data_1d=PE%PS%sal, state_var=.true.)
 
       ! Density [kg m-3] 
       call register_variable(PE%phys_vars, name='density', standard_name='sea_water_density', &
@@ -31,11 +31,11 @@ contains
       ! Velocity components 
       call register_variable(PE%phys_vars, name='u', standard_name='eastward_sea_water_velocity', &
                              long_name='Eastward seawater velocity from barotropic tidal pressure-gradient accelerations.', &
-                             units='m s-1', vert_coord='centre', n_space_dims=1, data_1d=PE%PS%velx)
+                             units='m s-1', vert_coord='centre', n_space_dims=1, data_1d=PE%PS%velx, state_var=.true.)
 
       call register_variable(PE%phys_vars, name='v', standard_name='northward_sea_water_velocity', &
                              long_name='Northward seawater velocity from barotropic tidal pressure-gradient accelerations.', &
-                             units='m s-1', vert_coord='centre', n_space_dims=1, data_1d=PE%PS%vely)
+                             units='m s-1', vert_coord='centre', n_space_dims=1, data_1d=PE%PS%vely, state_var=.true.)
 
       !-----------------------------------
       ! Variables at layer interfaces
@@ -44,22 +44,22 @@ contains
       ! Vertical eddy diffusivity [m2 s-1]
       call register_variable(PE%phys_vars, name='Kz', standard_name='vertical_eddy_diffusivity_of_tracers', &
                              long_name='Vertical eddy diffusivity.', &
-                             units='m2 s-1', vert_coord='interface', n_space_dims=1, data_1d=PE%PS%Kz)
+                             units='m2 s-1', vert_coord='interface', n_space_dims=1, data_1d=PE%PS%Kz, state_var=.true.)
 
       ! Momentum viscosity [m2 s-1]
       call register_variable(PE%phys_vars, name='Nz', standard_name='ocean_vertical_momentum_diffusivity', &
                              long_name='Vertical eddy viscosity for momentum.',                                   &
-                             units='m2 s-1', vert_coord='interface', n_space_dims=1, data_1d=PE%PS%Nz)
+                             units='m2 s-1', vert_coord='interface', n_space_dims=1, data_1d=PE%PS%Nz, state_var=.true.)
 
       ! TKE [m2 s-2] – CF: specific_turbulent_kinetic_energy_of_sea_water
       call register_variable(PE%phys_vars, name='tke', standard_name='specific_turbulent_kinetic_energy_of_sea_water', &
                              long_name='Turbulent kinetic energy.',                                          &
-                             units='m2 s-2', vert_coord='interface', n_space_dims=1, data_1d=PE%PS%tke)
+                             units='m2 s-2', vert_coord='interface', n_space_dims=1, data_1d=PE%PS%tke, state_var=.true.)
 
       ! Dissipation rate [m2 s-3] 
       call register_variable(PE%phys_vars, name='eps', standard_name='specific_turbulent_kinetic_energy_dissipation_in_sea_water', &
                              long_name='Turbulent kinetic energy dissipation rate.',                   &
-                             units='m2 s-3', vert_coord='interface', n_space_dims=1, data_1d=PE%PS%eps)
+                             units='m2 s-3', vert_coord='interface', n_space_dims=1, data_1d=PE%PS%eps, state_var=.true.)
 
       call register_variable(PE%phys_vars, name='NN', &
                              standard_name='square_of_buoyancy_frequency_in_sea_water', &
@@ -80,7 +80,7 @@ contains
 
       ! Stability function cmue1 (units?)
       call register_variable(PE%phys_vars, name='cmue1', long_name='Stability function for momentum diffusivity in the Canuto turbulence scheme.', &
-                             units='', vert_coord='interface', n_space_dims=1, data_1d=PE%PS%cmue1)
+                             units='', vert_coord='interface', n_space_dims=1, data_1d=PE%PS%cmue1, state_var=.true.)
 
 
 
