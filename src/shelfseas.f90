@@ -129,7 +129,8 @@ contains
 
         ! Initialise output manager and output file
         call OM%init(cfg_params, full_grid, dt_s=dt, time_units=time_units, calendar_name=calname, &
-                     vars=all_vars, loc=location, static_profiles=static_profs)
+                     vars=all_vars, loc=location, final_timestamp=datetime_to_str(end_datetime),   &
+                     static_profiles=static_profs)
 
         is_main_initialized = .true.     
         
