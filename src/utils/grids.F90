@@ -5,7 +5,9 @@ module grids
 
   implicit none
   private
-  public :: VerticalGrid, build_grids, build_water_grid, build_sediment_grid, build_full_grid, write_vertical_grid
+  public :: VerticalGrid, build_grids, build_water_grid, build_sediment_grid, build_full_grid
+  public :: write_vertical_grid, default_profile_depth_tol
+
 
   type, public :: VerticalGrid
     integer               :: nz = 0             ! number of layers (bottom=1 ... surface=nz)
@@ -29,6 +31,7 @@ module grids
   real(rk), parameter :: btm_wat_min_dz    = 0.1_rk     ! minimum allowed thickness for the bottom water layer [m]
   real(rk), parameter :: btm_wat_max_dz    = 1.0_rk     ! Maximum allowed thickness for the bottom water layer [m]
   real(rk), parameter :: btm_wat_default_dz = 0.1_rk    ! Default thickness for the bottom water layer [m]
+  real(rk), parameter :: def_depth_tol     = 1.0e-6_rk  ! Default tolerance to compare depths in grid
 
 contains
 
@@ -319,109 +322,6 @@ contains
         call calculate_layer_depths(grid)
     end subroutine build_sediment_grid
 
-
-    subroutine adjust_bottom_water_layer(grid, dz_btm_target, ierr)
-        type(VerticalGrid), intent(inout) :: grid
-        real(rk),           intent(in)    :: dz_btm_target
-        integer,  optional, intent(out)   :: ierr
-
-        real(rk) :: hb, h1, delta, remainder
-        real(rk) :: R, removable, take
-        type(VerticalGrid) :: tmp
-        integer :: nz_old, i, k
-
-        if (present(ierr)) ierr = 0
-
-        if (grid%nz < 2 .or. .not. allocated(grid%dz)) then
-            if (present(ierr)) then
-                ierr = 10
-                return
-            else
-                stop 'adjust_bottom_water_layer: grid not initialized or nz<2'
-            end if
-        end if
-
-        ! Set requested bottom thickness within valid range
-        hb = min(max(dz_btm_target, btm_wat_min_dz), btm_wat_max_dz)
-
-        h1 = grid%dz(1)
-        delta = hb - h1   ! Positive means bottom thickens (must remove from above)
-
-        if (abs(delta) <= 1.0e-12_rk) return
-
-        if (delta < 0._rk) then
-            !------------------------------------------------------------
-            ! Shrink bottom layer: split old bottom layer
-            !------------------------------------------------------------
-            remainder = h1 - hb   ! remainder thickness from old bottom layer
-
-            if (remainder >= min_dz) then
-                ! Insert a new layer above the bottom (nz -> nz+1)
-                nz_old = grid%nz
-                call allocate_grid(tmp, nz_old + 1)
-                tmp%depth = grid%depth
-
-                tmp%dz(1) = hb
-                tmp%dz(2) = remainder
-
-                do i = 2, nz_old
-                    tmp%dz(i+1) = grid%dz(i)
-                end do
-
-                call calculate_layer_depths(tmp)
-
-                call copy_grid(tmp, grid)
-                call zero_grid(tmp)
-            else
-                ! Fallback: add remainder thickness to layer 2 (still local)
-                grid%dz(1) = hb
-                grid%dz(2) = grid%dz(2) + remainder
-                call calculate_layer_depths(grid)
-            end if
-
-        else
-            !------------------------------------------------------------
-            ! Thicken bottom layer: remove thickness from layers 2..nz
-            ! (as many layers as needed), respecting min_dz
-            !------------------------------------------------------------
-            R = delta
-
-            do k = 2, grid%nz
-                removable = grid%dz(k) - min_dz
-                if (removable > 0._rk) then
-                    take = min(removable, R)
-                    grid%dz(k) = grid%dz(k) - take
-                    R = R - take
-                    if (R <= 0._rk) exit
-                end if
-            end do
-
-            if (R > 0._rk) then
-                if (present(ierr)) then
-                    ierr = 11
-                    return
-                else
-                    stop 'adjust_bottom_water_layer: cannot thicken bottom layer without violating min_dz in upper layers'
-                end if
-            end if
-
-            grid%dz(1) = hb
-
-            ! Safety: enforce minimum thickness everywhere
-            do k = 1, grid%nz
-                if (grid%dz(k) < min_dz) then
-                    if (present(ierr)) then
-                        ierr = 12
-                        return
-                    else
-                        stop 'adjust_bottom_water_layer: produced dz < min_dz'
-                    end if
-                end if
-            end do
-            call calculate_layer_depths(grid)
-        end if
-    end subroutine adjust_bottom_water_layer
-
     !------------------------------
     ! Build full (sediment + water) grid on one continuous depth axis
     !
@@ -555,6 +455,47 @@ contains
         close(u)
     end subroutine write_vertical_grid
 
+    subroutine default_profile_depth_tol(grid, tol, at_interfaces)
+        type(VerticalGrid),    intent(in)  :: grid
+        real(rk), allocatable, intent(out) :: tol(:)
+        logical,      optional,intent(in)  :: at_interfaces
+
+        integer :: k, n
+        real(rk), allocatable :: z(:)
+        real(rk) :: dz_above, dz_below, local_dz
+        logical :: use_interfaces
+
+        use_interfaces = .false.
+        if (present(at_interfaces)) use_interfaces = at_interfaces
+
+        if (use_interfaces) then
+            n = size(grid%z_w)
+            allocate(z(n))
+            z = grid%z_w
+        else
+            n = grid%nz
+            allocate(z(n))
+            z = grid%z
+        end if
+
+        allocate(tol(n))
+
+        do k = 1, n
+            dz_above = huge(1.0_rk)
+            dz_below = huge(1.0_rk)
+
+            if (k > 1) dz_below = abs(z(k) - z(k-1))
+            if (k < n) dz_above = abs(z(k+1) - z(k))
+
+            local_dz = min(dz_above, dz_below)
+
+            if (local_dz == huge(1.0_rk)) then
+                tol(k) = 1.0e-6_rk
+            else
+                tol(k) = max(1.0e-6_rk, 1.0e-2_rk * local_dz)
+            end if
+        end do
+    end subroutine default_profile_depth_tol
 
     !------------------------------
     ! Helpers
@@ -685,6 +626,108 @@ contains
         end if
 
     end subroutine read_sgrid_config
+
+    subroutine adjust_bottom_water_layer(grid, dz_btm_target, ierr)
+        type(VerticalGrid), intent(inout) :: grid
+        real(rk),           intent(in)    :: dz_btm_target
+        integer,  optional, intent(out)   :: ierr
+
+        real(rk) :: hb, h1, delta, remainder
+        real(rk) :: R, removable, take
+        type(VerticalGrid) :: tmp
+        integer :: nz_old, i, k
+
+        if (present(ierr)) ierr = 0
+
+        if (grid%nz < 2 .or. .not. allocated(grid%dz)) then
+            if (present(ierr)) then
+                ierr = 10
+                return
+            else
+                stop 'adjust_bottom_water_layer: grid not initialized or nz<2'
+            end if
+        end if
+
+        ! Set requested bottom thickness within valid range
+        hb = min(max(dz_btm_target, btm_wat_min_dz), btm_wat_max_dz)
+
+        h1 = grid%dz(1)
+        delta = hb - h1   ! Positive means bottom thickens (must remove from above)
+
+        if (abs(delta) <= 1.0e-12_rk) return
+
+        if (delta < 0._rk) then
+            !------------------------------------------------------------
+            ! Shrink bottom layer: split old bottom layer
+            !------------------------------------------------------------
+            remainder = h1 - hb   ! remainder thickness from old bottom layer
+
+            if (remainder >= min_dz) then
+                ! Insert a new layer above the bottom (nz -> nz+1)
+                nz_old = grid%nz
+                call allocate_grid(tmp, nz_old + 1)
+                tmp%depth = grid%depth
+
+                tmp%dz(1) = hb
+                tmp%dz(2) = remainder
+
+                do i = 2, nz_old
+                    tmp%dz(i+1) = grid%dz(i)
+                end do
+
+                call calculate_layer_depths(tmp)
+
+                call copy_grid(tmp, grid)
+                call zero_grid(tmp)
+            else
+                ! Fallback: add remainder thickness to layer 2 (still local)
+                grid%dz(1) = hb
+                grid%dz(2) = grid%dz(2) + remainder
+                call calculate_layer_depths(grid)
+            end if
+
+        else
+            !------------------------------------------------------------
+            ! Thicken bottom layer: remove thickness from layers 2..nz
+            ! (as many layers as needed), respecting min_dz
+            !------------------------------------------------------------
+            R = delta
+
+            do k = 2, grid%nz
+                removable = grid%dz(k) - min_dz
+                if (removable > 0._rk) then
+                    take = min(removable, R)
+                    grid%dz(k) = grid%dz(k) - take
+                    R = R - take
+                    if (R <= 0._rk) exit
+                end if
+            end do
+
+            if (R > 0._rk) then
+                if (present(ierr)) then
+                    ierr = 11
+                    return
+                else
+                    stop 'adjust_bottom_water_layer: cannot thicken bottom layer without violating min_dz in upper layers'
+                end if
+            end if
+
+            grid%dz(1) = hb
+
+            ! Safety: enforce minimum thickness everywhere
+            do k = 1, grid%nz
+                if (grid%dz(k) < min_dz) then
+                    if (present(ierr)) then
+                        ierr = 12
+                        return
+                    else
+                        stop 'adjust_bottom_water_layer: produced dz < min_dz'
+                    end if
+                end if
+            end do
+            call calculate_layer_depths(grid)
+        end if
+    end subroutine adjust_bottom_water_layer
 
     subroutine add_dz_to_output(grid, static_profiles)
         type(VerticalGrid),  intent(in)    :: grid
