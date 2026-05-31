@@ -12,10 +12,12 @@ module bio_params
 
     type, public :: BioParams
         character(:), allocatable :: config_file          ! FABM configuration file
-        character(:), allocatable :: input_cfg_file       ! Configuration file to fulfill FABM dependencies
+        character(:), allocatable :: input_cfg_file       ! Configuration file to fulfill FABM dependencies or load flux sources       
+        character(:), allocatable :: input_profiles_file  ! Initial profiles for selected interior variables
+
         logical  :: sediments_enabled = .false.
         logical  :: repair = .false.
-        logical  :: output_conserved = .false.            ! Retrieve conserved quantities from FABM and output the column-integrated totals
+        logical  :: output_conserved  = .false.            ! Retrieve conserved quantities from FABM and output the column-integrated totals
         integer  :: max_substeps
         real(rk) :: min_dt
         real(rk) :: cnpar 
@@ -64,11 +66,11 @@ module bio_params
 
     ! ----------------- Default values for parameters ----------------------------------------------------------
     integer,  parameter :: def_max_substeps = 10000   
-    real(rk), parameter :: def_min_dt       = 0.1_rk      ! Minimum time-step in the inner loop
-    real(rk), parameter :: def_cnpar        = 0.5_rk      ! Degree of Implicitness when solving diffusive mixing [0-1]
-    logical,  parameter :: def_repair      = .false.     ! Indicates FABM whether to repair the state of the variables
-    logical,  parameter :: def_conserv     = .false.     ! Retrieve conserved quantities from FABM and output the column-integrated totals
-    logical,  parameter :: def_sed_enabled = .false.     ! Sediments enabled
+    real(rk), parameter :: def_min_dt       = 0.1_rk             ! Minimum time-step in the inner loop
+    real(rk), parameter :: def_cnpar        = 0.5_rk             ! Degree of Implicitness when solving diffusive mixing [0-1]
+    logical,  parameter :: def_repair      = .false.             ! Indicates FABM whether to repair the state of the variables
+    logical,  parameter :: def_conserv     = .false.             ! Retrieve conserved quantities from FABM and output the column-integrated totals
+    logical,  parameter :: def_sed_enabled = .false.             ! Sediments enabled
     !-------------------------------------------------------------------------------------------------------------------
 
     ! ----------------- Default values for sediment parameters ----------------------------------------------------------
@@ -98,6 +100,8 @@ contains
         bio = default_bio_params()
         bio%config_file = cfg_params%get_param_str('biogeochemistry.config_file', default='fabm.yaml', trim_value=.true.)
         bio%input_cfg_file = remove_null_name(cfg_params%get_param_str('biogeochemistry.input_config', default='off', trim_value=.true.))
+        ! ---------------- Initial profiles ----------------
+        bio%input_profiles_file = remove_null_name(cfg_params%get_param_str('biogeochemistry.input_profiles', default='off', trim_value=.true.))
         ! ---------------- Flags ----------------
         bio%sediments_enabled = cfg_params%get_param_logical('biogeochemistry.sediments.enabled', default=def_sed_enabled)
         bio%repair  = cfg_params%get_param_logical('biogeochemistry.repair_state', default=def_repair)
@@ -144,12 +148,12 @@ contains
     ! Return the data structure pre-filled with defaults
     pure function default_bio_params() result(p)
         type(BioParams) :: p
-        p%sediments_enabled = def_sed_enabled
-        p%repair            = def_repair
-        p%output_conserved  = def_conserv
-        p%cnpar             = def_cnpar
-        p%max_substeps      = def_max_substeps
-        p%min_dt            = def_min_dt
+        p%sediments_enabled  = def_sed_enabled
+        p%repair             = def_repair
+        p%output_conserved   = def_conserv
+        p%cnpar              = def_cnpar
+        p%max_substeps       = def_max_substeps
+        p%min_dt             = def_min_dt
     end function default_bio_params
 
     pure function default_sed_params() result(p)
