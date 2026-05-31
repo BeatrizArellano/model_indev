@@ -159,6 +159,9 @@ contains
         write(output_unit,'("start: ",A,"   end: ",A)') trim(datetime_to_str(start_datetime)), &
                                                             trim(datetime_to_str(end_datetime))
 
+        write(*,'(A)') 'NOTE: Simulation interval uses an exclusive end_datetime: [start_datetime, end_datetime).'
+        write(*,'(A)') '      To include a full final day/hour, set end_datetime to the following day/hour at 00:00:00.'
+
         if (load_yearly) then
             write(output_unit,'("Data loading mode: yearly")')
         else
