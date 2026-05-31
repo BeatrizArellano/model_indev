@@ -90,9 +90,4 @@ contains
       end do
    end function argmin_abs_vec
 
-
-
-
-
-
 end module find_utils
