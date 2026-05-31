@@ -34,6 +34,7 @@ module physics_main
   use precision_types,     only: rk, lk               
   use radiation,           only: compute_par_profile    
   use read_config_yaml,    only: ConfigParams 
+  use state_loader,        only: StateData, set_initial_state
   use tidal,               only: TidalSet
   use tridiagonal,         only: init_tridiag, clear_tridiag
   use turbulence,          only: TURBULENCE_ke, tke_min
@@ -50,12 +51,14 @@ contains
     !======================
     ! Initialization
     !======================
-    subroutine init_physics(cfg_params,location, grid, PE)
+    subroutine init_physics(cfg_params,location, grid, PE, load_init_state, init_state)
       ! Receives from main: user config and location
       type(ConfigParams), intent(in)    :: cfg_params
       type(LocationInfo), intent(in)    :: location
       type(VerticalGrid), intent(in)    :: grid     ! water grid
       type(PhysicsEnv),   intent(inout) :: PE
+      logical,            intent(in)    :: load_init_state
+      type(StateData),    intent(in)    :: init_state
 
       integer :: k, N
       real(rk), allocatable :: height(:)
@@ -132,6 +135,13 @@ contains
 
       ! Register variables and define the ones to include in the output
       call register_physics_variables(cfg_params, PE)
+
+      ! Set initial state
+      if (load_init_state) then
+        write(*,'(A)') 'Setting Physics initial state from file...'
+        call set_initial_state(init_state, PE%phys_vars, grid=PE%grid)
+        write(*,'(A)') '  ✓ Physics state variables initialised successfully.'
+      end if
   
       PE%is_init = .true.
     end subroutine init_physics 
