@@ -6,7 +6,7 @@ module precision_utils
   use, intrinsic :: iso_fortran_env, only: real32
   implicit none
   private
-  public :: is_equal, is_unequal, is_zero
+  public :: is_equal, is_unequal, is_zero, is_equal_array
   public :: get_nan_rk, is_nan_rk, is_finite_rk
   public :: rel_default, abs_default, round_to
 
@@ -43,7 +43,7 @@ contains
       real(rk), intent(in), optional :: rel, abs_
       real(rk) :: rtol, atol, scale
 
-      ! Avoid MERGE with OPTIONAL – some compilers miscompile that pattern
+      ! Avoid MERGE with OPTIONAL – some compilers cannot compile that pattern
       if (present(rel)) then
          rtol = rel
       else
@@ -70,6 +70,19 @@ contains
       real(rk), intent(in), optional :: rel, abs_
       isz = is_equal(a, 0.0_rk, rel, abs_)
    end function is_zero
+
+   pure function is_equal_array(a, b, abs_) result(eq)
+      real(rk), intent(in) :: a(:), b(:)
+      real(rk), intent(in) :: abs_(:)
+      logical :: eq(size(a))
+
+      if (size(a) /= size(b) .or. size(a) /= size(abs_)) then
+         eq = .false.
+         return
+      end if
+
+      eq = abs(a - b) <= abs_
+   end function is_equal_array
 
 
    pure elemental function round_to_r32(x, ndigits) result(r)
