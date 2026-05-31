@@ -592,7 +592,8 @@ contains
         ! irr_sfc: 1/yr -> 1/s
         si%irr_sfc = user%irr_sfc / yr_to_s
 
-        si%bottom_outflow = user%bottom_outflow
+        si%bottom_outflow    = user%bottom_outflow
+        si%output_swi_fluxes = user%output_swi_fluxes
         ! Copy cnpar value
         si%cnpar_sed = user%cnpar_sed
     end subroutine convert_units_to_SI
