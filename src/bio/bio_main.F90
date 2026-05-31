@@ -21,6 +21,7 @@ module bio_main
     use output_static,       only: StaticProfile
     use state_loader,        only: StateData, set_initial_state
     use time_types,          only: DateTime, CFCalendar
+    use time_utils,          only: sec_per_day
     use tridiagonal,         only: init_tridiag, clear_tridiag
     use variable_registry,   only: register_variable, output_all_variables
     use vertical_mixing,     only: scalar_diffusion, BC_NEUMANN 
@@ -161,8 +162,11 @@ contains
 
                 ! Array to store sediment-water fluxes of solutes
                 if(allocated(BE%SED%swi_flux)) deallocate(BE%SED%swi_flux)
-                allocate(BE%SED%swi_flux(nint)) 
+                if(allocated(BE%SED%swi_flux_out)) deallocate(BE%SED%swi_flux_out)
+                allocate(BE%SED%swi_flux(nint))                 
+                allocate(BE%SED%swi_flux_out(nint)) 
                 BE%SED%swi_flux = 0._rk
+                BE%SED%swi_flux_out = 0._rk
                 
             end if   
             do ivar = 1, nint
@@ -190,6 +194,16 @@ contains
                                                                                                 
                     ! Retrieve diffusivity properties for the solute
                     if (BE%tracer_info(ivar)%is_solute) then
+
+                        if (BE%SED%params_user%output_swi_fluxes) then
+                            call register_variable(BE%swiflux_vars, &
+                                                    name='swi_flux_'//trim(BE%model%interior_state_variables(ivar)%name), &
+                                                    long_name='Sediment-water interface flux of '//trim(BE%model%interior_state_variables(ivar)%long_name)//' (positive upward into water column)', &
+                                                    units=trim(BE%model%interior_state_variables(ivar)%units)//' m d-1', &
+                                                    vert_coord='bottom', n_space_dims=0, &
+                                                    data_0d=BE%SED%swi_flux_out(ivar), &
+                                                    state_var=.false.)
+                        end if
 
                         ! Adsorption coefficient
                         BE%tracer_info(ivar)%adsorption = BE%model%interior_state_variables(ivar)%properties%get_real('adsorption', default = 0._rk)   
@@ -257,6 +271,7 @@ contains
                 end if                        
             end do
             if (allocated(BE%int_vars)) call output_all_variables(BE%int_vars)
+            if (allocated(BE%swiflux_vars)) call output_all_variables(BE%swiflux_vars)
             ! Write dat file with information of the tracer properties
             if(BE%params%sediments_enabled) call write_tracer_properties(BE, 'tracer_properties.dat')
         end if
@@ -909,7 +924,8 @@ contains
             ! Vertical diffusivity and burial in the sediment (if enabled)
             !--------------------------------------------------------------
             if (BE%params%sediments_enabled) then
-                BE%SED%swi_flux(:) = 0.0_rk
+                BE%SED%swi_flux(:)     = 0.0_rk
+                BE%SED%swi_flux_out(:) = 0.0_rk
 
                 !==============================================================================                       
                 ! Vertical diffusivity and exchange of solutes with the water column
@@ -1032,6 +1048,7 @@ contains
 
                         end if
                         BE%SED%swi_flux(ivar) = swi_flux 
+                        BE%SED%swi_flux_out(ivar) = swi_flux * sec_per_day
                                        
                         !-------------------------------------------------------------
                         !  Bioirrigation (only for solutes)
@@ -1284,6 +1301,14 @@ contains
             deallocate(BE%env_int_vars)
         end if
 
+        if (allocated(BE%swiflux_vars)) then
+            do i = 1, size(BE%swiflux_vars)
+                nullify(BE%swiflux_vars(i)%data_0d)
+                nullify(BE%swiflux_vars(i)%data_1d)
+            end do
+            deallocate(BE%swiflux_vars)
+        end if
+
         ! Deallocate BioEnv working arrays
         if (allocated(BE%velocity))           deallocate(BE%velocity)
         if (allocated(BE%tendency_int))       deallocate(BE%tendency_int)
@@ -1293,6 +1318,9 @@ contains
         if (allocated(BE%tendency_bt))        deallocate(BE%tendency_bt)
         if (allocated(BE%flux_sf))            deallocate(BE%flux_sf)
         if (allocated(BE%flux_bt))            deallocate(BE%flux_bt)
+
+        if (allocated(BE%SED%swi_flux))   deallocate(BE%SED%swi_flux)
+        if (allocated(BE%SED%swi_flux_out))   deallocate(BE%SED%swi_flux_out)
 
         ! Clear Tridiagonal workspace 
         call clear_tridiag(BE%wat_trid)
@@ -1565,8 +1593,7 @@ contains
         if (.not. allocated(BE%diag_int_vars))   allocate(BE%diag_int_vars(0))
         if (.not. allocated(BE%diag_hz_vars))    allocate(BE%diag_hz_vars(0))
         if (.not. allocated(BE%conserved_vars))  allocate(BE%conserved_vars(0))
-        ! New optional groups
-
+        if (.not. allocated(BE%swiflux_vars))    allocate(BE%swiflux_vars(0))
         if (.not. allocated(BE%env_int_vars))    allocate(BE%env_int_vars(0))
     end subroutine allocate_metadata_arrays
 
