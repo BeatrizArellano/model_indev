@@ -3,7 +3,7 @@ module array_utils
   implicit none
   private
 
-  public :: reverse_array
+  public :: reverse_array, is_monotonic_decreasing, is_monotonic_increasing
   public :: str_to_real_vec
 
   ! Generic interface so reverse_array works for different types
@@ -58,7 +58,33 @@ contains
 
   end subroutine str_to_real_vec
 
+  pure logical function is_monotonic_decreasing(x, tol) result(ok)
+      real(rk), intent(in) :: x(:)
+      real(rk), intent(in) :: tol
+      integer :: i
 
+      ok = .true.
+      do i = 2, size(x)
+          if (x(i) > x(i-1) + tol) then
+              ok = .false.
+              return
+          end if
+      end do
+  end function is_monotonic_decreasing
+
+  pure logical function is_monotonic_increasing(x, tol) result(ok)
+      real(rk), intent(in) :: x(:)
+      real(rk), intent(in) :: tol
+      integer :: i
+
+      ok = .true.
+      do i = 2, size(x)
+          if (x(i) < x(i-1) - tol) then
+              ok = .false.
+              return
+          end if
+      end do
+  end function is_monotonic_increasing
 
   !-------------------------------------------------------------------
   ! Reverse a real(rk) 1D array.
