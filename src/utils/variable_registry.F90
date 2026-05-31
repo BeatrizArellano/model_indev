@@ -30,7 +30,7 @@ module variable_registry
 
     public :: VarMetadata
     public :: register_variable
-    public :: output_all_variables, enable_named_variables, get_state_variables
+    public :: output_all_variables, output_named_variables, get_state_variables
 
     interface register_variable
         module procedure register_variable_0d
@@ -187,7 +187,7 @@ contains
         end do
     end subroutine output_all_variables
 
-    subroutine enable_named_variables(registry, list, n_list)
+    subroutine output_named_variables(registry, list, n_list)
         type(VarMetadata), allocatable, intent(inout) :: registry(:)
         character(len=*),           intent(in)    :: list(:)
         integer,                    intent(in)    :: n_list
@@ -204,7 +204,7 @@ contains
                 if (trim(registry(i)%name) == trim(list(j))) registry(i)%output = .true.
             end do
         end do
-    end subroutine enable_named_variables
+    end subroutine output_named_variables
 
     subroutine get_state_variables(registry, state_vars)
         type(VarMetadata), intent(in)  :: registry(:)
