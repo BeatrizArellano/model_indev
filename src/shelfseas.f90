@@ -12,6 +12,7 @@ module shelfseas
   use read_config_yaml,  only: ConfigParams
   use sim_clocks,        only: init_clock, print_progress, simtime_to_datetime
   use output_static,     only: StaticProfile, clear_static_profiles
+  use state_loader,      only: StateData, load_state_file
   use time_types,        only: DateTime, CFCalendar, cal_unknown
   use time_utils,        only: datetime_to_str
   use validation_utils,  only: validate_input_dates, validate_location_input, print_header
@@ -32,6 +33,7 @@ module shelfseas
   logical  :: is_main_initialized = .false.
   logical  :: stop_on_error = .true.                 ! Full stop on error  -> useful in the future when running multiple columns
   logical  :: load_yearly   = .false.                ! To load full series at the beginning or load every year
+  logical  :: load_init_state = .false.              ! Whether Initial profiles need to be loaded to e.g. restart a simulation
   logical  :: ok = .false.
   character(len=256) :: msg
 
@@ -49,9 +51,11 @@ module shelfseas
   type(PhysicsEnv)      :: PE
   type(BioEnv), target  :: BE
   type(OutputManager)   :: OM
+  type(StateData)       :: init_state
   type(VarMetadata),   allocatable :: all_vars(:)
   type(StaticProfile), allocatable :: static_profs(:)
-  character(:), allocatable :: time_units, calname
+  character(:),        allocatable :: time_units, calname
+  character(len=:),    allocatable :: init_state_path     
   
 
 contains
@@ -70,9 +74,9 @@ contains
         call validate_input_dates(cfg_params, start_datetime, end_datetime, calendar)  
         ! Load data every year or full load at the beginning.   
         load_yearly = cfg_params%get_param_logical('data.load_yearly', default=.false.)    
+
         ! Print header for simulation
         call print_header(location,start_datetime,end_datetime, load_yearly) 
-        
 
         ! Verify if biogeochemistry is enabled
         is_bio_enabled = cfg_params%get_param_logical('biogeochemistry.enabled', default=.false.)
@@ -105,13 +109,28 @@ contains
         call PhysForc%prepare(dt, ok=ok, errmsg=msg)
         if (.not. ok) stop 'prepare_physics_forcing failed: '//trim(msg)
 
+        ! Load initial profiles to e.g. restart a simulation
+        load_init_state = cfg_params%get_param_logical('load_initial_state.enabled', default=.false.)
+        if (load_init_state) then            
+            init_state_path = cfg_params%get_param_str('load_initial_state.filename', required=.true., trim_value=.true.)
+            write(*,'(A)') 'Scanning initial state file: '//trim(init_state_path)
+
+            call load_state_file(init_state_path, init_state, ok, msg)
+            if (.not. ok) then
+                stop 'Initial state loading failed: '//trim(msg)
+            end if
+
+            write(*,'(A,I0,A)') '  Found ', init_state%nvars, ' variables.'
+        end if
+
         ! Initialise physics
-        call init_physics(cfg_params, location, wat_grid, PE)
+        call init_physics(cfg_params, location, wat_grid, PE, load_init_state, init_state)
 
         ! Initialise biogeochemistry if it's the case
         if (is_bio_enabled) then
-            call init_bio_fabm(cfg_params, location, wat_grid, sed_grid, full_grid, &
-                               start_datetime, end_datetime, calendar, load_yearly, dt, PE%PS, ForcSnp, BE, static_profs)
+            call init_bio_fabm(cfg_params, location, wat_grid, sed_grid, full_grid,     &
+                               start_datetime, end_datetime, calendar, load_yearly, dt, &
+                               PE%PS, ForcSnp, BE, load_init_state, init_state, static_profs)
             nsed = BE%nsed
         else 
             nsed = 0
