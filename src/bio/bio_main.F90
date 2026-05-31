@@ -6,6 +6,7 @@ module bio_main
     use physics_forcing,     only: ForcingSnapshot
     use geo_utils,           only: LocationInfo    
     use grids,               only: VerticalGrid
+    use initial_profiles,    only: set_initial_profiles
     use molecular_diffusion, only: molecular_diffusivity
     use numerical_stability, only: compute_transport_safe_dt, compute_reaction_safe_dt
     use physics_types,       only: PhysicsState
@@ -18,6 +19,7 @@ module bio_main
     use sediment_diffusion,  only: scalar_diffusion_sed
     use sediment_exchange,   only: compute_solute_flux_swi, apply_particulate_deposition, apply_bioirrigation
     use output_static,       only: StaticProfile
+    use state_loader,        only: StateData, set_initial_state
     use time_types,          only: DateTime, CFCalendar
     use tridiagonal,         only: init_tridiag, clear_tridiag
     use variable_registry,   only: register_variable, output_all_variables
@@ -33,7 +35,8 @@ module bio_main
 
 contains
 
-    subroutine init_bio_fabm(cfg, location, wat_grid, sed_grid, full_grid, sim_startdate, sim_enddate, cal, load_yearly, timestep, PS, FS, BE, static_prof)
+    subroutine init_bio_fabm(cfg, location, wat_grid, sed_grid, full_grid, sim_startdate, sim_enddate, cal, &
+                             load_yearly, timestep, PS, FS, BE, load_init_state, init_state, static_prof)
         type(ConfigParams),       intent(in) :: cfg
         type(LocationInfo),       intent(in) :: location
         type(VerticalGrid),       intent(in) :: wat_grid
@@ -46,7 +49,10 @@ contains
         type(PhysicsState),       intent(in) :: PS
         type(ForcingSnapshot),    intent(in) :: FS
         type(BioEnv),          intent(inout) :: BE
+        logical,                  intent(in) :: load_init_state
+        type(StateData),          intent(in) :: init_state
         type(StaticProfile),   allocatable, intent(inout) :: static_prof(:)
+
 
         integer  :: ivar, nz, nint, nsfc, nbtm
         integer  :: n_total_int_diag, n_save_int, j
@@ -60,10 +66,11 @@ contains
 
         call read_bio_parameters(cfg,BE%params)
         ! Check whether there is a configuration file for input data set
-        BE%has_input = .false.
-        if (allocated(BE%params%input_cfg_file)) then
-            BE%has_input = len_trim(BE%params%input_cfg_file) > 0
-        end if
+        BE%has_input = allocated(BE%params%input_cfg_file)
+        if (BE%has_input) BE%has_input = len_trim(BE%params%input_cfg_file) > 0
+        ! Check whether there are profiles for interior variables to be initialised
+        BE%has_init_profiles = allocated(BE%params%input_profiles_file)
+        if (BE%has_init_profiles) BE%has_init_profiles = len_trim(BE%params%input_profiles_file) > 0
 
         dt_main     = real(timestep, rk)
         BE%wat_grid = wat_grid               ! Water grid
@@ -129,6 +136,9 @@ contains
                 if (.not. ok) stop 'BioInputs init failed: '//trim(msg)
             end if
         end if
+
+        ! Allocate arrays for variable metadata (if not allocated)
+        call allocate_metadata_arrays(BE)
 
         ! ---- Interior state variables ---------------
         nint = size(BE%model%interior_state_variables)
@@ -429,7 +439,6 @@ contains
         BE%id_slp     = BE%model%get_horizontal_variable_id(fabm_standard_variables%surface_air_pressure)
         BE%id_par_sfc = BE%model%get_horizontal_variable_id(fabm_standard_variables%surface_downwelling_photosynthetic_radiative_flux)
         BE%id_swr_sfc = BE%model%get_horizontal_variable_id(fabm_standard_variables%surface_downwelling_shortwave_flux)
-        BE%id_cloud   = BE%model%get_horizontal_variable_id(fabm_standard_variables%cloud_area_fraction)
         BE%id_stressb = BE%model%get_horizontal_variable_id(fabm_standard_variables%bottom_stress)
 
         ! Scalar
@@ -447,7 +456,6 @@ contains
         BE%need_slp     = BE%model%is_variable_used(BE%id_slp) 
         BE%need_par_sfc = BE%model%is_variable_used(BE%id_par_sfc)
         BE%need_swr_sfc = BE%model%is_variable_used(BE%id_swr_sfc)
-        BE%need_cloud   = BE%model%is_variable_used(BE%id_cloud)
         BE%need_stressb = BE%model%is_variable_used(BE%id_stressb)
 
         if (BE%need_pres) BE%need_rho = .true.    ! if pressure is needed, then we need density too
@@ -497,11 +505,7 @@ contains
                                     units='W m-2',                                          &
                                     vert_coord='centre', n_space_dims=1,                    &
                                     data_1d=BE%BS%swr)
-        end if
-        if (BE%need_cloud) then
-            write(*,*) 'Access to cloud cover data is not already implemented'
-            stop 1
-        end if       
+        end if    
 
         !----- Dynamic sediment properties to output
         if (BE%params%sediments_enabled) then
@@ -573,12 +577,52 @@ contains
             error stop 'FABM: atten_ptr not associated (attenuation data from FABM unavailable?).'
         end if
 
-    !!! Later implement initialising from a previous state loaded via a file. 
-        ! Initialize the tracers
-        ! This sets the values of the arrays: interior_state, bottom_state and surface_state
+        !---------------------------------
+        ! Initialise the tracers
+        !---------------------------------
+        ! This sets the values defined by the models in FABM
         if (nint > 0) call BE%model%initialize_interior_state(1,nz)
         if (nsfc > 0) call BE%model%initialize_surface_state()
         if (nbtm > 0) call BE%model%initialize_bottom_state()
+
+        ! Load an initial state for all state variables from a file.
+        ! This is only for cases where all state variables are provided for physics and biogeochemistry
+        if (load_init_state) then
+            write(*,'(A)') 'Setting Biogeochemistry initial state from file...'
+            if (allocated(BE%int_vars)) then
+                if (size(BE%int_vars) > 0) call set_initial_state(init_state, BE%int_vars, grid=BE%grid)
+            end if
+
+            if (allocated(BE%sfc_vars)) then
+                if (size(BE%sfc_vars) > 0) call set_initial_state(init_state, BE%sfc_vars)
+            end if
+
+            if (allocated(BE%btm_vars)) then
+                if (size(BE%btm_vars) > 0) call set_initial_state(init_state, BE%btm_vars)
+            end if
+
+            if (allocated(BE%env_int_vars)) then
+                if (size(BE%env_int_vars) > 0) call set_initial_state(init_state, BE%env_int_vars, grid=BE%grid)
+            end if
+            write(*,'(A)') '  ✓ Biogeochemistry state variables initialised successfully.'
+        end if
+
+        !------------------------------------------
+        ! Set initial profiles from file
+        !-----------------------------------------
+        ! If a file with initial profiles for interior variables is provided
+        ! Set initial profiles for specific tracers. 
+        ! NOTE: This will override any initial state set earlier
+        if (BE%has_init_profiles) then
+            write(*,'(A)') 'Setting initial profiles for interior variables from file...'
+            write(*,'(A)') 'Note: These profiles will override any initial values from FABM or simulation restart state.'
+
+            call set_initial_profiles(BE%params%input_profiles_file, BE%int_vars, BE%grid, ok, msg)
+
+            if (.not. ok) error stop 'Setting initial profiles failed: '//trim(msg)
+
+            write(*,'(A)') '  ✓ Profiles for interior variables initialised successfully.'
+        end if
 
         if (nbtm > 0 .and. BE%params%sediments_enabled) then
             write(*,'(A)') 'WARNING: Bottom variables reported by FABM are placed at the bottom of the sediment,'
@@ -590,9 +634,6 @@ contains
             write(*,*) "No variables found in biogeochemistry, disable biogeochemistry or provide a valid configuration of modules."
             stop 1
         end if
-
-        ! Allocate arrays for variable metadata (if not allocated)
-        call allocate_metadata_arrays(BE)
 
         ! Tridiagonal workspace for water column
         call init_tridiag(BE%wat_trid, BE%nwat)
@@ -1275,7 +1316,6 @@ contains
         BE%need_slp     = .false.
         BE%need_par_sfc = .false.
         BE%need_swr_sfc = .false.
-        BE%need_cloud   = .false.
         BE%need_stressb = .false. 
 
         BE%is_init = .false.

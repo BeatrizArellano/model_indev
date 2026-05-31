@@ -47,7 +47,6 @@ module bio_types
     real(rk) :: par_sfc    = 0._rk                          ! surface PAR [W/m2] (optional)
     real(rk) :: wind_spd   = 0._rk
     real(rk) :: slp        = 0._rk
-    real(rk) :: cloud      = 0._rk                          ! cloud fraction [0-1], optional
     real(rk) :: stressb    = 0._rk                          ! bottom stress magnitude [Pa], optional
     ! Bottom variables for the sediments
     real(rk) :: u_taub     = 0._rk                          ! Friction velocity
@@ -162,7 +161,7 @@ module bio_types
     !------------ FABM environment variable ids
     type (type_interior_standard_variable)  :: porosity = type_interior_standard_variable(name='porosity', units='1')
     type (type_fabm_interior_variable_id)   :: id_temp, id_salt, id_rho, id_swr, id_par, id_pres, id_atten
-    type (type_fabm_horizontal_variable_id) :: id_windspd, id_par_sfc, id_slp, id_cloud, id_stressb, id_swr_sfc
+    type (type_fabm_horizontal_variable_id) :: id_windspd, id_par_sfc, id_slp, id_stressb, id_swr_sfc
     type (type_fabm_scalar_variable_id)     :: id_yearday
     
     ! Which env vars are actually needed?
@@ -176,12 +175,12 @@ module bio_types
     logical :: need_slp      = .false.
     logical :: need_par_sfc  = .false.
     logical :: need_swr_sfc  = .false.
-    logical :: need_cloud    = .false.
     logical :: need_stressb  = .false.
 
     logical :: is_init = .false.                               ! has biogeochemistry been initialised?
     ! ---------- Optional biogeochemical inputs
-    logical :: has_input     = .false.                         ! Are there input data to be applied?
+    logical :: has_input         = .false.                         ! Are there input data to be applied?
+    logical :: has_init_profiles = .false.                         ! Are there profiles to be initialised for specific variables?
     ! Pointer to attenuation coefficient
     real(rk), pointer :: atten_ptr(:) => null()
 
