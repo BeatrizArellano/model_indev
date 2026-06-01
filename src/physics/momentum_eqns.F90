@@ -128,7 +128,7 @@ contains
         zc = 0.5_rk * dz_btm
 
         ! Convert Nikuradse height (h0b) to roughness length (approx k_s/33).
-        z0r = 0.03_rk * h0b
+        z0r = 0.033_rk * h0b
         z0b = max(z0r, 1.0e-9_rk)
 
         ! Speed magnitude at bottom cell centre
@@ -148,12 +148,14 @@ contains
             rb     = kappa / logarg                            ! rb = ustar/U(z) = kappa/ln(z/z0)                    
             u_taub= rb * Uc                                    ! shear velocity from log-law
             if (mol_nu>0.0_rk .and. u_taub>0.0_rk) then
-                z0sm = 0.11_rk * mol_nu/max(1.0e-7_rk, u_taub)
+                z0sm = 0.11_rk * mol_nu/max(1.0e-15_rk, u_taub)
             else
                 z0sm = 0.0_rk
             end if
             ! updated roughness length 
-            z0new = max(z0sm + z0r, 1.0e-9_rk)    
+            ! Colebrook-White style transition formula 
+            ! Include smooth and rough limits
+            z0new = max(z0sm + z0r, 1.0e-15_rk)    
             z0b = z0new
         end do
 
