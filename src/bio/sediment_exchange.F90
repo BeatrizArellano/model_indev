@@ -8,7 +8,7 @@ module sediment_exchange
     public :: apply_bioirrigation
 
     ! Kinematic viscosity of water (ν) [m^2 s^-1] (used as a Constant)
-    real(rk), parameter :: kin_visc = 1.3e-6_rk
+    ! real(rk), parameter :: kin_visc = 1.3e-6_rk
     
     real(rk), parameter :: kappa = 0.4_rk   ! von Kármán constant [-]
 
@@ -46,6 +46,8 @@ contains
     !
     !   dz_w     : thickness of bottom water layer                                [m]
     !
+    !   kin_visc : kinematic viscosity of bottom seawater [m2 s-1]
+    !
     ! Outputs:
     !   swi_flux : Flux at the sediment-water interface (positive upward into water) [Var m^-2 s^-1]
     !              This flux is used as a Neumann boundary condition for diffusion at the
@@ -67,8 +69,8 @@ contains
     !   the sediment-side transport.
     !---------------------------------------------------------------------------------
     subroutine compute_solute_flux_swi(c_w, c_s, phi_swi, u_taub, z0b,         &
-                                       Nz, Kz, D_sol, D_eff, dz_w, dz_sed,   &
-                                       swi_flux)
+                                       Nz, Kz, D_sol, D_eff, dz_w, dz_sed,     &
+                                       kin_visc, swi_flux)
 
         ! Inputs
         real(rk), intent(in) :: c_w, c_s
@@ -77,6 +79,7 @@ contains
         real(rk), intent(in) :: Nz, Kz
         real(rk), intent(in) :: D_sol, D_eff
         real(rk), intent(in) :: dz_sed
+        real(rk), intent(in) :: kin_visc            ! Kinematic viscosity of water (ν) [m^2 s^-1]
 
         ! Outputs
         real(rk), intent(out) :: swi_flux       
@@ -98,7 +101,6 @@ contains
         !  (ratio of momentum diffusivity to molecular diffusivity)
         ! Appendix B in Umlauf et al. (2023)
         !--------------------------
-! Using constant viscosity for now, later compute it from dynamic viscosity. 
         Sc = kin_visc / max(D_sol, eps)
 
         !--------------------------
