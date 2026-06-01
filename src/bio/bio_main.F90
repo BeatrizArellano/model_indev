@@ -7,7 +7,7 @@ module bio_main
     use geo_utils,           only: LocationInfo    
     use grids,               only: VerticalGrid
     use initial_profiles,    only: set_initial_profiles
-    use molecular_diffusion, only: molecular_diffusivity
+    use molecular_diffusion, only: molecular_diffusivity, viscosity
     use numerical_stability, only: compute_transport_safe_dt, compute_reaction_safe_dt
     use physics_types,       only: PhysicsState
     use pressure,            only: compute_pressure 
@@ -711,6 +711,7 @@ contains
         real(rk) :: swi_flux, swi_flux_max, flux_into_water, flux_into_sed
         real(rk) :: tol
         real(rk) :: Tbot, Sbot, Pbot
+        real(rk) :: mu_dyn, nu_kin
         logical  :: enforce_nonneg
         integer  :: ierr          
 
@@ -767,6 +768,8 @@ contains
             Tbot = BE%BS%temp(kwb)             ! bottom-water temperature [C]
             Sbot = BE%BS%sal(kwb)              ! bottom-water salinity [psu]
             Pbot = BE%BS%pres(kwb) * 0.1_rk    ! bottom-water pressure [bar] for viscosity calculation: dbar -> bar
+            mu_dyn = viscosity(Tbot, Sbot, Pbot) * 1.0e-3_rk   ! Dynamic viscosity [Pa s]
+            nu_kin = mu_dyn / BE%BS%rho(kwb)                   ! Kinematic viscosity [m2 s-1]      
             D0_max = 0._rk
             do ivar=1, nint
                 if (BE%tracer_info(ivar)%is_solute .and. .not. BE%tracer_info(ivar)%disable_transport) then
@@ -959,7 +962,7 @@ contains
                         call compute_solute_flux_swi(c_w=c_w, c_s=c_s, phi_swi=phi_swi, u_taub=BE%BS%u_taub, z0b=BE%BS%z0b,   &
                                                      Nz=BE%BS%Nz_btm, Kz=BE%BS%Kz_btm, D_sol=D0, D_eff=Deff, &
                                                      dz_w=BE%wat_grid%dz(1), dz_sed=BE%sed_grid%dz(kss),     &
-                                                     swi_flux=swi_flux)              
+                                                     kin_visc=nu_kin, swi_flux=swi_flux)              
                                           
 
                         if (swi_flux > 0._rk) then
