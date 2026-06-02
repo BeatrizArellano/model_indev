@@ -32,6 +32,8 @@ contains
     !   z0b     : bottom roughness length z0                                      [m]
     !            (hydrodynamic roughness controlling log-law and transfer)
     !
+    !   h0b     : Physical roughness height   (ks)                               [m]
+    !
     !   Nz      : turbulent diffusivity of momentum at the top of the 
     !             bottom layer of water column      [m^2 s^-1]
     !
@@ -67,15 +69,19 @@ contains
     !   Bottom stress (via the friction velocity) controls the water-side
     !   transport dominated by turbulece, while porewater molecular diffusivity controls 
     !   the sediment-side transport.
+    !   The transfer coefficient beta is evaluated using the large-Schmidt-number approximations
+    !   of Umlauf et al. (2023). All biogeochemical tracers have large Schmidt numbers. 
+    !   The smooth, transitional, and rough regimes are distinguished using the roughness 
+    !   Reynolds number ks+ = ks*u*/nu, where ks is the equivalent sand-grain roughness height.
     !---------------------------------------------------------------------------------
-    subroutine compute_solute_flux_swi(c_w, c_s, phi_swi, u_taub, z0b,         &
-                                       Nz, Kz, D_sol, D_eff, dz_w, dz_sed,     &
+    subroutine compute_solute_flux_swi(c_w, c_s, phi_swi, u_taub, z0b, h0b,    &
+                                       Nz, Kz, D_sol, D_eff, dz_w, dz_sed,      &
                                        kin_visc, swi_flux)
 
         ! Inputs
         real(rk), intent(in) :: c_w, c_s
         real(rk), intent(in) :: phi_swi             ! Porosity at the sediment-watre interface
-        real(rk), intent(in) :: u_taub, z0b, dz_w
+        real(rk), intent(in) :: u_taub, z0b, h0b, dz_w
         real(rk), intent(in) :: Nz, Kz
         real(rk), intent(in) :: D_sol, D_eff
         real(rk), intent(in) :: dz_sed
@@ -87,6 +93,10 @@ contains
         ! Locals
         real(rk) :: L_wat, L_sed, logterm
         real(rk) :: Pr, Sc, beta, r_c, G_wat, G_sed, c_swi
+        real(rk) :: ks_plus, z0r_plus, beta_smooth, beta_rough, alpha
+
+        real(rk), parameter :: B_smooth = 5.5_rk
+        real(rk), parameter :: B_rough  = 8.5_rk
         real(rk), parameter :: eps = 1.0e-20_rk
 
         !--------------------------
@@ -103,12 +113,38 @@ contains
         !--------------------------
         Sc = kin_visc / max(D_sol, eps)
 
+        ! Roughness Reynolds number based on physical roughness height
+        ! Yaglom & Kader use ks+ = ks*u*/nu for the transitional interpolation.
+        ks_plus = h0b * u_taub / max(kin_visc, eps)
+        z0r_plus = (h0b / 30.0_rk) * u_taub / max(kin_visc, eps)
+
         !--------------------------
         ! Beta function
         ! Approximation for Smooth-bottom only
-        ! Appendix B in Umlauf et al. (2023)
+        ! Appendix B in Umlauf et al. (2023), eq B2
         !--------------------------
-        beta = 14.8_rk * Sc**(2.0_rk/3.0_rk)
+        beta_smooth = 14.8_rk * Sc**(2.0_rk/3.0_rk)        
+
+        !-------------------------------------------
+        ! Beta function
+        ! Approximation for rough-bottom only
+        ! Appendix B in Umlauf et al. (2023), eq B3
+        !-------------------------------------------
+        beta_rough = 0.55_rk * exp(kappa * B_rough / 2.0_rk) * &
+                     sqrt(z0r_plus) * Sc**(2.0_rk/3.0_rk) !- Pr * B_rough + 9.5_rk
+
+        ! Smooth regime
+        if (ks_plus <= 3.0_rk) then           ! Consistent with z0+ < 0.1
+            beta = beta_smooth
+        ! Rough bottom regime
+        else if (ks_plus >= 100.0_rk) then    ! Fully rough following Yaglom & Kader; z0r+ ≈ 3.3
+            beta = beta_rough
+        ! Transitional regime (3 > ks+ < 100)
+        else
+            ! Transitional interpolation adapted from Yaglom & Kader (1974) eq. 23
+            alpha = (ks_plus - 3.0_rk) / (100.0_rk - 3.0_rk)
+            beta = (1.0_rk - alpha) * beta_smooth + alpha * beta_rough
+        end if
 
         !--------------------------
         ! Transfer function r_c(L_wat):
