@@ -130,7 +130,7 @@ contains
         if (is_bio_enabled) then
             call init_bio_fabm(cfg_params, location, wat_grid, sed_grid, full_grid,     &
                                start_datetime, end_datetime, calendar, load_yearly, dt, &
-                               PE%PS, ForcSnp, BE, load_init_state, init_state, static_profs)
+                               PE%PS, ForcSnp, PE%params%h0b, BE, load_init_state, init_state, static_profs)
             nsed = BE%nsed
         else 
             nsed = 0
