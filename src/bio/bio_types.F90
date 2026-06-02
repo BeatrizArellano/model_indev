@@ -51,6 +51,7 @@ module bio_types
     ! Bottom variables for the sediments
     real(rk) :: u_taub     = 0._rk                          ! Friction velocity
     real(rk) :: z0b        = 0._rk                          ! Bottom roughness length
+    real(rk) :: h0b        = 0._rk                          ! Equivalent sand-grain roughness height [m]
     real(rk) :: Nz_btm     = 0._rk                          ! momentum viscosity just above the bottom
     real(rk) :: Kz_btm     = 0._rk                          ! Eddy diffusivity just above the bottom
     ! Number of days since the start of the year
