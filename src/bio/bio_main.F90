@@ -37,7 +37,7 @@ module bio_main
 contains
 
     subroutine init_bio_fabm(cfg, location, wat_grid, sed_grid, full_grid, sim_startdate, sim_enddate, cal, &
-                             load_yearly, timestep, PS, FS, BE, load_init_state, init_state, static_prof)
+                             load_yearly, timestep, PS, FS, h0b, BE, load_init_state, init_state, static_prof)
         type(ConfigParams),       intent(in) :: cfg
         type(LocationInfo),       intent(in) :: location
         type(VerticalGrid),       intent(in) :: wat_grid
@@ -49,6 +49,7 @@ contains
         integer(lk), intent(in)              :: timestep
         type(PhysicsState),       intent(in) :: PS
         type(ForcingSnapshot),    intent(in) :: FS
+        real(rk),                 intent(in) :: h0b
         type(BioEnv),          intent(inout) :: BE
         logical,                  intent(in) :: load_init_state
         type(StateData),          intent(in) :: init_state
@@ -79,6 +80,8 @@ contains
         BE%grid     = full_grid
         BE%sed_grid = sed_grid
         nz          = BE%grid%nz             ! Number of vertical layers in the full grid (water-only or water+sediments if it's the case)    
+
+        BE%BS%h0b   = h0b                    ! Roughness height (for sediment-water exchange)
 
         if (BE%params%sediments_enabled) then
             if (full_grid%nz /= sed_grid%nz + wat_grid%nz) stop 'init_bio_fabm: full_grid size mismatch'
@@ -960,8 +963,8 @@ contains
                         ! Exchange flux between sediment and water (positive upward into water)
                         ! NOTE: swi_flux is per total horizontal area, NOT phase area.
                         call compute_solute_flux_swi(c_w=c_w, c_s=c_s, phi_swi=phi_swi, u_taub=BE%BS%u_taub, z0b=BE%BS%z0b,   &
-                                                     Nz=BE%BS%Nz_btm, Kz=BE%BS%Kz_btm, D_sol=D0, D_eff=Deff, &
-                                                     dz_w=BE%wat_grid%dz(1), dz_sed=BE%sed_grid%dz(kss),     &
+                                                     h0b=BE%BS%h0b, Nz=BE%BS%Nz_btm, Kz=BE%BS%Kz_btm, D_sol=D0, D_eff=Deff,   &
+                                                     dz_w=BE%wat_grid%dz(1), dz_sed=BE%sed_grid%dz(kss),                      &
                                                      kin_visc=nu_kin, swi_flux=swi_flux)              
                                           
 
