@@ -44,7 +44,8 @@ module physics_types
     ! --- Radiation & Heat
     real(rk), allocatable :: swr(:)                   ! Shortwave radiation profile at layers centres
     real(rk), allocatable :: par(:)                   ! Photosintetically active Radiation profile at layers centres
-    real(rk)              :: Q_net_surf = 0._rk
+    real(rk)              :: Q_net_surf = 0._rk 
+    real(rk)              :: Q_nonSW_in = 0.0_rk      ! Q_nonSW_in [W m-2], positive into ocean
     !real(rk) :: Q_sw_net = 0.0_rk, Q_lw_net = 0.0_rk, Q_lat = 0.0_rk, Q_sens = 0.0_rk, Q_net = 0.0_rk
   end type PhysicsState
 

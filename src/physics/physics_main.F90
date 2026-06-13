@@ -28,7 +28,7 @@ module physics_main
   use numerical_stability, only: compute_phys_substeps
   use physics_forcing,     only: ForcingSnapshot
   use physics_params,      only: read_physics_parameters, &
-                                 gravity, kappa, mol_nu, mol_diff_T, rho0
+                                 gravity, kappa, mol_nu, mol_diff_T, rho0, cp_sw
   use physics_types,       only: PhysicsState, PhysicsEnv       
   use phys_var_registry,   only: register_physics_variables    
   use precision_types,     only: rk, lk               
@@ -164,6 +164,7 @@ contains
         real(rk) :: Pxsum, Pysum  
         real(rk) :: flux_u_bot, flux_v_bot
         real(rk) :: flux_u_sfc, flux_v_sfc
+        real(rk) :: flux_T_sfc
 
         integer :: ierr_l
         character(len=256) :: errmsg_l
@@ -187,12 +188,14 @@ contains
         call compute_heat_tendency(temp=PE%PS%temp, dz=PE%grid%dz, N=N,                                               &
                                    rsds=FS%short_rad, rlds_down=FS%long_rad, wind_speed=PE%PS%wind_speed,             &
                                    airT=FS%air_temp, rh=FS%rel_hum, airP=FS%slp,                                      &
-                                   lw_skin_penetration=PE%params%lw_skin_penetration,                                 &
                                    nonvisible_fraction=PE%params%frac_nonvis, depth_nonvisible=PE%params%depth_nonvis, &
                                    depth_visible=PE%params%depth_vis, deposit_bottom_residual=.true.,                 &
                                    apply_bioshading_to_heat=PE%params%apply_heat_bioshade,                            &
-                                   dTdt_heat=PE%dTdt_heat, Q_net_surf=PE%PS%Q_net_surf, max_abs_dTdt=PE%max_abs_dTdt, &
-                                   swr_c=PE%PS%swr, atten_bio=PE%atten_bio)
+                                   dTdt_heat=PE%dTdt_heat, Q_net_surf=PE%PS%Q_net_surf, Q_nonSW_in=PE%PS%Q_nonSW_in,  &
+                                   max_abs_dTdt=PE%max_abs_dTdt, swr_c=PE%PS%swr, atten_bio=PE%atten_bio)
+
+        ! Convert w m-2 to flux K m s-1
+        flux_T_sfc = PE%PS%Q_nonSW_in / (rho0 * cp_sw)
         
         call compute_par_profile(N=N, dz=PE%grid%dz, rsds=FS%short_rad,                            &
                                  par_fraction=PE%params%frac_par, depth_visible=PE%params%depth_vis,                                 &
@@ -231,8 +234,9 @@ contains
 
             call apply_temperature_tendency(PE%PS%temp, N, dt_sub, PE%dTdt_heat)
 
-            ! Then mix the vertical thermal structure with semi-implicit scalar scheme      
-            call scalar_diffusion(PE%PS%temp, N, dt_sub, PE%grid%dz, PE%Kz_T, PE%params%cnpar, PE%trid, ierr_l)
+            ! Then mix the vertical thermal structure with semi-implicit scalar scheme   
+            call scalar_diffusion(PE%PS%temp, N, dt_sub, PE%grid%dz, PE%Kz_T, PE%params%cnpar, PE%trid, ierr_l, &
+                                  bc_top_type=BC_NEUMANN, bc_top_value=flux_T_sfc)   
 
             ! Recompute density after thermal mixing
             PE%PS%rho = eos_density(PE%PS%temp, PE%PS%sal)
