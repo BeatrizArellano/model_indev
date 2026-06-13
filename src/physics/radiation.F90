@@ -123,7 +123,9 @@ contains
             Ftop_total = Fin_nv + Fin_vis
             if (Ftop_total > tiny) then
                 k_eff = max(0.0_rk, (Fin_nv*k_nv + Fin_vis*k_vis) / Ftop_total)
-                swr_c(i) = Ftop_total * exp(-k_eff * 0.5_rk * dz(i))
+                !swr_c(i) = Ftop_total * exp(-k_eff * 0.5_rk * dz(i))
+                swr_c(i) = Fin_nv  * exp(-k_nv  * 0.5_rk * dz(i)) + &
+                           Fin_vis * exp(-k_vis * 0.5_rk * dz(i))
             else
                 swr_c(i) = 0.0_rk
             end if
