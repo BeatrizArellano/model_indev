@@ -47,7 +47,7 @@ contains
       real(rk), intent(in)  :: temp(:)
       real(rk), intent(in)  :: dz(:)
       integer,  intent(in)  :: N
-      real(rk), intent(in)  :: rsds, rlds_down, wind_speed, airT, rh, airP
+      real(rk), intent(in)  :: rsds, rlds_down, wind_speed, airT, rh, airP         ! airP : sea-level pressure [hPa]
       real(rk), intent(in)  :: nonvisible_fraction, depth_nonvisible, depth_visible
 
       logical, intent(in)   :: deposit_bottom_residual, apply_bioshading_to_heat
@@ -63,17 +63,16 @@ contains
       
       ! Parameters 
       real(rk), parameter :: emiss_sea = 0.985_rk
-      real(rk), parameter :: Cd_h    = 1.45e-3_rk
-      real(rk), parameter :: Ce_e    = 1.50e-3_rk
 
       real(rk) :: atten_local(1:N)
       real(rk) :: swr_abs(1:N)
 
       real(rk) :: surf_temp
-      real(rk) :: sat_vap, vap, spec_hum1, spec_hum2
+      real(rk) :: sat_vap_air, sat_vap_sea, vap_air, spec_hum1, spec_hum2
       real(rk) :: q_up_lw
       real(rk) :: q_lw_out, q_sensible_out, q_latent_out
       real(rk) :: q_nonSW_in_local
+      real(rk) :: Ch_h, Ce_q
       real(rk) :: inv_rho_cp
       real(rk) :: maxrate
 
@@ -99,19 +98,27 @@ contains
       surf_temp = temp(N) + 273.15_rk
 
       ! --- Moisture terms ---
-      sat_vap = 10.0_rk**((0.7859_rk + 0.03477_rk*temp(N)) / (1.0_rk + 0.00412_rk*temp(N)))  ! mbar
-      vap     = max(0.0_rk, 0.01_rk*rh*sat_vap)                                              ! mbar
+      sat_vap_air = 10.0_rk**((0.7859_rk + 0.03477_rk*airT) / (1.0_rk + 0.00412_rk*airT))
+      sat_vap_sea = 10.0_rk**((0.7859_rk + 0.03477_rk*temp(N)) / (1.0_rk + 0.00412_rk*temp(N)))  ! mbar
+      vap_air     = max(0.0_rk, 0.01_rk * rh * sat_vap_air)                                      ! mbar
 
-      spec_hum1 = 0.62_rk*sat_vap/(airP - 0.38_rk*sat_vap)  ! specific humidity at surface 
-      spec_hum2 = 0.62_rk*vap/(airP - 0.38_rk*vap)          ! specific humidity of air 
+      spec_hum1 = 0.622_rk*sat_vap_sea/(airP - 0.378_rk*sat_vap_sea)  ! specific humidity at surface 
+      spec_hum2 = 0.622_rk*vap_air    /(airP - 0.378_rk*vap_air)  ! specific humidity of air 
 
       ! --- Longwave, sensible, latent: positive out of the sea (S2P3)  ---
       q_up_lw  = emiss_sea * sigma_SB * surf_temp**4
       q_lw_out = q_up_lw - emiss_sea * rlds_down
 
+      ! Dynamic bulk transfer coefficients for moisture and heat
+      Ce_q = (1.05e-3_rk + 0.05e-3_rk * wind_speed)    ! bulk transfer coefficient for latent heat
+      Ch_h = (0.75e-3_rk + 0.04e-3_rk * wind_speed)    ! bulk transfer coefficient for sensible heat
+      
+      Ce_q = min(max(Ce_q, 1.05e-3_rk), 1.60e-3_rk)
+      Ch_h = min(max(Ch_h, 0.75e-3_rk), 1.25e-3_rk)
+
       ! --- Sensible/latent (positive OUT of sea) ---
-      q_sensible_out = Cd_h * rho_air * cp_air * wind_speed * (temp(N) - airT)
-      q_latent_out   = Ce_e * rho_air * wind_speed * (spec_hum1 - spec_hum2) * (2.5e6_rk - 2.3e3_rk*temp(N))
+      q_sensible_out = Ch_h * rho_air * cp_air * wind_speed * (temp(N) - airT)
+      q_latent_out   = Ce_q * rho_air * wind_speed * (spec_hum1 - spec_hum2) * (2.5e6_rk - 2.3e3_rk*temp(N))
 
       ! Convert to "positive INTO ocean"
       q_nonSW_in_local = -(q_lw_out + q_sensible_out + q_latent_out)   
@@ -139,6 +146,5 @@ contains
 
       temp(1:N) = temp(1:N) + dt * dTdt_heat(1:N)
   end subroutine apply_temperature_tendency
-
 
 end module heat_fluxes
