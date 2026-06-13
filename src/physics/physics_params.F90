@@ -39,7 +39,6 @@ module physics_params
   real(rk), parameter :: def_depth_nonvis        = 0.35_rk       ! e-folding depth of non-visible band [m]
   real(rk), parameter :: def_depth_vis           = 20.0_rk       ! e-folding depth of visible band [m]
   real(rk), parameter :: def_frac_par            = 0.45_rk       ! Fraction of shortwave radiation treated as Photosynthetically Active Radiation (PAR)
-  real(rk), parameter :: def_lw_skin_penetration = 0.95_rk       ! Fraction of incoming LW that reaches below the skin 
   real(rk), parameter :: def_cnpar               = 0.5_rk        ! Degree of Implicitness when solving diffusive mixing [0-1]
   character(len=8), parameter :: def_salmode = 'constant'        ! Default mode for salinity
   !--------------------------------------------------------------------------------------------------------------------
@@ -67,7 +66,6 @@ module physics_params
      real(rk) :: depth_nonvis        ! [m]
      real(rk) :: depth_vis           ! [m]
      real(rk) :: frac_par        ! [-]
-     real(rk) :: lw_skin_penetration ! [fraction 0-1]
      logical  :: apply_heat_bioshade
      logical  :: apply_par_bioshade
 
@@ -115,7 +113,6 @@ contains
         phys%depth_nonvis       = cfg_params%get_param_num('physics.radiation.depth_nonvisible', default=def_depth_nonvis, finite=.true., positive=.true.)       
         phys%depth_vis          = cfg_params%get_param_num('physics.radiation.depth_visible', default=def_depth_vis, finite=.true., positive=.true.)   
         phys%frac_par           = cfg_params%get_param_num('physics.radiation.par_fraction', default=def_frac_par, finite=.true., min=0._rk, max=1.0_rk)
-        phys%lw_skin_penetration = cfg_params%get_param_num('physics.radiation.lw_skin_penetration', default=def_lw_skin_penetration, finite=.true., min=0._rk, max=1._rk)
 
         phys%apply_heat_bioshade = cfg_params%get_param_logical('physics.radiation.apply_bioshading_to_heat', default=.true.)
         phys%apply_par_bioshade  = cfg_params%get_param_logical('physics.radiation.apply_bioshading', default=.true.)
@@ -146,7 +143,6 @@ contains
         p%depth_nonvis = def_depth_nonvis
         p%depth_vis   = def_depth_vis
         p%frac_par   = def_frac_par
-        p%lw_skin_penetration = def_lw_skin_penetration
         p%apply_heat_bioshade = .true.
         p%apply_par_bioshade  = .true.
         p%cnpar      = def_cnpar
