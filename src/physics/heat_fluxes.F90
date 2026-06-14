@@ -16,7 +16,7 @@
 !
 !=======================================================================================
 module heat_fluxes
-  use physics_params,  only: rho0, rho_air, cp_sw, cp_air, sigma_SB
+  use physics_params,  only: rho0, cp_sw, cp_air, sigma_SB 
   use precision_types, only: rk  
   use radiation,       only: compute_radiation_profile
 
@@ -37,11 +37,11 @@ contains
   !   Q_net_surf : net heat flux into the surface cell (nonSW + sw_absorbed_in_top)
   !   max_abs_dTdt : max over layers of abs(dTdt_heat)
   !---------------------------------------------------------------------------
-  subroutine compute_heat_tendency(temp, dz, N,                                 &
-                                   rsds, rlds_down, wind_speed, airT, rh, airP, &
+  subroutine compute_heat_tendency(temp, dz, N,                                          &
+                                   rsds, rlds_down, wind_speed, airT, rh, airP,          &
                                    nonvisible_fraction, depth_nonvisible, depth_visible, &
-                                   deposit_bottom_residual, apply_bioshading_to_heat, &
-                                   dTdt_heat, Q_net_surf, Q_nonSW_in, max_abs_dTdt,                    &
+                                   deposit_bottom_residual, apply_bioshading_to_heat,    &
+                                   dTdt_heat, Q_net_surf, Q_nonSW_in, max_abs_dTdt,      &
                                    swr_c, atten_bio)
 
       real(rk), intent(in)  :: temp(:)
@@ -73,7 +73,7 @@ contains
       real(rk) :: q_lw_out, q_sensible_out, q_latent_out
       real(rk) :: q_nonSW_in_local
       real(rk) :: Ch_h, Ce_q
-      real(rk) :: inv_rho_cp
+      real(rk) :: inv_rho_cp, rho_air
       real(rk) :: maxrate
 
       atten_local = 0.0_rk
@@ -98,12 +98,13 @@ contains
       surf_temp = temp(N) + 273.15_rk
 
       ! --- Moisture terms ---
-      sat_vap_air = 10.0_rk**((0.7859_rk + 0.03477_rk*airT) / (1.0_rk + 0.00412_rk*airT))
-      sat_vap_sea = 10.0_rk**((0.7859_rk + 0.03477_rk*temp(N)) / (1.0_rk + 0.00412_rk*temp(N)))  ! mbar
-      vap_air     = max(0.0_rk, 0.01_rk * rh * sat_vap_air)                                      ! mbar
+      ! Arden Buck empirical fit
+      sat_vap_air = 6.1121_rk * exp((18.678_rk - airT/234.5_rk) * (airT/(257.14_rk + airT)))          ! mbar
+      sat_vap_sea = 6.1121_rk * exp((18.678_rk - temp(N)/234.5_rk) * (temp(N)/(257.14_rk + temp(N))))
+      vap_air     = max(0.0_rk, 0.01_rk * rh * sat_vap_air)                                           ! mbar
 
       spec_hum1 = 0.622_rk*sat_vap_sea/(airP - 0.378_rk*sat_vap_sea)  ! specific humidity at surface 
-      spec_hum2 = 0.622_rk*vap_air    /(airP - 0.378_rk*vap_air)  ! specific humidity of air 
+      spec_hum2 = 0.622_rk*vap_air    /(airP - 0.378_rk*vap_air)      ! specific humidity of air 
 
       ! --- Longwave, sensible, latent: positive out of the sea (S2P3)  ---
       q_up_lw  = emiss_sea * sigma_SB * surf_temp**4
@@ -115,6 +116,9 @@ contains
       
       Ce_q = min(max(Ce_q, 1.05e-3_rk), 1.60e-3_rk)
       Ch_h = min(max(Ch_h, 0.75e-3_rk), 1.25e-3_rk)
+
+      ! Scaling air density with temperature
+      rho_air = airP * 100.0_rk / (287.05_rk * (airT + 273.15_rk))
 
       ! --- Sensible/latent (positive OUT of sea) ---
       q_sensible_out = Ch_h * rho_air * cp_air * wind_speed * (temp(N) - airT)
