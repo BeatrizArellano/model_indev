@@ -13,8 +13,8 @@ module physics_params
   real(rk), parameter :: gravity         = 9.81_rk               ! Gravity acceleration
   real(rk), parameter :: Omega           = 7.2921159e-5_rk       ! Earth's angular velocity [rad/s]
   real(rk), parameter :: rho0            = 1025.0_rk             ! Reference seawater density [kg m-3]
-  real(rk), parameter :: rho_air         = 1.3_rk                ! Reference air density [kg m-3] Using 1.3 as in S2P3
-  real(rk), parameter :: cp_sw           = 3900.0_rk             ! seawater heat capacity [J kg-1 K-1]
+  real(rk), parameter :: rho_air         = 1.225_rk              ! Reference air density [kg m-3] 
+  real(rk), parameter :: cp_sw           = 3990.0_rk             ! seawater heat capacity [J kg-1 K-1]
   real(rk), parameter :: cp_air          = 1004.0_rk             ! air heat capacity [J kg-1 K-1]
   real(rk), parameter :: kappa           = 0.41_rk               ! von Kármán constant
   real(rk), parameter :: sigma_SB        = 5.670374419e-8_rk     ! Stefan-Boltzman 
