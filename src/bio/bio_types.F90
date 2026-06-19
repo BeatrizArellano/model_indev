@@ -128,8 +128,13 @@ module bio_types
       real(rk), allocatable :: diff_sed0(:)        ! Array to store free-solution diffusivities (not scaled)
       real(rk), allocatable :: diff_sed_max(:)     ! Array to store maximum effective diffusivities scaled by tortuosity for all tracers
       real(rk), allocatable :: Db_eff_solids(:)    ! Array to store effective bioturbation diffusivity (scaled by 1-phi)
-      real(rk), allocatable :: swi_flux(:)         ! Flux of solutes at the sediment-water interface (tracer specific)
-      real(rk), allocatable :: swi_flux_out(:)     ! Flux of solutes at the sediment-water interface (tracer specific) This will have m d-1 units
+      real(rk), allocatable :: swi_flux(:)         ! Flux of solutes due to diffusion at the sediment-water interface (tracer specific)  [conc units * m s-1]
+      real(rk), allocatable :: swi_flux_out(:)     ! Flux of solutes at the sediment-water interface (tracer specific) [conc units * m d-1]
+      real(rk), allocatable :: bioirr_flux(:)      ! Flux of solutes due to bioirrigation at the sediment-water interface (tracer specific) [conc units * m s-1]
+      real(rk), allocatable :: bioirr_flux_out(:)  ! Flux of solutes due to bioirrigation at the sediment-water interface (tracer specific) [conc units * m d-1]
+      real(rk), allocatable :: total_swi_flux(:)   ! Total flux of solutes at the sediment-water interface including bioirrigation and diffusion (tracer specific) [conc units * m d-1]
+    
+
       ! --- Runtime flags 
       logical :: use_bioturbation        = .false.
       logical :: use_bioirrigation       = .false.
@@ -209,7 +214,9 @@ module bio_types
     real(rk), allocatable :: conserved_total(:)                ! column-integrated totals [per m2]
     type(VarMetadata), allocatable :: conserved_vars(:)        ! metadata for conserved totals
     ! 
-    type(VarMetadata), allocatable :: swiflux_vars(:)          ! Metadata for Sediment-water interface fluxes
+    type(VarMetadata), allocatable :: tot_swiflux_vars(:)          ! Metadata for Sediment-water interface total fluxes
+    type(VarMetadata), allocatable :: bio_swiflux_vars(:)          ! Metadata for Sediment-water interface bioirrigation fluxes
+    type(VarMetadata), allocatable :: dif_swiflux_vars(:)          ! Metadata for Sediment-water interface diffusive fluxes
     ! Other environment arrays
     type(VarMetadata), allocatable :: env_int_vars(:)          ! 1D environment variables like par/swr/pres, etc.
     ! Working arrays
