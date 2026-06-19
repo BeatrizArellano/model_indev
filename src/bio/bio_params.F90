@@ -57,8 +57,11 @@ module bio_params
         real(rk) :: irr_sfc                ! Exchange rate at the sediment-water interface (user: 1/yr; SI: 1/s) (alpha0 in Aller's model)
         real(rk) :: irr_ez                 ! Decay depth for exponential attenuation of irrigation (user: cm; SI: m)
         ! --- Bottom boundary
-        logical :: bottom_outflow          ! If true, allow porewater/solids to leave through deepest sediment boundary
-        logical :: output_swi_fluxes = .false. ! Include sediment-water fluxes of solutes in the output
+        logical :: bottom_outflow                   ! If true, allow porewater/solids to leave through deepest sediment boundary
+        ! --- Output
+        logical :: output_swi_fluxes = .false.      ! Include total sediment-water fluxes of solutes in the output
+        logical :: output_swi_diff_fluxes = .false. ! Include diffusive component of sediment-water solute fluxes in the output
+        logical :: output_swi_bio_fluxes = .false.  ! Include bioirrigation component of sediment-water solute fluxes in the output
         ! --- Numerics
         real(rk) :: cnpar_sed              ! Crank-Nicolson parameter to solve diffusive mixing [default=0.9, min=0, max=1]
         
@@ -143,7 +146,9 @@ contains
         ! --------- Bottom boundary -----------
         SedP%bottom_outflow = cfg_params%get_param_logical('biogeochemistry.sediments.bottom_outflow', default=def_bottom_outflow)
         !-------- Output sediment-water fluxes of solutes ----
-        SedP%output_swi_fluxes = cfg_params%get_param_logical('biogeochemistry.sediments.output_swi_fluxes', default=.false.)
+        SedP%output_swi_fluxes      = cfg_params%get_param_logical('biogeochemistry.sediments.output_swi_fluxes', default=.false.)
+        SedP%output_swi_diff_fluxes = cfg_params%get_param_logical('biogeochemistry.sediments.output_swi_diff_fluxes', default=.false.)
+        SedP%output_swi_bio_fluxes  = cfg_params%get_param_logical('biogeochemistry.sediments.output_swi_bio_fluxes', default=.false.)        
         !--------- Numerics---------------------
         SedP%cnpar_sed  = cfg_params%get_param_num('biogeochemistry.sediments.cnpar_sed', default=def_cnpar_sed, finite=.true., min=0.0_rk, max=1._rk)
     end subroutine read_sed_parameters
@@ -181,7 +186,9 @@ contains
 
         p%cnpar_sed   = def_cnpar_sed
 
-        p%output_swi_fluxes = .false.
+        p%output_swi_fluxes      = .false.
+        p%output_swi_diff_fluxes = .false.
+        p%output_swi_bio_fluxes  = .false.
     end function default_sed_params
 
 
