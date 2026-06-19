@@ -139,7 +139,8 @@ contains
 
         if (is_bio_enabled) then
             all_vars = [PE%phys_vars, BE%env_int_vars, BE%int_vars, BE%btm_vars, BE%sfc_vars, &
-                        BE%diag_hz_vars, BE%diag_int_vars, BE%conserved_vars, BE%swiflux_vars]            
+                        BE%diag_hz_vars, BE%diag_int_vars, BE%conserved_vars,                 &
+                        BE%tot_swiflux_vars, BE%dif_swiflux_vars, BE%bio_swiflux_vars]            
         else
             all_vars = [PE%phys_vars]
         end if
