@@ -255,7 +255,7 @@ contains
     !
     !   Net mass gained by sediment layer k (and lost by bottom water) is:
     !     dM_k = (C_bw - C_s(k)) * dV_k
-    !          = alpha(k) * (C_bw - C_s(k)) * Hpw(k) * dt   [mol m^-2]
+    !          = alpha(k) * (C_bw - C_s(k)) * Hpw(k) * dt   [tracer units m s-1]
     !
     !   Updating sediment and bottom water with equal-and-opposite dM_k
     !   ensures exact tracer mass conservation (up to roundoff).
@@ -271,22 +271,24 @@ contains
     ! equation 3.140 therein to model bioirrigation as a non-local exchange. 
     ! Specific discussion of this is in Boudreau (1984)
     !-----------------------------------------------------------------------
-    subroutine apply_bioirrigation(dt, nsed, ntotal, alpha, porewat_thickness, dz_wat_btm, k_wat_btm, concentration)
+    subroutine apply_bioirrigation(dt, nsed, ntotal, alpha, porewat_thickness, dz_wat_btm, k_wat_btm,   &
+                                   concentration, bioirr_flux)
         real(rk), intent(in)    :: dt
         integer,  intent(in)    :: nsed, ntotal
         real(rk), intent(in)    :: alpha(nsed)               ! Bioirrigation alpha [s^-1]       
         real(rk), intent(in)    :: porewat_thickness(nsed)   ! [m] porewater capacity per m2
         real(rk), intent(in)    :: dz_wat_btm                ! [m] Thickness of the bottom layer in water column        
         integer,  intent(in)    :: k_wat_btm                 ! Indices for water bottom and sediment 
-        real(rk), intent(inout) :: concentration(ntotal)     ! Concentration per porewater volume in sediments and water volume in the water column
+        real(rk), intent(inout) :: concentration(ntotal)     ! Concentration per porewater volume in sediments and water volume in the water column        
+        real(rk), intent(out)   :: bioirr_flux               ! Sediment-water flux due to bioirrigation [concentration units * m s-1]
 
         integer  :: k
         real(rk) :: Hpw, alpha_k
-        real(rk) :: Cbw, Cs, dM, dMtot
-        real(rk), parameter :: eps = 1.0e-30_rk  
+        real(rk) :: Cbw, Cs, dM, dMtot        
 
         Cbw = concentration(k_wat_btm)
         dMtot = 0._rk
+        bioirr_flux = 0._rk
 
         do k = 1, nsed
             alpha_k = alpha(k)
@@ -294,13 +296,15 @@ contains
 
             ! The amount of mass that can be exchanged depends on how much porewater exists in that layer.
             ! Hpw is the actual porewater volume available to be exchanged
-            Hpw = max(porewat_thickness(k), eps)       ! [m] porewater capacity per m2
-            Cs = concentration(k)                      ! porewater concentration [mol m-3_pw]
+            Hpw = porewat_thickness(k)                 ! [m] porewater capacity per m2
+            if (Hpw <= 0._rk) cycle
+
+            Cs = concentration(k)                      ! porewater concentration 
 
             ! Compute how much mass per m2 is exchanged over dt for each sediment layer
             ! The exchanged volume per unit area is ΔVk = alpha_k* Hpw * dt 
             !   ΔM_k = (Cbw - Ck) * ΔVk
-            ! Exchange mass per unit area [mol m-2] over dt
+            ! Exchange mass per unit area [concentration units * m] 
             dM = alpha_k * (Cbw - Cs) * Hpw * dt
 
             ! Update sediment porewater concentration in the kth sediment layer
@@ -309,6 +313,10 @@ contains
 
             ! Accumulate mass removed (or added) from bottom water (opposite sign)
             dMtot = dMtot - dM
+
+            ! Sediment-water flux due to bioirrigation [concentration units * m s-1]
+            ! Positive into the water, negative into the sediments
+            bioirr_flux = bioirr_flux - dM / dt
         end do
 
         ! Update bottom water concentration
