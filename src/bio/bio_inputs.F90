@@ -24,7 +24,8 @@ module bio_inputs
     public :: BioInputs
 
     type :: BioInputSpec 
-        character(:), allocatable :: key           ! YAML item name / FABM-facing name
+        character(:), allocatable :: key           ! YAML item name 
+        character(:), allocatable :: tracer        ! Name for the tracer in FABM
         character(:), allocatable :: mode          ! off/constant/file
         character(:), allocatable :: filename      ! input file
         character(:), allocatable :: name          ! variable name inside file
@@ -410,6 +411,7 @@ contains
                 end if
 
                 if (is_source) then
+                    specs(nactive)%tracer = self%cfg%get_param_str(base//'.tracer', required=.true., trim_value=.true.)
                     specs(nactive)%target_domain = normalise_source_target(self%cfg%get_param_str(base//'.target_domain', required=.true., trim_value=.true.))
                     specs(nactive)%time_unit = normalise_time_unit(self%cfg%get_param_str(base//'.time_unit', required=.false., default='second', trim_value=.true.))
                     select case (to_lower(trim(specs(nactive)%time_unit)))
@@ -556,7 +558,7 @@ contains
         write(*,'(A)') 'Validating external source flux inputs:'
 
         do i = 1, size(self%sources)
-            name = trim(self%sources(i)%key)
+            name = trim(self%sources(i)%tracer)
             nfound = 0
 
             ! -------------------------------
@@ -612,18 +614,22 @@ contains
                 self%sources(i)%active = .true.
 
             else if (nfound == 0) then
-                errmsg = 'External input source "'//trim(name)//'" was not found among FABM state variables.'
+                errmsg = 'External input source "'//trim(self%sources(i)%key)// &
+                         '" targets tracer "'//trim(name)// &
+                         '", which was not found among FABM state variables.'
                 return
 
             else if (nfound > 1) then
-                errmsg = 'External input source "'//trim(name)//'" matched FABM state variables in more than one domain.'
+                errmsg = 'External input source "'//trim(self%sources(i)%key)// &
+                        '" targets tracer "'//trim(name)// &
+                        '", which matched FABM state variables in more than one domain.'
                 return
             end if
 
-            write(*,'(A,A,A,A,A,A,A)') ' - ', trim(name), ' is a FABM ', trim(self%sources(i)%domain), &
-                  ' state variable. Source flux to be applied at the ', &
-                   trim(self%sources(i)%target_domain), '.'
-                   
+            write(*,'(A,A,A,A,A,A,A,A,A)') ' - source "', trim(self%sources(i)%key), &
+                    '" targets tracer "', trim(name), '" which is a FABM ', &
+                    trim(self%sources(i)%domain), ' state variable. Source flux applied at ', &
+                    trim(self%sources(i)%target_domain), '.'                   
             
         end do
 
