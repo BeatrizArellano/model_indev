@@ -314,7 +314,7 @@ contains
     subroutine parse_interval_to_seconds(txt, seconds)
         character(*), intent(in) :: txt
         integer(lk), intent(out) :: seconds
-        integer :: n, istat,             i
+        integer :: n, istat, i
         character(1) :: u
         character(:), allocatable :: s
 
