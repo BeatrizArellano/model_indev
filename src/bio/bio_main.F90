@@ -2,6 +2,7 @@ module bio_main
     use bio_params,          only: read_bio_parameters, mol_diff
     use bio_types,           only: BioEnv, DIFF_NONE, DIFF_O2CO2_AB, DIFF_ION_LINEAR, &
                                    DIFF_ARRHENIUS, DIFF_WILKE_CHANG, DIFF_STOKES_EINSTEIN
+    use event_manager,       only: EventManager   
     use fabm
     use physics_forcing,     only: ForcingSnapshot
     use geo_utils,           only: LocationInfo    
@@ -37,7 +38,7 @@ module bio_main
 contains
 
     subroutine init_bio_fabm(cfg, location, wat_grid, sed_grid, full_grid, sim_startdate, sim_enddate, cal, &
-                             load_yearly, timestep, PS, FS, h0b, BE, load_init_state, init_state, static_prof)
+                             load_yearly, timestep, PS, FS, h0b, BE, EVT, load_init_state, init_state, static_prof)
         type(ConfigParams),       intent(in) :: cfg
         type(LocationInfo),       intent(in) :: location
         type(VerticalGrid),       intent(in) :: wat_grid
@@ -51,6 +52,7 @@ contains
         type(ForcingSnapshot),    intent(in) :: FS
         real(rk),                 intent(in) :: h0b
         type(BioEnv),          intent(inout) :: BE
+        type(EventManager),    intent(inout) :: EVT
         logical,                  intent(in) :: load_init_state
         type(StateData),          intent(in) :: init_state
         type(StaticProfile),   allocatable, intent(inout) :: static_prof(:)
@@ -70,6 +72,9 @@ contains
         ! Check whether there is a configuration file for input data set
         BE%has_input = allocated(BE%params%input_cfg_file)
         if (BE%has_input) BE%has_input = len_trim(BE%params%input_cfg_file) > 0
+        ! Check whether there is a configuration file for input data set
+        BE%has_events = allocated(BE%params%event_cfg_file)
+        if (BE%has_events) BE%has_events = len_trim(BE%params%event_cfg_file) > 0
         ! Check whether there are profiles for interior variables to be initialised
         BE%has_init_profiles = allocated(BE%params%input_profiles_file)
         if (BE%has_init_profiles) BE%has_init_profiles = len_trim(BE%params%input_profiles_file) > 0
@@ -713,7 +718,11 @@ contains
             end if
         end if
 
-        call BE%Events%init(cfg, BE%grid, BE%model, sim_startdate, sim_enddate, cal)
+        if (BE%has_events) then
+            call EVT%init(BE%params%event_cfg_file, BE, sim_startdate, sim_enddate, cal)
+        else
+            call EVT%init('', BE, sim_startdate, sim_enddate, cal)
+        end if
 
     end subroutine init_bio_fabm
 
@@ -724,10 +733,11 @@ contains
     !   - Applies vertical mixing and moves tracers according to reported velocities.
     !   - Integrates tracer tendencies (sources: dC/dt) subcycling if needed for stability.
     !=====================================================================================
-    subroutine integrate_bio_fabm(BE, PS, FS, timestep, istep_main, model_time_int, date, sec_of_day, doy_fraction)
+    subroutine integrate_bio_fabm(BE, PS, FS, EVT, timestep, istep_main, model_time_int, date, sec_of_day, doy_fraction)
         type(BioEnv),          intent(inout) :: BE
         type(PhysicsState),    intent(in)    :: PS
         type(ForcingSnapshot), intent(in)    :: FS
+        type(EventManager),    intent(inout) :: EVT
         integer(lk),           intent(in)    :: timestep
         integer(lk),           intent(in)    :: istep_main
         integer(lk),           intent(in)    :: model_time_int
@@ -737,10 +747,10 @@ contains
 
 
         integer  :: nz, i, ivar, k, nint, nsfc, nbtm
-        real(rk) :: istep_rk, dt_main, dt_sub, model_time, model_time_frac
+        real(rk) :: istep_rk, dt_main, dt_sub, model_time, current_time
         integer  :: isub
         real(rk) :: dt_done, dt_left
-        real(rk) :: dt_transport_safe, dt_reaction_safe
+        real(rk) :: dt_transport_safe, dt_reaction_safe, dt_to_next_event
         integer  :: kwb, kws, ksb, kss, kswi, nwat, nsed, nfaces_wat
         real(rk) :: vel_swi
         real(rk) :: c_w, c_s, M_old, M_new
@@ -776,8 +786,7 @@ contains
         nfaces_wat = nwat + 1             ! Number of layer interfaces in water        
 
 
-        BE%BS%doy = doy_fraction
-        model_time_frac = model_time      
+        BE%BS%doy = doy_fraction   
 
         !---------------------------------------------
         ! Update FABM with environment data
@@ -851,7 +860,8 @@ contains
 
         ! Inner loop to maintain numerical stabilty
         do while (dt_done < dt_main - 1.0e-10_rk * dt_main)
-            
+
+            current_time = model_time + dt_done
             dt_left = dt_main - dt_done
             isub = isub + 1
 
@@ -906,15 +916,18 @@ contains
             end if
 
             !------------------------------------------------------
-            ! Apply external events (e.g. a tracer pulse or trawling)
+            ! Apply external events that contribute to tendencies (e.g. a tracer pulse)
             ! Obtain tendencies from external events (if any)
             !------------------------------------------------------
             BE%tendency_int_evt   = 0.0_rk       ! Zero before adding tendencies
             BE%tendency_int_total = 0.0_rk
-    !!! Review which dt to use 
-            if (BE%Events%any_events) then
-                call BE%Events%apply(model_time_frac, dt_left, BE%tendency_int_evt)
+            dt_to_next_event = dt_left
+            ! Compute the time-step needed by the events so we land exactly on the time an event needs to start or end. 
+            if (BE%has_events .and. EVT%any_events) then
+                call EVT%compute_next_dt(current_time, dt_left, dt_to_next_event)
+                call EVT%apply_tendencies(BE, current_time)
             end if
+
             ! Add tendencies, if any from the events
             BE%tendency_int_total = BE%tendency_int + BE%tendency_int_evt  
 
@@ -922,7 +935,7 @@ contains
             ! Compute adaptive time-step for integrating tendencies safely
             !----------------------------------------------------------------
             call compute_reaction_safe_dt(BE, BE%tendency_int_total, BE%tendency_sf, BE%tendency_bt, dt_left, dt_reaction_safe)
-            dt_sub = min(dt_left, dt_transport_safe, dt_reaction_safe)
+            dt_sub = min(dt_left, dt_transport_safe, dt_reaction_safe, dt_to_next_event)
 
             if (dt_sub < BE%params%min_dt) then
                 write(*,*) 'integrate_bio_fabm: adaptive dt_sub below min_dt.'
@@ -1204,10 +1217,16 @@ contains
             call BE%model%finalize_outputs()
 
             call update_bio_diagnostics(BE) 
+
+            !------------------------------------------------------
+            ! Apply instantaneous external events (e.g. trawling)
+            !------------------------------------------------------
+            if (BE%has_events .and. EVT%any_events) then
+                call EVT%apply_instantaneous(BE, current_time + dt_sub)
+            end if
             
             ! Advance time
-            dt_done = dt_done + dt_sub
-            model_time_frac = model_time_frac + dt_sub           
+            dt_done = dt_done + dt_sub     
         end do     
         !----- End of inner loop
 
@@ -1390,9 +1409,6 @@ contains
 
         ! Clear Tridiagonal workspace 
         call clear_tridiag(BE%wat_trid)
-
-        ! Clear events
-        call BE%Events%clear()
 
         ! Reset counters and flags
         BE%BS%n_interior = 0
