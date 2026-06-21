@@ -13,6 +13,7 @@ module bio_params
     type, public :: BioParams
         character(:), allocatable :: config_file          ! FABM configuration file
         character(:), allocatable :: input_cfg_file       ! Configuration file to fulfill FABM dependencies or load flux sources       
+        character(:), allocatable :: event_cfg_file       ! Configuration file to apply events (e.g. tracer pulse or trawling) 
         character(:), allocatable :: input_profiles_file  ! Initial profiles for selected interior variables
 
         logical  :: sediments_enabled = .false.
@@ -105,6 +106,7 @@ contains
         bio = default_bio_params()
         bio%config_file = cfg_params%get_param_str('biogeochemistry.config_file', default='fabm.yaml', trim_value=.true.)
         bio%input_cfg_file = remove_null_name(cfg_params%get_param_str('biogeochemistry.input_config', default='off', trim_value=.true.))
+        bio%event_cfg_file = remove_null_name(cfg_params%get_param_str('biogeochemistry.events_config', default='off', trim_value=.true.))
         ! ---------------- Initial profiles ----------------
         bio%input_profiles_file = remove_null_name(cfg_params%get_param_str('biogeochemistry.input_profiles', default='off', trim_value=.true.))
         ! ---------------- Flags ----------------
