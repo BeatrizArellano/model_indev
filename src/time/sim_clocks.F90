@@ -79,9 +79,6 @@ contains
       dt_out%has_time = .true.
   end subroutine simtime_to_datetime
 
-
-
-
   ! Gets the simulation year from a given year
     pure integer function year_to_simyear(y, start_year, end_year) result(simyear)
         integer, intent(in) :: y, start_year, end_year
