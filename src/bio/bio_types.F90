@@ -1,7 +1,6 @@
 module bio_types
     use bio_inputs,        only: BioInputs
     use bio_params,        only: BioParams, SedParams
-    use event_manager,     only: EventManager   
     use fabm,              only: type_fabm_model, type_fabm_interior_variable_id, &
                                  type_fabm_horizontal_variable_id, type_fabm_scalar_variable_id
     use fabm_types,        only: type_interior_standard_variable
@@ -162,8 +161,6 @@ module bio_types
     integer :: nwat = 0                                        ! Number of layers in water
     integer :: k_sed_btm = 0, k_sed_sfc = 0                    ! Bottom and surface Indices for sediments
     integer :: k_wat_btm = 0, k_wat_sfc = 0                    ! Bottom and surface Indices for water
-    !---------- Event Manager
-    type(EventManager) :: Events
 
     !------------ FABM environment variable ids
     type (type_interior_standard_variable)  :: porosity = type_interior_standard_variable(name='porosity', units='1')
@@ -188,6 +185,7 @@ module bio_types
     ! ---------- Optional biogeochemical inputs
     logical :: has_input         = .false.                         ! Are there input data to be applied?
     logical :: has_init_profiles = .false.                         ! Are there profiles to be initialised for specific variables?
+    logical :: has_events        = .false.                         ! Are there events data to be applied?
     ! Pointer to attenuation coefficient
     real(rk), pointer :: atten_ptr(:) => null()
 
