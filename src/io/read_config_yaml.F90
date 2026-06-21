@@ -118,14 +118,20 @@ module read_config_yaml
       character(len=PARAMLEN) :: key = ''
    end type
 
+   type cfg_str_list_t
+      character(len=PARAMLEN) :: key = ''
+      character(len=STRLEN), allocatable :: val(:)
+   end type
+
 
    type :: ConfigParams
       private
-      type(cfg_real_t),    allocatable :: store_reals(:)
-      type(cfg_int_t),     allocatable :: store_ints(:)
-      type(cfg_logical_t), allocatable :: store_logs(:)
-      type(cfg_string_t),  allocatable :: store_strs(:)
-      type(cfg_null_t),    allocatable :: store_nulls(:)
+      type(cfg_real_t),     allocatable :: store_reals(:)
+      type(cfg_int_t),      allocatable :: store_ints(:)
+      type(cfg_logical_t),  allocatable :: store_logs(:)
+      type(cfg_string_t),   allocatable :: store_strs(:)
+      type(cfg_null_t),     allocatable :: store_nulls(:)
+      type(cfg_str_list_t), allocatable :: store_str_lists(:)
    contains
       procedure :: init                => cfg_init
       procedure :: clear               => cfg_clear
@@ -141,10 +147,12 @@ module read_config_yaml
       procedure :: is_numeric          => cfg_is_numeric
       procedure :: is_boolean          => cfg_is_boolean
       procedure :: is_string           => cfg_is_string
+      procedure :: is_string_list      => cfg_is_string_list
       procedure :: get_param_str       => cfg_get_param_str
       procedure :: get_param_num       => cfg_get_param_num
       procedure :: get_param_int       => cfg_get_param_int
-      procedure :: get_param_logical   => cfg_get_param_logical      
+      procedure :: get_param_logical   => cfg_get_param_logical  
+      procedure :: get_param_str_list  => cfg_get_param_str_list    
       ! internals
       procedure, private :: walk_dictionary
       procedure, private :: store_scalar
@@ -161,6 +169,9 @@ module read_config_yaml
       procedure, private :: find_str_key
       procedure, private :: append_null
       procedure, private :: find_null_key
+      procedure, private :: store_string_list
+      procedure, private :: append_str_list
+      procedure, private :: find_str_list_key
    end type ConfigParams
 
 contains
@@ -171,11 +182,12 @@ contains
 
    subroutine cfg_clear(self)
       class(ConfigParams), intent(inout) :: self
-      if (allocated(self%store_reals)) deallocate(self%store_reals)
-      if (allocated(self%store_ints))  deallocate(self%store_ints)
-      if (allocated(self%store_logs))  deallocate(self%store_logs)
-      if (allocated(self%store_strs))  deallocate(self%store_strs)
-      if (allocated(self%store_nulls)) deallocate(self%store_nulls) 
+      if (allocated(self%store_reals))     deallocate(self%store_reals)
+      if (allocated(self%store_ints))      deallocate(self%store_ints)
+      if (allocated(self%store_logs))      deallocate(self%store_logs)
+      if (allocated(self%store_strs))      deallocate(self%store_strs)
+      if (allocated(self%store_nulls))     deallocate(self%store_nulls) 
+      if (allocated(self%store_str_lists)) deallocate(self%store_str_lists)
    end subroutine cfg_clear
 
    subroutine cfg_load_yaml_content(self, path, prefix)
@@ -224,6 +236,8 @@ contains
             call self%store_scalar(trim(joined), node)
          class is (type_null)
             call self%append_null(trim(joined))
+         class is (type_list)
+            call self%store_string_list(trim(joined), node)
          class default
             ! sequences/others: ignore for now, can be added later
          end select
@@ -269,6 +283,44 @@ contains
       ! Fallback: store as string
       call self%append_str(flat_key, str)
    end subroutine store_scalar
+
+   subroutine store_string_list(self, flat_key, list)
+      class(ConfigParams), intent(inout) :: self
+      character(len=*),    intent(in)    :: flat_key
+      class(type_list),    intent(in)    :: list
+
+      type(type_list_item), pointer :: item
+      character(len=STRLEN), allocatable :: vals(:)
+      integer :: n
+
+      n = 0
+      item => list%first
+      do while (associated(item))
+         select type (node => item%node)
+         class is (type_scalar)
+            n = n + 1
+         class default
+            call stop_missingpar('store_string_list', &
+               'Only scalar string items are supported in list "'//trim(flat_key)//'".')
+         end select
+         item => item%next
+      end do
+
+      allocate(vals(n))
+
+      n = 0
+      item => list%first
+      do while (associated(item))
+         select type (node => item%node)
+         class is (type_scalar)
+            n = n + 1
+            vals(n) = trim(adjustl(node%string))
+         end select
+         item => item%next
+      end do
+
+      call self%append_str_list(flat_key, vals)
+   end subroutine store_string_list
 
    !==================== Getters ====================
 
@@ -553,6 +605,44 @@ contains
       if (present(found)) found = has
    end function cfg_get_param_int
 
+   function cfg_get_param_str_list(self, key, found, required) result(vals)
+      class(ConfigParams), intent(in) :: self
+      character(len=*),    intent(in) :: key
+      logical, optional,   intent(out) :: found
+      logical, optional,   intent(in)  :: required
+
+      character(len=STRLEN), allocatable :: vals(:)
+      character(len=PARAMLEN) :: full
+      logical :: req
+      integer :: i
+
+      req = .false.; if (present(required)) req = required
+      full = self%resolve_key(key)
+
+      if (len_trim(full) /= 0 .and. self%is_null(key)) then
+         if (present(found)) found = .false.
+         if (req) call stop_missingpar('get_param_str_list', &
+            'Required string list "'//trim(key)//'" is missing or null.')
+         allocate(vals(0))
+         return
+      end if
+
+      if (len_trim(full) == 0) then
+         if (present(found)) found = .false.
+         if (req) call stop_missingpar('get_param_str_list', &
+            'Required string list "'//trim(key)//'" is missing.')
+         allocate(vals(0))
+         return
+      end if
+
+      i = self%find_str_list_key(full)
+      if (i == 0) call stop_missingpar('get_param_str_list', &
+         'Parameter "'//trim(key)//'" is not a string list.')
+
+      vals = self%store_str_lists(i)%val
+      if (present(found)) found = .true.
+   end function cfg_get_param_str_list
+
 
    !==================== Queries ====================
 
@@ -567,7 +657,7 @@ contains
       else
          tf = (self%find_real_key(full) /= 0) .or. (self%find_int_key(full) /= 0) .or. &
             (self%find_log_key(full)  /= 0) .or. (self%find_str_key(full)  /= 0) .or. &
-            (self%find_null_key(full) /= 0)
+            (self%find_null_key(full) /= 0 .or. (self%find_str_list_key(full) /= 0))
       end if
    end function cfg_has_param
 
@@ -625,6 +715,14 @@ contains
          end do
       end if
 
+      if (allocated(self%store_str_lists)) then
+         do i = 1, size(self%store_str_lists)
+            if (startswith(self%store_str_lists(i)%key, trim(search_prefix))) then
+               tf = .true.; return
+            end if
+         end do
+      end if
+
       if (allocated(self%store_nulls)) then
          do i = 1, size(self%store_nulls)
             if (startswith(self%store_nulls(i)%key, trim(search_prefix))) then
@@ -656,6 +754,11 @@ contains
       if (allocated(self%store_strs)) then
          do i=1,size(self%store_strs); if (startswith(self%store_strs(i)%key, pre)) n=n+1; end do
       end if
+      if (allocated(self%store_str_lists)) then
+         do i=1,size(self%store_str_lists)
+            if (startswith(self%store_str_lists(i)%key, pre)) n=n+1
+         end do
+      end if
       if (allocated(self%store_nulls)) then
          do i=1,size(self%store_nulls); if (startswith(self%store_nulls(i)%key, pre)) n=n+1; end do
       end if
@@ -680,6 +783,13 @@ contains
       if (allocated(self%store_strs)) then
          do i=1,size(self%store_strs)
             if (startswith(self%store_strs(i)%key, pre)) then; n=n+1; list(n)=self%store_strs(i)%key; end if
+         end do
+      end if
+      if (allocated(self%store_str_lists)) then
+         do i=1,size(self%store_str_lists)
+            if (startswith(self%store_str_lists(i)%key, pre)) then
+               n=n+1; list(n)=self%store_str_lists(i)%key
+            end if
          end do
       end if
       if (allocated(self%store_nulls)) then
@@ -730,6 +840,12 @@ contains
       if (allocated(self%store_strs)) then
          do i = 1, size(self%store_strs)
             call add_child_from_key(children, self%store_strs(i)%key, search_prefix)
+         end do
+      end if
+
+      if (allocated(self%store_str_lists)) then
+         do i = 1, size(self%store_str_lists)
+            call add_child_from_key(children, self%store_str_lists(i)%key, search_prefix)
          end do
       end if
 
@@ -876,6 +992,20 @@ contains
       ! Anything else (real/int/bool/map/seq) → not string
    end function cfg_is_string
 
+   logical function cfg_is_string_list(self, key) result(tf)
+      class(ConfigParams), intent(in) :: self
+      character(len=*),    intent(in) :: key
+      character(len=PARAMLEN) :: full
+
+      tf = .false.
+
+      full = self%resolve_key(key)
+      if (len_trim(full) == 0) return
+      if (self%is_null(key)) return
+
+      tf = (self%find_str_list_key(full) /= 0)
+   end function cfg_is_string_list
+
    logical function cfg_is_disabled(self, key) result(tf)
       class(ConfigParams), intent(in) :: self
       character(len=*),    intent(in) :: key
@@ -961,14 +1091,22 @@ contains
          end do
       end if
 
+      if (allocated(self%store_str_lists)) then
+         do i=1,size(self%store_str_lists)
+            if (basename(self%store_str_lists(i)%key) == q) then
+               hits = hits + 1
+               fullkey = self%store_str_lists(i)%key
+            end if
+         end do
+      end if
+
       if (allocated(self%store_nulls)) then
          do i=1,size(self%store_nulls)
             if (basename(self%store_nulls(i)%key) == q) then
                hits = hits + 1; fullkey = self%store_nulls(i)%key
             end if
          end do
-      end if
-
+      end if      
 
       if (hits > 1) call stop_missingpar('resolve_key','Parameter name "'//q//'" is ambiguous; use full dotted key.')
    end function resolve_key
@@ -977,11 +1115,12 @@ contains
       class(ConfigParams), intent(in) :: self
       character(len=*),   intent(in) :: k
       logical :: tf
-      tf = (self%find_real_key(k) /= 0) .or. &
-           (self%find_int_key(k)  /= 0) .or. &
-           (self%find_log_key(k)  /= 0) .or. &
-           (self%find_str_key(k)  /= 0) .or. &
-           (self%find_null_key(k) /= 0 )
+      tf = (self%find_real_key(k) /= 0)  .or.  &
+           (self%find_int_key(k)  /= 0)  .or.  &
+           (self%find_log_key(k)  /= 0)  .or.  &
+           (self%find_str_key(k)  /= 0)  .or.  &
+           (self%find_null_key(k) /= 0 ) .or.  &
+           (self%find_str_list_key(k) /= 0)
    end function exists_fullkey
 
    function lookup_string(self, k) result(val)
@@ -1126,6 +1265,43 @@ contains
          if (self%store_nulls(i)%key == k) then; idx = i; return; end if
       end do
    end function find_null_key
+
+   subroutine append_str_list(self, k, v)
+      class(ConfigParams), intent(inout) :: self
+      character(len=*), intent(in) :: k
+      character(len=STRLEN), intent(in) :: v(:)
+
+      type(cfg_str_list_t), allocatable :: tmp(:)
+      integer :: n
+
+      n = 0
+      if (allocated(self%store_str_lists)) n = size(self%store_str_lists)
+
+      allocate(tmp(n+1))
+      if (n > 0) tmp(1:n) = self%store_str_lists
+
+      tmp(n+1)%key = left_trim_to(k, PARAMLEN)
+      allocate(tmp(n+1)%val(size(v)))
+      tmp(n+1)%val = v
+
+      call move_alloc(tmp, self%store_str_lists)
+   end subroutine append_str_list
+
+   integer function find_str_list_key(self, k) result(idx)
+      class(ConfigParams), intent(in) :: self
+      character(len=*), intent(in) :: k
+      integer :: i
+
+      idx = 0
+      if (.not. allocated(self%store_str_lists)) return
+
+      do i = 1, size(self%store_str_lists)
+         if (trim(self%store_str_lists(i)%key) == trim(k)) then
+            idx = i
+            return
+         end if
+      end do
+   end function find_str_list_key
 
    !==================== Utils ====================
 
