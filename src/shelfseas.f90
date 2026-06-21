@@ -2,16 +2,17 @@
 module shelfseas
   use bio_main,          only: init_bio_fabm, integrate_bio_fabm, end_bio_fabm
   use bio_types,         only: BioEnv
-  use physics_forcing,   only: PhysicsForcing, ForcingSnapshot
+  use event_manager,     only: EventManager   
   use geo_utils,         only: LocationInfo
   use grids,             only: VerticalGrid, build_grids
   use output_manager,    only: OutputManager
+  use output_static,     only: StaticProfile, clear_static_profiles
+  use physics_forcing,   only: PhysicsForcing, ForcingSnapshot
   use physics_main,      only: init_physics, solve_physics, end_physics
   use physics_types,     only: PhysicsState, PhysicsEnv
   use precision_types,   only: rk, lk
   use read_config_yaml,  only: ConfigParams
-  use sim_clocks,        only: init_clock, print_progress, simtime_to_datetime
-  use output_static,     only: StaticProfile, clear_static_profiles
+  use sim_clocks,        only: init_clock, print_progress, simtime_to_datetime 
   use state_loader,      only: StateData, load_state_file
   use time_types,        only: DateTime, CFCalendar, cal_unknown
   use time_utils,        only: datetime_to_str
@@ -50,6 +51,7 @@ module shelfseas
   type(ForcingSnapshot) :: ForcSnp
   type(PhysicsEnv)      :: PE
   type(BioEnv), target  :: BE
+  type(EventManager)    :: EVT 
   type(OutputManager)   :: OM
   type(StateData)       :: init_state
   type(VarMetadata),   allocatable :: all_vars(:)
@@ -130,7 +132,8 @@ contains
         if (is_bio_enabled) then
             call init_bio_fabm(cfg_params, location, wat_grid, sed_grid, full_grid,     &
                                start_datetime, end_datetime, calendar, load_yearly, dt, &
-                               PE%PS, ForcSnp, PE%params%h0b, BE, load_init_state, init_state, static_profs)
+                               PE%PS, ForcSnp, PE%params%h0b, BE, EVT,                   &
+                               load_init_state, init_state, static_profs)
             nsed = BE%nsed
         else 
             nsed = 0
@@ -206,7 +209,7 @@ contains
                 sec_of_day = real(current_datetime%hour*3600 + current_datetime%minute*60 + current_datetime%second, rk)
                 ! 0-based day-of-year + fractional day
                 doy_real = real(doy - 1, rk) + sec_of_day / 86400._rk
-                call integrate_bio_fabm(BE, PE%PS, ForcSnp, dt_now, istep, model_time, current_datetime, sec_of_day, doy_real)
+                call integrate_bio_fabm(BE, PE%PS, ForcSnp, EVT, dt_now, istep, model_time, current_datetime, sec_of_day, doy_real)
                 ! Update bioattenuation coefficients in Physics
                 if (PE%params%apply_heat_bioshade) then
                     PE%atten_bio(:) = BE%BS%atten_coeff(BE%k_wat_btm:BE%k_wat_sfc)
@@ -238,6 +241,8 @@ contains
         call PhysForc%clear()
         call clear_static_profiles(static_profs)
         call cfg_params%clear()
+        ! Clear events
+        call EVT%clear()
     end subroutine end_shelfseas 
 
 end module shelfseas
