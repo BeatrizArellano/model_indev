@@ -1,0 +1,126 @@
+instances:
+  pelagic:
+    model: ecosed/pelagiceco
+    parameters:
+      # Phytoplankton
+      mu_max: 0.55 #0.5                 # Maximum phytoplankton growth rate (d-1); sets upper growth ceiling.
+      photoacclimation: false     # Allow photoacclimation of chlorophyll; if false, chlorophyll is diagnosed from a fixed Chl:C ratio.
+      chl_per_c: 0.3              # Fixed Chl:C ratio when photoacclimation is off (mgChl mmolC-1); sets diagnosed chlorophyll; default=0.3.
+      alpha_phy: 0.08 #0.05             # Initial slope of the P-I curve when photoacclimation is off (m2 W-1 d-1); higher means stronger low-light growth; default=0.03.
+      alpha_chl: 0.5              # Chl-specific initial slope of the P-I curve (mmolC mgChl-1 (W m-2)-1 d-1); higher means stronger low-light growth; typical ~0.3-1.5, default=0.7.
+      theta_chl_max: 0.6          # Maximum Chl:C ratio for photoacclimation (mgChl mmolC-1); higher means more light harvesting capacity; default=0.6.
+      k_nh4: 0.15 #0.2                  # Half-saturation constant for NH4 uptake (mmol m-3). Lower values increase NH4 affinity; default=0.2.
+      k_no3: 0.35 #0.5                  # Half-saturation constant for NO3 uptake (mmol m-3). Higher means stronger nutrient limitation at low NO3 values; default=0.5.
+      k_po4: 0.025                 # Half-saturation constant for PO4 uptake (mmol m-3). Higher means stronger nutrient limitation at low PO4 values; default=0.03.
+      # Zooplankton grazing     
+      g_max: 0.55 #0.7                  # Maximum specific grazing rate (d-1); sets upper grazing pressure on phytoplankton; default=0.5.
+      k_g: 1.0 #0.4                    # Grazing half-saturation constant (mmol m-3); higher means weaker grazing at low prey biomass; default=0.5.
+      sloppy_feed: 0.15           # Fraction of grazed material lost immediately as sloppy feeding to POM (-); default=0.2, min=0, max=1.
+      beta_n: 0.77                # Fraction of post-sloppy ingested Nitrogen assimilated for growth or excretion (-), the remainder is egested as faecal pellets; default=0.77, min=0, max=1.
+      beta_c: 0.64                # Fraction of post-sloppy ingested Carbon assimilated for growth or excretion (-); default=0.64, min=0, max=1.
+      k_zoo: 0.8                  # Fraction of assimilated carbon used for zooplankton growth, the remainder is respired (-); default=0.8, min=0, max=1.
+      # Mortality
+      m_phy: 0.035 #0.05                 # Linear phytoplankton mortality (d-1); default=0.05.
+      m_zoo2: 0.15                # Quadratic zooplankton mortality ((mmol m-3)-1 d-1); default=0.2.
+      # C:N stoichiometry
+      c_to_n_phy: 6.625           # Phytoplankton molar C:N ratio; default=6.625.
+      c_to_n_zoo: 5.625           # Zooplankton molar C:N ratio;   default=5.625.
+      n_to_p: 16                  # Phytoplankton and zooplankton molar N:P ratio; default=16.
+      # Oxygen stoichiometry
+      o2_per_c: 1.3               # Effective O2 produced/consumed per mol organic C fixed/respired; default=1.3.
+      # Calcification
+      rain_ratio: 0	          # Calcite:POC ratio (rain-ratio) [-, default=0]. 
+      # Optical and sinking parameters
+      kc: 0.03                    # Specific light extinction of phytoplankton (m2 mmol-1)
+      w_phy: -0.0                 # phytoplankton vertical velocity (<0 sinking) (m d-1)
+      # Save optional diagnostic variables
+      process_rates: false
+      alkalinity_changes: false
+    initialization:
+      phy: 0.1
+      zoo: 0.005
+    coupling:
+      o2: oxygen/o2
+      no3: nitrogen/no3
+      nh4: nitrogen/nh4
+      po4: nitrogen/po4
+      dic: carb/dic                   # Optionally coupled to DIC
+      alk: carb/alk                   # Optionally coupled to alkalinity
+
+
+  nitrogen:
+    model: ecosed/nitrogen
+    parameters:
+      k_nit: 0.05                 # First-order nitrification rate (d-1); default=0.05.
+      k_par_nit: 20               # PAR at which nitrification is reduced by 50% (W m-2); lower values increase light inhibition; default=20.
+      k_nit_sed: 0.0274           # Second-order sediment nitrification rate constant (m3 mmol-1 d-1)
+      # Include optional diagnostics in the output file
+      process_rates: false
+      alkalinity_changes: false
+    initialization:
+      no3: 5.3                    # Initial nitrate concentration (mmol m-3).
+      nh4: 0.05                   # Initial ammonium concentration (mmol m-3).
+      po4: 0.34                   # Initial phosphate concentration. Keep slightly higher than the P:N ratio to avoid negatives in PP consumption (mmol m-3).
+    coupling:
+      o2: oxygen/o2
+      alk: carb/alk                   # Optionally coupled to alkalinity
+
+  det:
+    model: ecosed/detritus
+    parameters:
+      k_remin_det: 0.07
+      c_to_n_det: 6.625
+      n_to_p_det: 16.0      
+      atten_det: 0.03
+      w_det: -10.0
+      settling: false
+      process_rates: false
+      alkalinity_changes: false
+    initialization:
+      det: 0.001
+    coupling:
+      nh4: nitrogen/nh4               # Mandatory coupling with NH4.      
+      po4: nitrogen/po4               # Mandatory coupling with PO4. 
+      pom_prod_n: pelagic/pom_prod_n  # Coupling with POM production rate by the pelagic ecosystem.    
+      o2: oxygen/o2
+      dic: carb/dic
+      alk: carb/alk
+      
+  det2:
+    model: ecosed/detritus
+    parameters:
+      k_remin_det: 0.05
+      c_to_n_det: 6.625
+      n_to_p_det: 16.0      
+      atten_det: 0.03
+      w_det: -10.0
+      settling: true
+      #  Save optional diagnostic variables
+      process_rates: false
+      alkalinity_changes: false
+    initialization:
+      det: 0.0
+    coupling:
+      nh4: nitrogen/nh4               # Mandatory coupling with NH4.      
+      po4: nitrogen/po4               # Mandatory coupling with PO4.    
+      o2: oxygen/o2
+      dic: carb/dic
+      alk: carb/alk
+
+  oxygen:
+    model: ecosed/oxygen
+
+  carb:
+    model: ecosed/carbonate_chemistry
+    initialization:
+      dic: 2100
+      alk: 2300
+    coupling:
+      po4: nitrogen/po4
+      nh4: nitrogen/nh4
+  
+ 
+
+
+
+        

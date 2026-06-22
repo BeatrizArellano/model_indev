@@ -1,0 +1,43 @@
+# ===================== YAML conventions (model config)=====================
+# NUMBERS
+# - Numbers may be written as integers or reals:
+# - Some numeric fields are validated (e.g., positive, nonnegative, min/max).
+# BOOLEANS
+# - Preferred literals (always accepted): true, false. Alternatively:
+#                       yes/no,  on/off,  1/0
+# STRINGS
+# - Do NOT use single or double quotes:
+#   e.g., file: path/to/file.nc, NOT "path/to/file.nc" or 'path/to/file.nc'.
+# NULL / “unset” values
+# - Use any of the following to mark a parameter as intentionally unset:
+#       null/NULL/Null, none/None, ~
+# - You may also omit (#) the key entirely; missing and null are treated the same.
+# - We discourage using NaN to mean “unset”. Use null instead.
+#   NaNs are treated as numbers.
+# COMMENTS
+# - Use '#' for comments; everything after '#' on a line is considered a comment.
+#   Place comments on their own line or at the end of a parameter/value line.
+# IMPORTANT NOTE:
+# - Use only spaces for indentation (recommended: 4 spaces per level).
+# - Avoid TAB characters; they can cause parsing errors in some compilers.
+# REFERENCES & CONTEXT (recommended)
+# - Include brief inline comments with references for parameter values. 
+# =============================================================================
+events:
+  detritus_pulse:
+    enabled: yes
+    type: tracer_pulse          # Type of event: tracer_pulse, trawling
+    tracer: det2_det
+    mode:   amount              # [amount, rate]
+    rate:   3.0e-3              # [tracer units s-1] aplied over duration
+    amount: 528                 # [tracer units m-2] delivered over duration
+    duration: 1h                # Ends with s (seconds), m (minutes), h (hours) or d (days) [default: 1h].  
+    depth:     78.0             # [m] Depth below surface to inject the tracer
+    thickness: 5.0             # [m] optional, for distributing the solute in that depth range
+    dates:                      # List of date-times to apply the event
+      - 1993-03-15 12:00        # Start date [yyyy-mm-dd or yyyy-mm-dd HH:MM[:SS]]
+      - 1995-07-15
+     
+
+
+

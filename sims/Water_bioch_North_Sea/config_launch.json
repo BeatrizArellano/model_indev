@@ -1,0 +1,8 @@
+{
+    "path_program": "../../build/release/bin/shelf_model",		     
+    "percentage": 0,    			     
+    "threads": 1,
+    "environment": "OMP_NUM_THREADS",
+    "enable_dynamic": false
+}
+

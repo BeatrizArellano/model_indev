@@ -1,0 +1,263 @@
+# ===================== YAML conventions (model config)=====================
+# NUMBERS
+# - Numbers may be written as integers or reals:
+# - Some numeric fields are validated (e.g., positive, nonnegative, min/max).
+# BOOLEANS
+# - Preferred literals (always accepted): true, false. Alternatively:
+#                       yes/no,  on/off,  1/0
+# STRINGS
+# - Do NOT use single or double quotes:
+#   e.g., file: path/to/file.nc, NOT "path/to/file.nc" or 'path/to/file.nc'.
+# NULL / “unset” values
+# - Use any of the following to mark a parameter as intentionally unset:
+#       null/NULL/Null, none/None, ~
+# - You may also omit (#) the key entirely; missing and null are treated the same.
+# - We discourage using NaN to mean “unset”. Use null instead.
+#   NaNs are treated as numbers.
+# COMMENTS
+# - Use '#' for comments; everything after '#' on a line is considered a comment.
+#   Place comments on their own line or at the end of a parameter/value line.
+# IMPORTANT NOTE:
+# - Use only spaces for indentation (recommended: 4 spaces per level).
+# - Avoid TAB characters; they can cause parsing errors in some compilers.
+# REFERENCES & CONTEXT (recommended)
+# - Include brief inline comments with references for parameter values. 
+# =============================================================================
+location:
+    name: Central North Sea
+    latitude:  56.06932         # degrees North. min=-90.0, max=90.0.
+    longitude: 1.599237            # degrees East. Use -180 to 180 or 0 to 360
+    depth:     79           # Water column depth in meters. depth>0. 
+time:
+    start: 1993-01-01        # start date [yyyy-mm-dd or yyyy-mm-dd HH:MM[:SS]]
+    end:   2024-12-31        # end date   [yyyy-mm-dd or yyyy-mm-dd HH:MM[:SS]]
+                             # Note: yyyy-mm-dd is interpreted as yyyy-mm-dd 00:00:00. If the full final day needs to be included, set the next day in the end date. 
+                             # Calendar used to interpret dates: must match calendar in forcing data.
+    calendar: 0              # Options: 0=derive from forcing (default), 1=gregorian/standard, 2=proleptic_gregorian, 3=noleap, 4=all_leap, 5=360_day.
+    dt: 600                  # Main time step [seconds; min>0; default=300]
+grid:                             # Parameters to build the vertical grid.
+    water:
+        dz: 2.0                   # Layer thickness in meters [default: 2.0, min=0.2]
+        nlayers: off              # Alternatively, specify number of layers (integer)
+    sediments:                    # Sediments grid, only used if biogeochemistry and sediments are enabled
+        depth: 0.2                # Total sediment depth [m] [Minimum=0.03]
+        dz_min: 0.001             # Minimum layer thickness at the sediment-water interface [m. Default=0.001]
+        dz_max: 0.02              # Maximum layer thickness towards the bottom [m. Default=0.02]
+        dz_wat_btm: 0.2           # Thickness of the bottom layer in the water column [m. Default=0.1, min=0.1, max=1]
+                                  # When sediments are enabled, the bottom layers of the water column are adjusted so that the bottommost 
+                                  # layer lies within the logarithmic region ~0.1-1m used for sediment–water exchange (Umlauf et al., 2023).
+
+output:
+    file: output/test  # File name; program adds nc (NetCDF). 
+    overwrite: yes                # Overwrite in case the output file already exists [Default: no].
+    frequency: daily              # Time frequency [hourly, daily, custom. Default: daily].
+    statistic: mean               # Aggregation method for data over that time interval [mean, instant].
+    interval:  12h                # Used only when frequency=custom; ends with s (seconds), m (minutes), h (hours) or d (days) [default: 12h].
+    sync_frequency: 30            # Flush output to disk every sync_frequency model days (larger is faster, smaller is safer) [days; default=30; min=0; 0=only flush at the end].
+    write_final_state: yes        # Write a CSV file containing the final values of all registered state variables for restarting simulations [yes/no; default: no].
+
+load_initial_state:               # Optional initial model state. Can be used to restart a simulation from a previously saved state or to initialise the model from custom profiles/values.
+    enabled: no
+    filename: off                 # Path to the file with the initial state. 
+                                                 # If a text file is loaded, it should be in tidy format with at least these columns: name, depth, value. 
+                                                 # Profile variables must match the model vertical grid (same number of layers and matching depths).
+                                                 # The file must contain all required prognostic variables from physics and biogeochemistry. Partial initialisation is not supported.
+                                                 # Partial initialisation only for some bio variables can be configured in biogeochemistry. 
+data:
+    load_yearly: no               # Load data every year or load the full time-series for the simulation [Default: no].
+# ---------------------Surface forcing data---------------------------------------------------
+forcing:                                        # Variables for surface forcing
+    filename: ../../sims_dev/input/era5_forcing_sites_1970_2025.nc   # Global filename
+    repeat_forcing_year: no                     # no | YYYY ; repeat the selected year for all forcing variables
+    surf_air_temp:                              # Surface Air temperature [°C]
+        mode:     file                            # Input Mode [file: Read from file, constant: set a constant value]
+        name:     tas                             # Name of variable in file
+        filename: off                             # If a different filename is present for this variable, this will be used instead of the global filename
+        constant: 8.0                             # Optional constant value to apply instead. 
+    sl_pressure:                                # Sea level pressure [hPa]
+        mode:     file
+        name:     psl                          
+        filename: off
+        constant: 1010
+    relative_humidity:                          # Surface level relative humidity [%]
+        mode:     file
+        name:     hurs 
+        filename: off                                                      #input/met_forcing/met_DB_UKESM1-0-LL_historical_2001_2008.nc
+        constant: 80
+    shortwave_radiation:                        # Shortwave downwards radiation at the surface [W/m2]
+        mode:     file
+        name:     rsds
+        filename: off
+        constant: 200
+    longwave_radiation:                         # Longwave downwards radiation at the surface [W/m2]
+        mode:     file
+        name:     rlds
+        filename: off
+        constant: 300
+    wind_u10:                                 # Zonal component of wind 10m above sea surface [m s-1]
+        mode:    file                             # Input Mode [file: Read from file, constant: set a constant value]
+        name:    uas
+        filename: off
+        constant: 4
+    wind_v10:                                 # Meridional component of wind 10m above sea surface [m s-1]
+        mode:    file                             # Input Mode [file: Read from file, constant: set a constant value]
+        name:    vas
+        filename: off
+        constant: -4
+    precipitation:                            # Precipitation (downwards freshwater flux) [m s-1]
+        mode:     off                         # [off, file, constant]
+        name:     precip
+        filename: off
+        constant: 0.0
+    evaporation:                              # Evaporation (upwards freshwater flux. Negative indicates evaporation, positive is condensation) [m s-1]
+        mode:     off                         # [off, file, constant]
+        name:     evap
+        filename: off
+        constant: 0.0
+    runoff:                                   # River / runoff input (surface freshwater flux) [m s-1]
+        mode:     off                         # [off, file, constant]
+        name:     runoff
+        filename: off
+        constant: 0.0
+    
+# ---------------------Tidal elliptic parameters -------------------------------------------
+tides:
+    read_from_file: yes                        # Read tidal parameters from text file
+    filename: input/s12_m2_s2_n2_h_map.dat  # Path to file containing tide parameters
+    tol_deg: 0.1                               # Tolerance in degrees to find the closest gridpoint in the file
+
+    ellipse_params:                            # If read_from_file=false, specify tidal parameters here. Note: null or missing values will be treated as zero.
+        M2:                                    # Principal Lunar Semidiurnal
+            semi_major: 20.691                      # Semi-Major Axis [cm/s]: The longest radius of the ellipse (maximum amplitude).
+            semi_minor: -1.462                      # Semi-Minor Axis [cm/s]: The shortest radius of the ellipse (current amplitude).
+            inclination: 168.8                      # Inclination (degrees): The angle of the ellipse's major axis relative to the East direction.
+            phase_ang:   357.0                      # Greenwich Phase Angle (degrees): Phase angles, the time (in angles and in degrees) when the tidal currents reach their maximum speeds
+        S2:                                    # Principal Solar Semidiurnal
+            semi_major:  5.968                          
+            semi_minor: -0.151                         
+            inclination:   5.0                        
+            phase_ang:   249.7
+        K1:                                    # Lunar-Solar Declination
+            semi_major:  5.859                         
+            semi_minor:  0.753                         
+            inclination:  96.2                        
+            phase_ang:    80.9
+        O1:                                    # Principal Lunar Diurnal
+            semi_major:  5.024                          
+            semi_minor:  0.828                        
+            inclination:  93.6                         
+            phase_ang:   276.0
+        N2:                                    # Semidiurnal constituent with a longer period
+            semi_major:  2.936                         
+            semi_minor:  0.762                         
+            inclination: 353.2
+            phase_ang:   168.5
+#================================ Physics Parameters =================================================================================
+physics:
+    variables:
+        temperature: 
+            initial_value:   7     # Initial value for temperature  [°C, default=12°C]
+        salinity:    
+            mode:          constant   # [constant, compute, default=constant]
+            initial_value:   35.0     # Initial value for salinity   [PSU, default=35.0]. This will keep salinity constant for now.
+    seabed:
+        roughness_height: 0.001       # Bottom roughness height (h0b) [m]
+    surface:
+        roughness:
+            charnock: 1400.0          # Empirical constant for water-side roughness (Charnock, 1955) [min=0.0; default=1400.0] 
+        vismax: 0.1                   # Maximum diffusivity and viscosity [m2/s, default=0.1]
+        Kz_bg: 1.0e-6                 # Background diffusivity [m2 s-1, default=1.0e-5]
+        Nz_bg: 1.0e-6                 # Background viscosity [m2 s-1, default=1.0e-5]
+        cnpar: 0.5                    # Crank-Nicholson parameter to solve diffusive mixing [default=0.5, min=0, max=1]
+                                      # 0.5 for Cranck-Nicholson method, 0 for fully explicit using Forward Euler, 1 for fully implicit (Backward Euler), 0.5<cnpar<1 to follow a semi-implicit scheme.         
+    radiation:                         # Two-band shortwave radiation scheme (visible + non-visible)
+        nonvisible_fraction: 0.58      # Fraction of SWR in the non-visible band (UV+IR); visible fraction = 1 - frac_nonvisible
+        depth_nonvisible: 0.35         # [m] e-folding depth of non-visible band (rapid near-surface absorption)
+        depth_visible: 18.0            # [m] background e-folding depth of visible band in clear water (before any bio/particle shading)       
+        apply_bioshading_to_heat: yes  # Apply attenuation coefficient from bio/particle shading to shortwave heating (vertical heat absorption profile)
+        # Photosyntetically Active Radiation (when biogeochemistry is enabled)
+        par_fraction: 0.45             # Fraction of shortwave radiation treated as Photosyntetically Active Radiation (PAR). PAR attenuates with the same background e-folding depth as the visible band
+        apply_bioshading: yes          # Apply FABM-provided attenuation coefficient (k_ext, m-1) to PAR decay 
+         
+    output:
+        all: no                       # Include all variables in the output file [default=no].
+        temperature: yes              # Sea water temperature (in-situ) [default=yes].
+        salinity:    no               # Sea water practical salinity.
+        density:     no               # Sea water density (in-situ).
+        u:     no                     # Eastward seawater velocity from barotropic tidal pressure-gradient accelerations.
+        v:     no                     # Northward seawater velocity from barotropic tidal pressure-gradient accelerations.
+        Kz:    no                     # Vertical eddy diffusivity.
+        Nz:    no                     # Vertical eddy viscosity for momentum.
+        tke:   no                     # Turbulent kinetic energy.
+        eps:   no                     # Turbulent kinetic energy dissipation rate.
+        NN:    no                     # Squared buoyancy frequency.
+        SS:    no                     # Squared shear frequency.
+        Ri:    no                     # Gradient Richardson number.
+        Lscale:  no                   # Turbulent mixing length scale.
+        cmue1:   no                   # Stability function for momentum diffusivity in the Canuto turbulence scheme.
+        tau_x:   no                   # Eastward component of surface wind stress.
+        tau_y:   no                   # Northward component of surface wind stress.
+        u_taus:  no                   # Water-side surface friction velocity.
+        z0s:     no                   # Water-side surface roughness length.
+        u_taub:  no                  # Bottom friction velocity.  
+        z0b:     no                  # Bottom roughness length.
+        stressb: no                   # Bottom stress magnitude (Pa).
+        # Include surface forcing variables in the output file?
+        surf_air_temp: no            # Surface air temperature (°C) [default=no].
+        sl_pressure: no              # Sea level pressure (hPa) [default=no].
+        relative_humidity: no        # Relative humidity (%) [default=no].
+        shortwave_radiation: no      # Downward shortwave radiation (W m-2) [default=no].
+        longwave_radiation: no       # Downward longwave radiation (W m-2) [default=no].
+        wind_u10: no                 # 10-m zonal wind velocity (m s-1) [default=no].
+        wind_v10: no                 # 10-m meridional wind velocity (m s-1) [default=no].
+
+#============================== BIOGEOCHEMISTRY COUPLED VIA FABM ========================================================================================================
+biogeochemistry:
+    enabled: yes                    # Enable Biogeochemistry via FABM; if no, only physics is considered [default=no].
+
+    config_file: fabm.yaml          # Path to FABM YAML config [default=fabm.yaml]
+    input_config: bio_input.yaml    # Path to configuration file providing input dependencies and source fluxes [default=off]
+    events_config: off      # Path to configuration file for the application of external events [default=off]
+    repair_state: no                # If yes, FABM will repair the state by clipping all variables to their configured bounds [default=no]
+    output_conserved_qt: yes        # Include in the output file column-integrated totals (per unit area) of all FABM conserved quantities [default=no].
+    input_profiles: off  # Path to text file (csv, dat or txt) containing initial profiles for specific interior variables [default=off].
+                                    # Overrides default initial or restart values for selected interior variables.
+                                    # Accepted formats: wide (depth,var1,var2,...) and tidy (name,depth,value)
+
+    vertical_mixing:
+        cnpar: 0.5                  # Crank-Nicolson parameter to solve diffusive mixing in the water column [default=0.5, min=0, max=1]
+                                    # 0.5 for Cranck-Nicolson method, 0 for fully explicit using Forward Euler, 1 for fully implicit (Backward Euler), 0.5<cnpar<1 to follow a semi-implicit scheme. 
+    numerics:
+       max_substeps: 10000          # Maximum number of adaptive substeps allowed within one main timestep to achieve numerical stability avoiding negative values in tracers.
+       min_timestep: 0.1              # Minimum timestep for inner subcycles to achieve numerical stability.
+    sediments:
+        enabled: no                # Enable vertically resolved sediment biogeochemistry; if no, only water-column is considered [default=no].
+        #--- Sediment accumulation -----------
+        sedimentation_rate: 0.3      # Solid burial velocity at depth where porosity is fully compacted [cm yr-1]
+        # --- Porosity profile  ---               
+        porosity_surface:     0.95    # Porosity at the sediment–water interface. If equal to porosity_depth, porosity is constant with depth.
+        porosity_depth:       0.8     # Sediment porosity at a depth where compaction is stable.
+        porosity_decay_depth: 4       # Depth scale over which sediment porosity decreases exponentially with depth [cm].
+        # --- Bioturbation (particle mixing by fauna) ---
+        bioturbation_mode: static       # off | static | dynamic [default=static]
+        db_surface:                20.0 # Bioturbation diffusivity at the sediment surface (mixing intensity) [cm2 yr-1]
+        bioturbation_depth:        5    # Sediment mixed layer depth below which bioturbation decreases exponentially [cm]
+        bioturbation_decay_depth:  1    # Coefficient (decay depth) for exponential bioturbation decrease [cm]
+        # --- Bioirrigation (nonlocal porewater exchange with bottom water) ---
+        bioirrigation_mode: static        # off | static | dynamic [default=static]
+        irrigation_surface:      200      # [yr-1] Exchange rate at the sediment-water interface (alpha0 in Aller's model)
+        irrigation_decay_depth:  2        # [cm] Decay depth for exponential attenuation of irrigation
+        # --- Bottom boundary ---
+        bottom_outflow: no               # If yes, allow porewater and solids to leave through the deepest sediment boundary [default=yes].
+                                          # If no, impose closed/no-flux bottom boundary for sediment solutes and particles.
+        # --- Output ----------
+        output_swi_fluxes: yes            # Include total sediment-water solute fluxes in the output
+        output_swi_diff_fluxes: yes       # Include diffusive component of SWI solute fluxes in the output
+        output_swi_bio_fluxes: yes        # Include bioirrigation component of SWI solute fluxes in the output
+        #---- Numerics----------
+        cnpar_sed:  0.9                # Crank-Nicolson parameter to solve diffusive mixing [default=0.9, min=0, max=1]
+                                       # 0.5 for Cranck-Nicolson method, 0 for fully explicit using Forward Euler, 1 for fully implicit (Backward Euler), 0.5<cnpar<1 to follow a semi-implicit scheme.
+                                       # For sediment, it is recommended a value ~0.9. 
+
+
+

@@ -1,0 +1,38 @@
+# ===================== YAML conventions (model config)=====================
+# NUMBERS
+# - Numbers may be written as integers or reals:
+# - Some numeric fields are validated (e.g., positive, nonnegative, min/max).
+# BOOLEANS
+# - Preferred literals (always accepted): true, false. Alternatively:
+#                       yes/no,  on/off,  1/0
+# STRINGS
+# - Do NOT use single or double quotes:
+#   e.g., file: path/to/file.nc, NOT "path/to/file.nc" or 'path/to/file.nc'.
+# NULL / “unset” values
+# - Use any of the following to mark a parameter as intentionally unset:
+#       null/NULL/Null, none/None, ~
+# - You may also omit (#) the key entirely; missing and null are treated the same.
+# - We discourage using NaN to mean “unset”. Use null instead.
+#   NaNs are treated as numbers.
+# COMMENTS
+# - Use '#' for comments; everything after '#' on a line is considered a comment.
+#   Place comments on their own line or at the end of a parameter/value line.
+# IMPORTANT NOTE:
+# - Use only spaces for indentation (recommended: 4 spaces per level).
+# - Avoid TAB characters; they can cause parsing errors in some compilers.
+# REFERENCES & CONTEXT (recommended)
+# - Include brief inline comments with references for parameter values. 
+# =============================================================================
+dependencies:
+  mole_fraction_of_carbon_dioxide_in_air:
+    mode: file
+    name: co2                   # Variable name in file
+    filename: ../../sims_dev/input/mlo_co2_monthly_ppm.csv #.nc 
+    constant: 360
+    climatology_year: no        # no | YYYY ; repeat the selected year as a climatology
+    
+sources:
+   
+
+
+
