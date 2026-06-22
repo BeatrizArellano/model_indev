@@ -152,6 +152,7 @@ module read_config_yaml
       procedure :: get_param_num       => cfg_get_param_num
       procedure :: get_param_int       => cfg_get_param_int
       procedure :: get_param_logical   => cfg_get_param_logical  
+      procedure :: get_optional_str    => cfg_get_optional_str
       procedure :: get_param_str_list  => cfg_get_param_str_list    
       ! internals
       procedure, private :: walk_dictionary
@@ -249,7 +250,6 @@ contains
       class(ConfigParams), intent(inout) :: self
       character(len=*),    intent(in)    :: flat_key
       class(type_scalar),  intent(in)    :: s
-      logical :: ok
       real(rk) :: rval
       integer  :: ios, ival
       character(len=STRLEN) :: str, low
@@ -257,28 +257,43 @@ contains
       ! Treat empty / "null" / "~" / "none"/'nil' as YAML null ---
       str = trim(adjustl(s%string))
       low = to_lower(str)
+
       if (len_trim(str) == 0 .or. low=='null' .or. low=='~' .or. low=='none' .or. low=='nil') then
          call self%append_null(flat_key)
          return
       end if
 
-      ! Try real (covers ints in many builds too)
-      rval = s%to_real(default=0.0_rk, success=ok)
-      if (ok) then
-         call self%append_real(flat_key, rval); return
+      ! Absolute Unix paths must be strings.
+      if (len_trim(str) > 0) then
+         if (str(1:1) == '/') then
+            call self%append_str(flat_key, str)
+            return
+         end if
       end if
 
-      ! Try parse integer from string
-      str = adjustl(trim(s%string))
-      read(str, *, iostat=ios) ival
-      if (ios == 0) then
-         call self%append_int(flat_key, ival); return
+      ! Try boolean-like strings, except 1/0 should remain numeric
+      if (low == 'true' .or. low == 't' .or. low == 'yes' .or. low == 'y' .or. low == 'on') then
+         call self%append_log(flat_key, .true.)
+         return
+      end if
+      if (low == 'false' .or. low == 'f' .or. low == 'no' .or. low == 'n' .or. low == 'off') then
+         call self%append_log(flat_key, .false.)
+         return
       end if
 
-      ! Try boolean-like strings
-      low = to_lower(str)
-      if (is_true_string(low))  then; call self%append_log(flat_key, .true. ); return; end if
-      if (is_false_string(low)) then; call self%append_log(flat_key, .false.); return; end if
+      if (looks_numeric(str)) then
+         read(str, *, iostat=ios) ival
+         if (ios == 0) then
+            call self%append_int(flat_key, ival)
+            return
+         end if
+
+         read(str, *, iostat=ios) rval
+         if (ios == 0) then
+            call self%append_real(flat_key, rval)
+            return
+         end if
+      end if
 
       ! Fallback: store as string
       call self%append_str(flat_key, str)
@@ -494,6 +509,41 @@ contains
 
       if (present(found)) found = .true.
    end function cfg_get_param_logical
+
+   function cfg_get_optional_str(self, key, default, found, choices, trim_value, match_case, empty_ok, allow_numeric) result(s)
+      class(ConfigParams), intent(in) :: self
+      character(len=*),    intent(in) :: key
+      character(len=*),    intent(in),  optional :: default
+      logical,             intent(out), optional :: found
+      character(len=*),    intent(in),  optional :: choices(:)
+      logical,             intent(in),  optional :: trim_value
+      logical,             intent(in),  optional :: match_case
+      logical,             intent(in),  optional :: empty_ok
+      logical,             intent(in),  optional :: allow_numeric
+
+      character(:), allocatable :: s
+      character(:), allocatable :: def
+      logical :: do_trim, ok_empty, coerce
+
+      def = ''
+      if (present(default)) def = default
+
+      do_trim  = .true.;  if (present(trim_value))  do_trim  = trim_value
+      ok_empty = .true.;  if (present(empty_ok))    ok_empty = empty_ok
+      coerce   = .false.; if (present(allow_numeric)) coerce = allow_numeric
+
+      if (self%is_disabled(key)) then
+         s = ''
+         if (present(found)) found = .false.
+         return
+      end if
+
+      s = self%get_param_str( &
+         key, default=def, found=found, choices=choices, &
+         trim_value=do_trim, match_case=match_case, &
+         empty_ok=ok_empty, allow_numeric=coerce &
+      )
+   end function cfg_get_optional_str
 
 
    function cfg_get_param_num(self, key, default, found, required, min, max, positive, nonnegative, finite) result(val)
@@ -1043,8 +1093,6 @@ contains
    end function cfg_is_disabled
 
 
-
-
    !==================== Resolution & lookups ====================
 
    function resolve_key(self, query) result(fullkey)
@@ -1457,6 +1505,22 @@ contains
          out = left_trim_to(trim(prefix)//'.'//trim(key), PARAMLEN)
       end if
    end function join_key
+
+   pure logical function looks_numeric(s) result(tf)
+      character(len=*), intent(in) :: s
+      integer :: i
+      character :: c
+
+      tf = len_trim(s) > 0
+      do i = 1, len_trim(s)
+         c = s(i:i)
+         if (.not. ((c >= '0' .and. c <= '9') .or. c == '+' .or. c == '-' .or. &
+                  c == '.' .or. c == 'e' .or. c == 'E' .or. c == 'd' .or. c == 'D')) then
+            tf = .false.
+            return
+         end if
+      end do
+   end function looks_numeric
 
 
 end module read_config_yaml
