@@ -212,7 +212,12 @@ contains
       if (present(ok))     ok = .true.
       if (present(errmsg)) errmsg = ''
 
-      if (.not. self%is_prepared) return
+      if (.not. self%is_prepared) then
+         if (present(ok))     ok = .false.
+         if (present(errmsg)) errmsg = 'PhysicsForcing not prepared'
+         call stop_fatal('tick', 'PhysicsForcing not prepared', self%stop_on_error)
+         return
+      end if
 
       call self%dm%tick(model_time, lok, lmsg)
       if (.not. lok) then
@@ -356,7 +361,7 @@ contains
          time_mode      = DATA_TIME_REPEAT_YEAR
       end if
 
-      global_file = normalise_optional_string(params%get_param_str('forcing.filename', default='', empty_ok=.true.))
+      global_file = normalise_optional_string(params%get_optional_str('forcing.filename', default='', empty_ok=.true.))
 
       do i = 1, N_PHYS_FORCING
          call read_one_forcing_var(params, trim(phys_forcing_names(i)), global_file, specs(i), ok, errmsg)
@@ -436,10 +441,9 @@ contains
 
       case ('file')
          source_name = params%get_param_str('forcing.'//trim(id)//'.name', required=.true.)
-         file_name   = params%get_param_str('forcing.'//trim(id)//'.filename', default='', empty_ok=.true.)
+         file_name   = params%get_optional_str('forcing.'//trim(id)//'.filename', default='', empty_ok=.true., trim_value=.true., allow_numeric=.false.)
          time_name   = params%get_param_str('forcing.'//trim(id)//'.time_name', default='time')
-
-         file_name = normalise_optional_string(file_name)
+         file_name   = normalise_optional_string(file_name)
 
          if (len_trim(file_name) == 0) then
             if (len_trim(global_file) == 0) then

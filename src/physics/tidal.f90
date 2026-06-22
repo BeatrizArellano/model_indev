@@ -280,7 +280,7 @@ contains
       logical :: ok
       character(len=512) :: errmsg
 
-      fname = cfg%get_param_str('tides.filename', required=.true., trim_value=.true., empty_ok=.false.)
+      fname = cfg%get_param_str('tides.filename', required=.true., trim_value=.true., empty_ok=.false., allow_numeric=.false.)
       tol   = cfg%get_param_num('tides.tol_deg', default=0.1_rk, nonnegative=.true., max=10.0_rk, finite=.true.)
 
       call parse_text_table(fname, table)

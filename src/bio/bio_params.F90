@@ -104,11 +104,11 @@ contains
         type(ConfigParams),  intent(in)   :: cfg_params
         type(BioParams), intent(out)      :: bio
         bio = default_bio_params()
-        bio%config_file = cfg_params%get_param_str('biogeochemistry.config_file', default='fabm.yaml', trim_value=.true.)
-        bio%input_cfg_file = remove_null_name(cfg_params%get_param_str('biogeochemistry.input_config', default='off', trim_value=.true.))
-        bio%event_cfg_file = remove_null_name(cfg_params%get_param_str('biogeochemistry.events_config', default='off', trim_value=.true.))
+        bio%config_file = cfg_params%get_optional_str('biogeochemistry.config_file', default='fabm.yaml', trim_value=.true.)
+        bio%input_cfg_file = remove_null_name(cfg_params%get_optional_str('biogeochemistry.input_config', default='off', trim_value=.true.))
+        bio%event_cfg_file = remove_null_name(cfg_params%get_optional_str('biogeochemistry.events_config', default='off', trim_value=.true.))
         ! ---------------- Initial profiles ----------------
-        bio%input_profiles_file = remove_null_name(cfg_params%get_param_str('biogeochemistry.input_profiles', default='off', trim_value=.true.))
+        bio%input_profiles_file = remove_null_name(cfg_params%get_optional_str('biogeochemistry.input_profiles', default='off', trim_value=.true.))
         ! ---------------- Flags ----------------
         bio%sediments_enabled = cfg_params%get_param_logical('biogeochemistry.sediments.enabled', default=def_sed_enabled)
         bio%repair  = cfg_params%get_param_logical('biogeochemistry.repair_state', default=def_repair)
