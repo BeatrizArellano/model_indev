@@ -247,6 +247,9 @@ contains
         logical,          intent(out) :: ok
         character(*),     intent(out) :: errmsg
 
+        ok = .false.
+        errmsg = ''
+
         call parse_datetime_str(trim(txt), dt%year, dt%month, dt%day, &
                                 dt%hour, dt%minute, dt%second, &
                                 dt%has_time, ok, errmsg)

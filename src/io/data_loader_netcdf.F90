@@ -82,7 +82,7 @@ contains
       character(:), allocatable :: dimnames(:)
       integer, allocatable :: dimlens(:)
       real(rk), allocatable :: time_orig(:)
-      logical :: pres, ok_parse
+      logical :: pres, ok_parse, lok
       logical :: has_time, has_lat, has_lon
       logical :: is_monotonic, has_equal_consecutive
       integer :: ntime, i_notmon, i
@@ -172,8 +172,9 @@ contains
          return
       end if
 
-      call find_horizontal_coordinates(db, location, scan, ok, errmsg, max_sep_deg)
-      if (.not. ok) then
+      call find_horizontal_coordinates(db, location, scan, lok, errmsg, max_sep_deg)
+      if (.not. lok) then
+         ok = .false.
          call nc_close(db)
          return
       end if
@@ -226,8 +227,11 @@ contains
                                           scan%lat_name, scan%lon_name, scan%has_latlon, &
                                           scan%i0, scan%i1, scan%yi, scan%xi)) then
             errmsg = 'Variable '//trim(required_vars(i))// &
-                     ' contains NaN/Inf values over the requested interval in '//trim(path)//'.'
+                     ' contains NaN/Inf values in '//trim(path)// &
+                     ' during the simulation period. Verify the forcing data for this location. '
+            
             call nc_close(db)
+            ok = .false. 
             return
          end if
       end do
@@ -633,7 +637,6 @@ contains
       call read_netcdf_timeseries_at_point(db, vname, time_name, i0, i1, has_latlon, lat_name, lon_name, yi, xi, buf)
       if (any(.not. ieee_is_finite(buf))) good = .false.
    end function is_var_valid_in_period
-
 
    subroutine clear_scan(scan)
       type(NetcdfScan), intent(inout) :: scan

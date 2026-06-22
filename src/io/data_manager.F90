@@ -195,8 +195,19 @@ contains
       if (present(ok))     ok = .true.
       if (present(errmsg)) errmsg = ''
 
-      if (.not. self%is_init)   return
-      if (.not. self%have_curr) return
+      if (.not. self%is_init) then
+         if (present(ok))     ok = .false.
+         if (present(errmsg)) errmsg = 'DataManager%tick: DataManager not initialized'
+         call stop_fatal('tick', 'DataManager not initialized', self%stop_on_error)
+         return
+      end if
+
+      if (.not. self%have_curr) then
+         if (present(ok))     ok = .false.
+         if (present(errmsg)) errmsg = 'DataManager%tick: current data are not loaded'
+         call stop_fatal('tick', 'current data are not loaded', self%stop_on_error)
+         return
+      end if
 
       ! Full-memory mode has no yearly switching.
       if (.not. self%state%cfg%load_yearly) return

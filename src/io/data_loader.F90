@@ -109,7 +109,7 @@ contains
 
             call scan_netcdf_file(files(j)%path, specs, location, scan_start_datetime, scan_end_datetime, &
                                  calendar_cfg%name(), state%nc_scans(j), lok, lmsg)
-
+                                 
             if (.not. lok) then
                errmsg = trim(lmsg)
                return
