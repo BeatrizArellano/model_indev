@@ -84,13 +84,13 @@ cp external/driver/fabm_driver.h external/fabm/src/drivers/shelf_model/
 
 Additional FABM-based biogeochemical models can be added by placing their source code in the `external/fabm-extra` directory.
 
-For example:
+For example, to install the biogeochemical model used in the example simulations, run:
 
 ```bash
 git clone https://github.com/BeatrizArellano/ecosed.git external/fabm-extra/ecosed
 ```
 
-Next, edit `CMakeUserPresets.json` and add the model names to `FABM_EXTRA_MODULES` as a comma-separated list:
+Next, edit `CMakeUserPresets.json` and add the model name to `FABM_EXTRA_MODULES`. For this particular example, the configuration is:
 
 ```json
 "configurePresets": [
@@ -104,10 +104,29 @@ Next, edit `CMakeUserPresets.json` and add the model names to `FABM_EXTRA_MODULE
       "USE_NETCDF": "ON",
 
       "FABM_EXTRA_DIR": "${sourceDir}/external/fabm-extra",
-      "FABM_EXTRA_MODULES": "ecosed,modelX,modelY"
+      "FABM_EXTRA_MODULES": "ecosed"
     }
   }
 ]
+```
+
+If more than one model needs to be installed, list the model names in `FABM_EXTRA_MODULES` as a comma-separated list. Each name must match a subdirectory inside `external/fabm-extra`. For example:
+
+```bash
+external/fabm-extra/model1
+external/fabm-extra/model2
+external/fabm-extra/model3
+```
+should be configured as:
+
+```json
+"FABM_EXTRA_MODULES": "model1,model2,model3"
+```
+
+If no third-party models are required, there is no need to edit `CMakeUserPresets.json`; `FABM_EXTRA_MODULES` can be left empty. 
+
+```json
+"FABM_EXTRA_MODULES": ""
 ```
 
 
