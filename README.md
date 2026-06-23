@@ -80,6 +80,37 @@ mkdir external/fabm/src/drivers/shelf_model
 cp external/driver/fabm_driver.h external/fabm/src/drivers/shelf_model/
 ```
 
+## Optional: Integrate third-party biogeochemical models
+
+Additional FABM-based biogeochemical models can be added by placing their source code in the `external/fabm-extra` directory.
+
+For example:
+
+```bash
+git clone https://github.com/BeatrizArellano/ecosed.git external/fabm-extra/ecosed
+```
+
+Next, edit `CMakeUserPresets.json` and add the model names to `FABM_EXTRA_MODULES` as a comma-separated list:
+
+```json
+"configurePresets": [
+  {
+    "name": "release",
+    "displayName": "Release",
+    "binaryDir": "build/release",
+    "cacheVariables": {
+      "CMAKE_BUILD_TYPE": "Release",
+      "USE_OPENMP": "ON",
+      "USE_NETCDF": "ON",
+
+      "FABM_EXTRA_DIR": "${sourceDir}/external/fabm-extra",
+      "FABM_EXTRA_MODULES": "ecosed,modelX,modelY"
+    }
+  }
+]
+```
+
+
 ## Building the model
 From the repository root, run (Ignoring the Warnings):
 
