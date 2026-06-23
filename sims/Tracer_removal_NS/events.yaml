@@ -1,0 +1,50 @@
+# ===================== YAML conventions (model config)=====================
+# NUMBERS
+# - Numbers may be written as integers or reals:
+# - Some numeric fields are validated (e.g., positive, nonnegative, min/max).
+# BOOLEANS
+# - Preferred literals (always accepted): true, false. Alternatively:
+#                       yes/no,  on/off,  1/0
+# STRINGS
+# - Do NOT use single or double quotes:
+#   e.g., file: path/to/file.nc, NOT "path/to/file.nc" or 'path/to/file.nc'.
+# NULL / “unset” values
+# - Use any of the following to mark a parameter as intentionally unset:
+#       null/NULL/Null, none/None, ~
+# - You may also omit (#) the key entirely; missing and null are treated the same.
+# - We discourage using NaN to mean “unset”. Use null instead.
+#   NaNs are treated as numbers.
+# COMMENTS
+# - Use '#' for comments; everything after '#' on a line is considered a comment.
+#   Place comments on their own line or at the end of a parameter/value line.
+# IMPORTANT NOTE:
+# - Use only spaces for indentation (recommended: 4 spaces per level).
+# - Avoid TAB characters; they can cause parsing errors in some compilers.
+# REFERENCES & CONTEXT (recommended)
+# - Include brief inline comments with references for parameter values. 
+# =============================================================================
+events:
+  alk_removal:
+    enabled: yes                 # Apply this event? [yes, no]
+    type: tracer_removal         # Type of event: tracer_pulse, tracer_removal, trawling.
+    tracer: carb_alk	           # FABM tracer name following the format modelname_variable.
+    mode:   amount               # Application mode: amount, rate.
+    # Define rate when mode=rate
+    rate:   3.472e-2            # Removal rate per square meter [tracer units m-2 s-1]. Applied continuously during the event duration.
+                                # The final amount removed is constrained by availability. 
+    # Define amount when mode=amount
+    amount: 3000                # Amount of tracer to be removed per square meter [tracer units m-2]
+                                # Removal rate is adapted throughout the duration of the event depending on the remaining quantity to remove.
+                                # The exact amount removed will be constrained by tracer availability at that depth. 
+    duration: 1d                # Event duration. Ends with s (seconds), m (minutes), h (hours) or d (days); default: 1h.  
+    location: bottom            # Location in the water column to remove the tracer: surface, bottom, depth; default: depth.
+    # Define depth when location=depth
+    depth:     78.0             # [m] Depth below surface to remove the tracer
+    thickness: 5.0              # [m] Thickness for distributing the tracer in that depth range (Optional).
+                                # The actual application thickness may be smaller because it is adapted to grid geometry.
+    dates:                      # List of start date-times to apply the event
+      - 1993-03-15 12:00       # Date or datetime format [yyyy-mm-dd or yyyy-mm-dd HH:MM[:SS]]
+     
+
+
+

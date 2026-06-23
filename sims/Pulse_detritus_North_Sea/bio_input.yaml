@@ -24,11 +24,11 @@
 # - Include brief inline comments with references for parameter values. 
 # =============================================================================
 dependencies:
-  mole_fraction_of_carbon_dioxide_in_air:
-    mode: file
+  mole_fraction_of_carbon_dioxide_in_air:        # Name of FABM depencency
+    mode: file                  # constant, file, off. 
     name: co2                   # Variable name in file
-    filename: ../../sims_dev/input/mlo_co2_monthly_ppm.csv #.nc 
-    constant: 360
+    filename: ../../sims_dev/input/mlo_co2_monthly_ppm.csv # Path to file
+    constant: 360               # Constant value if mode is constant. 
     climatology_year: no        # no | YYYY ; repeat the selected year as a climatology
     
 sources:

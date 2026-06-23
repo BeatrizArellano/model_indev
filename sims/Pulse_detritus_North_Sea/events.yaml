@@ -25,17 +25,23 @@
 # =============================================================================
 events:
   detritus_pulse:
-    enabled: yes
-    type: tracer_pulse          # Type of event: tracer_pulse, trawling
-    tracer: det2_det
-    mode:   amount              # [amount, rate]
-    rate:   3.0e-3              # [tracer units s-1] aplied over duration
-    amount: 528                 # [tracer units m-2] delivered over duration
-    duration: 1h                # Ends with s (seconds), m (minutes), h (hours) or d (days) [default: 1h].  
-    depth:     78.0             # [m] Depth below surface to inject the tracer
-    thickness: 5.0             # [m] optional, for distributing the solute in that depth range
-    dates:                      # List of date-times to apply the event
-      - 1993-03-15 12:00        # Start date [yyyy-mm-dd or yyyy-mm-dd HH:MM[:SS]]
+    enabled: yes                 # Apply this event? yes, no.
+    type: tracer_pulse           # Type of event: tracer_pulse, tracer_removal, trawling.
+    tracer: det2_det	         # FABM tracer name following the format modelname_variable.
+    mode:   amount               # Application mode: amount, rate.
+    # Define rate when mode=rate
+    rate:   6.11e-3             # Input rate per square meter [tracer units m-2 s-1]. Applied continuously during the event duration.
+    # Define amount when mode=amount
+    amount: 528                 # Amount of tracer to be added per square meter [tracer units m-2]
+                                # Distributed uniformly over the event duration.
+    duration: 1h                # Event duration. Ends with s (seconds), m (minutes), h (hours) or d (days); default: 1h.  
+    location: depth             # Location in the water column to introduce the tracer: surface, bottom, depth; default: depth.
+    # Define depth when location=depth
+    depth:     78.0             # [m] Depth below surface to introduce the tracer
+    thickness: 5.0              # [m] Thickness for distributing the tracer in that depth range (Optional).
+                                # The actual application thickness may be smaller because it is adapted to grid geometry.
+    dates:                      # List of start date-times to apply the event
+      - 1993-03-15 12:00        # Date or datetime format [yyyy-mm-dd or yyyy-mm-dd HH:MM[:SS]]
       - 1995-07-15
      
 

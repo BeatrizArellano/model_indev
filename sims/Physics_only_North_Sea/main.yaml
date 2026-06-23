@@ -67,7 +67,7 @@ data:
     load_yearly: no               # Load data every year or load the full time-series for the simulation [Default: no].
 # ---------------------Surface forcing data---------------------------------------------------
 forcing:                                        # Variables for surface forcing
-    filename: ../../sims_dev/input/era5_forcing_sites_1970_2025.nc   # Global filename
+    filename: /home/polaris/Documents/dev/MyModel_indev/sims_dev/input/era5_forcing_sites_1970_2025.nc #../../sims_dev/input/era5_forcing_sites_1970_2025.nc   # Global filename
     repeat_forcing_year: no                     # no | YYYY ; repeat the selected year for all forcing variables
     surf_air_temp:                              # Surface Air temperature [°C]
         mode:     file                            # Input Mode [file: Read from file, constant: set a constant value]
