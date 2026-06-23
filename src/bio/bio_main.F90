@@ -1204,7 +1204,16 @@ contains
 
                     end if
                 end do
-            end if    
+            end if  
+            
+            !------------------------------------------------------
+            ! Apply instantaneous external events (e.g. trawling)
+            ! or events that directly modify the state (e.g. tracer removal)
+            !------------------------------------------------------
+            if (BE%has_events .and. EVT%any_events) then
+                call EVT%apply_direct_state_changes(BE, current_time, dt_sub)
+                call EVT%apply_instantaneous(BE, current_time + dt_sub)
+            end if
 
             !-----------------------------------------------------------------------------
             ! Repair state for interior tracers after vertical redistribution of tracers
@@ -1217,18 +1226,11 @@ contains
             call BE%model%finalize_outputs()
 
             call update_bio_diagnostics(BE) 
-
-            !------------------------------------------------------
-            ! Apply instantaneous external events (e.g. trawling)
-            !------------------------------------------------------
-            if (BE%has_events .and. EVT%any_events) then
-                call EVT%apply_instantaneous(BE, current_time + dt_sub)
-            end if
             
             ! Advance time
             dt_done = dt_done + dt_sub     
         end do     
-        !----- End of inner loop
+        !----- End of inner loop (Adaptive substeps)
 
         ! Compute totals for conserved quantities if needed
         if (BE%params%output_conserved .and. BE%n_conserved > 0) then

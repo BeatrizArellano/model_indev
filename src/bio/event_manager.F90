@@ -1,20 +1,22 @@
 module event_manager
    use bio_types,        only: BioEnv
    use cf_time_utils,    only: seconds_between_datetimes
-   use event_types,      only: Event, EVENT_TRACER_PULSE, EVENT_TRAWLING
+   use event_types,      only: Event, EVENT_TRACER_PULSE, EVENT_TRACER_REMOVAL, EVENT_TRAWLING
    use precision_types,  only: rk, lk
    use read_config_yaml, only: ConfigParams
    use str_utils,        only: to_lower
    use time_types,       only: DateTime, CFCalendar
    use time_utils,       only: datetime_from_string, datetime_to_str, parse_interval_to_seconds
    use tracer_pulse,     only: tracer_pulse_prepare, tracer_pulse_apply
+   use tracer_removal,   only: tracer_removal_prepare, tracer_removal_apply
 
    implicit none
    private
 
    public :: EventManager
 
-   character(len=12), parameter :: event_type_choices(2) = [character(len=12) :: EVENT_TRACER_PULSE, EVENT_TRAWLING]
+   character(len=16), parameter :: event_type_choices(3) = [character(len=16) :: &
+                                                            EVENT_TRACER_PULSE, EVENT_TRACER_REMOVAL, EVENT_TRAWLING]
 
    type :: EventManager
       logical :: is_init          = .false.
@@ -25,11 +27,12 @@ module event_manager
       type(ConfigParams) :: events_cfg
       type(Event),       allocatable :: events(:)
    contains
-      procedure :: init                => em_init
-      procedure :: clear               => em_clear
-      procedure :: apply_tendencies    => em_apply_tendencies
-      procedure :: apply_instantaneous => em_apply_instantaneous
-      procedure :: compute_next_dt     => em_compute_next_dt   
+      procedure :: init                       => em_init
+      procedure :: clear                      => em_clear
+      procedure :: apply_tendencies           => em_apply_tendencies
+      procedure :: apply_instantaneous        => em_apply_instantaneous
+      procedure :: apply_direct_state_changes => em_apply_direct_state_changes
+      procedure :: compute_next_dt            => em_compute_next_dt   
       !--- Private
       procedure, private :: read_events    => em_read_events
       procedure, private :: prepare_events => em_prepare_events
@@ -131,6 +134,50 @@ contains
 
       end do
    end subroutine em_apply_instantaneous
+
+   ! Direct state-change events are applied at the end of the substep,
+   ! but their amount is integrated over the interval [model_time, model_time + dt].
+   ! EventManager ensures substeps land on event start/end boundaries.
+   subroutine em_apply_direct_state_changes(self, BE, model_time, dt)
+      class(EventManager), intent(inout) :: self
+      type(BioEnv),        intent(inout) :: BE
+      real(rk),            intent(in)    :: model_time
+      real(rk),            intent(in)    :: dt
+
+      integer  :: ievent
+      real(rk) :: t0, t1, t0_evt, t1_evt, dt_evt
+      real(rk) :: eps_t
+
+      if (.not. self%any_events) return
+      if (dt <= 0._rk) return
+
+      t0 = model_time
+      t1 = model_time + dt
+      eps_t = 1.0e-10_rk * max(1.0_rk, abs(t0), abs(t1), dt)
+
+      do ievent = 1, size(self%events)
+
+         if (.not. self%events(ievent)%changes_state_directly) cycle
+         if (self%events(ievent)%is_instantaneous) cycle
+
+         t0_evt = max(t0, self%events(ievent)%t_start)
+         t1_evt = min(t1, self%events(ievent)%t_end)
+         dt_evt = t1_evt - t0_evt
+
+         if (dt_evt <= eps_t) cycle
+
+         select case (trim(self%events(ievent)%event_type))
+
+         case (EVENT_TRACER_REMOVAL)
+            call tracer_removal_apply(self%events(ievent), BE, t0_evt, dt_evt)
+
+         case default
+            call fatal('event_manager:apply_state_changes', 'Event is not implemented to change state directly: '// &
+                        trim(self%events(ievent)%event_type))
+         end select
+
+      end do
+   end subroutine em_apply_direct_state_changes
 
 
    ! Compute the needed time-step to land exactly on the start/end of an event
@@ -383,6 +430,9 @@ contains
 
             case (EVENT_TRACER_PULSE)
                call tracer_pulse_prepare(self%events(i), self%events_cfg, BE)
+
+            case (EVENT_TRACER_REMOVAL)
+               call tracer_removal_prepare(self%events(i), self%events_cfg, BE)
 
             case (EVENT_TRAWLING)
                !call trawling_prepare_event(self%events(i), self%events_cfg)

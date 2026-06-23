@@ -5,11 +5,12 @@ module event_types
     private
 
     public :: Event, EventData
-    public :: EVENT_NONE, EVENT_TRACER_PULSE, EVENT_TRAWLING
+    public :: EVENT_NONE, EVENT_TRACER_PULSE, EVENT_TRAWLING, EVENT_TRACER_REMOVAL
 
-    character(len=*), parameter :: EVENT_NONE         = 'none'
-    character(len=*), parameter :: EVENT_TRACER_PULSE = 'tracer_pulse'
-    character(len=*), parameter :: EVENT_TRAWLING     = 'trawling'
+    character(len=*), parameter :: EVENT_NONE           = 'none'
+    character(len=*), parameter :: EVENT_TRACER_PULSE   = 'tracer_pulse'
+    character(len=*), parameter :: EVENT_TRACER_REMOVAL = 'tracer_removal'
+    character(len=*), parameter :: EVENT_TRAWLING       = 'trawling'
 
     ! Polymorphic type to store any event details 
     ! This will be extended by the particular event module
@@ -27,8 +28,13 @@ module event_types
         integer  :: handler_idx = 0
         integer  :: definition_idx = 0
         integer  :: occurrence_idx = 0
-        logical  :: is_instantaneous = .false.
-        logical  :: changes_tendency = .false.
+
+        ! --- Type of events
+        logical  :: is_instantaneous       = .false.
+        logical  :: changes_tendency       = .false.
+        logical  :: changes_state_directly = .false.
+
+        ! --- Status
         logical  :: was_triggered    = .false.
         ! Specific details for the event
         class(EventData), allocatable :: details
@@ -82,9 +88,10 @@ contains
         self%handler_idx = 0
         self%definition_idx    = 0
         self%occurrence_idx    = 0
-        self%is_instantaneous  = .false.
-        self%was_triggered     = .false.
+        self%is_instantaneous  = .false.        
         self%changes_tendency  = .false.
+        self%changes_state_directly = .false.
+        self%was_triggered     = .false.
     end subroutine event_clear
 
 end module event_types
