@@ -7,7 +7,7 @@ module bio_main
     use physics_forcing,     only: ForcingSnapshot
     use geo_utils,           only: LocationInfo    
     use grids,               only: VerticalGrid
-    use initial_profiles,    only: set_initial_profiles
+    use initial_profiles,    only: set_initial_profiles, set_initial_sediment_values
     use molecular_diffusion, only: molecular_diffusivity, viscosity
     use numerical_stability, only: compute_transport_safe_dt, compute_reaction_safe_dt
     use physics_types,       only: PhysicsState
@@ -663,6 +663,16 @@ contains
             end if
             write(*,'(A)') '  ✓ Biogeochemistry state variables initialised successfully.'
         end if
+
+
+        !----------------------------------------
+        ! Initialise values in the sediments (if applicable)
+        !----------------------------------------
+        if (BE%params%sediments_enabled .and. BE%has_input) then
+            call set_initial_sediment_values(BE%params%input_cfg_file, BE%model,BE%BS%interior_state,BE%nsed, ok, msg)
+            if (.not. ok) error stop 'Setting initial sediment values failed: '//trim(msg)
+            write(*,'(A)') '  ✓ Sediment initial values set successfully.'
+        end if 
 
         !------------------------------------------
         ! Set initial profiles from file

@@ -1,10 +1,12 @@
 module initial_profiles 
     use array_utils,       only: is_monotonic_increasing, is_monotonic_decreasing 
     use precision_utils,   only: is_equal_array
+    use fabm,              only: type_fabm_model
     use find_utils,        only: has_name
     use grids,             only: VerticalGrid, default_profile_depth_tol
     use path_utils,        only: path_has_extension
     use precision_types,   only: rk
+    use read_config_yaml,  only: ConfigParams, PARAMLEN
     use state_loader,      only: StateData, build_state_from_tidy_table
     use str_utils,         only: inttostr, to_upper
     use text_parser,       only: TextTable, parse_text_table
@@ -14,6 +16,7 @@ module initial_profiles
     private
 
     public :: set_initial_profiles
+    public :: set_initial_sediment_values
 
     integer, parameter  :: STATE_FORMAT_UNKNOWN = 0
     integer, parameter  :: STATE_FORMAT_TIDY    = 1
@@ -57,6 +60,75 @@ contains
         call state%free()
         if (present(ok)) ok = .true.
     end subroutine set_initial_profiles
+
+
+    subroutine set_initial_sediment_values(input_cfg_file, FabmMod, state, nsed, ok, errmsg)
+        character(*),            intent(in)    :: input_cfg_file
+        class(type_fabm_model),  pointer, intent(in) :: FabmMod
+        real(rk),                intent(inout) :: state(:,:)
+        integer,                 intent(in)    :: nsed
+        logical,                 intent(out)   :: ok
+        character(*),            intent(out)   :: errmsg
+
+        type(ConfigParams) :: cfg
+
+        character(len=PARAMLEN), allocatable :: tracer_names(:)
+        character(:), allocatable :: tracer_name
+        character(:), allocatable :: parameter_path
+
+        integer  :: i, ivar
+        real(rk) :: initial_value
+        logical  :: found
+
+        ok = .false.
+        errmsg = ''
+
+        ! Checks
+        if (.not. associated(FabmMod)) then
+            errmsg = 'Cannot set sediment initial values: FABM model is not associated.'
+            return
+        end if
+
+        ! Read the biological-input configuration.
+        call cfg%init()
+        call cfg%load_yaml_content(input_cfg_file)
+
+        ! The block is optional.
+        if (.not. cfg%has_key('init_sediments')) then
+            ok = .true.
+            return
+        end if
+
+        tracer_names = cfg%get_child_keys('init_sediments')
+
+        do i = 1, size(tracer_names)
+            tracer_name   = trim(tracer_names(i))
+            parameter_path = 'init_sediments.' // tracer_name
+
+            initial_value = cfg%get_param_num(parameter_path, required=.true., finite=.true., min=0.0_rk)
+
+            ! Find the corresponding FABM interior state variable.
+            found = .false.
+
+            do ivar = 1, size(FabmMod%interior_state_variables)
+                if (trim(FabmMod%interior_state_variables(ivar)%name) == tracer_name) then
+                    found = .true.
+                    exit
+                end if
+            end do
+
+            if (.not. found) then
+                errmsg = 'Unknown FABM interior variable in init_sediments: "' // &
+                        tracer_name // '".'
+                return
+            end if
+
+            ! Sediment layers occupy indices 1:nsed.
+            state(1:nsed, ivar) = initial_value
+        end do
+
+        ok = .true.
+    end subroutine set_initial_sediment_values
 
 
 
