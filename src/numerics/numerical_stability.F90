@@ -564,7 +564,7 @@ contains
   ! dt_safe         Maximum safe reaction time step [s]
   !===============================================================================
   subroutine compute_reaction_safe_dt(BE, tendency_int, tendency_sf, tendency_bt, &
-                                    dt_left, dt_safe)
+                                      dt_left, dt_safe, limiting_name)
 
       use bio_types, only: BioEnv
 
@@ -572,6 +572,7 @@ contains
       real(rk),     intent(in)  :: tendency_int(:,:), tendency_sf(:), tendency_bt(:)
       real(rk),     intent(in)  :: dt_left
       real(rk),     intent(out) :: dt_safe
+      character(len=*), intent(out) :: limiting_name
 
       integer  :: nz, nint, nsfc, nbtm
       integer  :: k, ivar
@@ -584,6 +585,7 @@ contains
       nbtm = BE%BS%n_bottom
 
       dt_safe = dt_left
+      limiting_name   = 'none'
 
       !---------------------------------------------------------------
       ! Interior variables
@@ -605,7 +607,10 @@ contains
 
                       if (Cnew < Cmin) then
                           dt_here = (C - Cmin) / (-dCdt)
-                          dt_safe = min(dt_safe, dt_here)
+                          if (dt_here < dt_safe) then
+                            dt_safe = dt_here
+                            limiting_name   = trim(BE%model%interior_state_variables(ivar)%name)
+                          end if
                       end if
                   end if
 
@@ -616,7 +621,10 @@ contains
 
                       if (Cnew > Cmax) then
                           dt_here = (Cmax - C) / dCdt
-                          dt_safe = min(dt_safe, dt_here)
+                          if (dt_here < dt_safe) then
+                            dt_safe = dt_here
+                            limiting_name   = trim(BE%model%interior_state_variables(ivar)%name)
+                          end if
                       end if
                   end if
 
@@ -640,7 +648,10 @@ contains
 
                   if (Cnew < Cmin) then
                       dt_here = (C - Cmin) / (-dCdt)
-                      dt_safe = min(dt_safe, dt_here)
+                      if (dt_here < dt_safe) then
+                        dt_safe = dt_here
+                        limiting_name   = trim(BE%model%surface_state_variables(ivar)%name)
+                      end if
                   end if
               end if
 
@@ -649,7 +660,10 @@ contains
 
                   if (Cnew > Cmax) then
                       dt_here = (Cmax - C) / dCdt
-                      dt_safe = min(dt_safe, dt_here)
+                      if (dt_here < dt_safe) then
+                        dt_safe = dt_here
+                        limiting_name   = trim(BE%model%surface_state_variables(ivar)%name)
+                      end if
                   end if
               end if
 
@@ -672,7 +686,10 @@ contains
 
                   if (Cnew < Cmin) then
                       dt_here = (C - Cmin) / (-dCdt)
-                      dt_safe = min(dt_safe, dt_here)
+                      if (dt_here < dt_safe) then
+                        dt_safe = dt_here
+                        limiting_name = trim(BE%model%bottom_state_variables(ivar)%name)
+                    end if
                   end if
               end if
 
@@ -681,7 +698,10 @@ contains
 
                   if (Cnew > Cmax) then
                       dt_here = (Cmax - C) / dCdt
-                      dt_safe = min(dt_safe, dt_here)
+                      if (dt_here < dt_safe) then
+                          dt_safe = dt_here
+                          limiting_name = trim(BE%model%bottom_state_variables(ivar)%name)
+                      end if
                   end if
               end if
 
