@@ -758,9 +758,11 @@ contains
 
         integer  :: nz, i, ivar, k, nint, nsfc, nbtm
         real(rk) :: istep_rk, dt_main, dt_sub, model_time, current_time
+        real(rk) :: dt_boundary, dt_numerical, dt_tol
         integer  :: isub
         real(rk) :: dt_done, dt_left
         real(rk) :: dt_transport_safe, dt_reaction_safe, dt_to_next_event
+        character(len=128) :: reaction_limiter_name
         integer  :: kwb, kws, ksb, kss, kswi, nwat, nsed, nfaces_wat
         real(rk) :: vel_swi
         real(rk) :: c_w, c_s, M_old, M_new
@@ -770,7 +772,8 @@ contains
         real(rk) :: Tbot, Sbot, Pbot
         real(rk) :: mu_dyn, nu_kin
         logical  :: enforce_nonneg
-        integer  :: ierr          
+        integer  :: ierr   
+
 
         if (.not. BE%is_init) then
             write(*,*) 'integrate_bio_fabm: Biogeochemistry is not initialised.'
@@ -944,15 +947,30 @@ contains
             !----------------------------------------------------------------
             ! Compute adaptive time-step for integrating tendencies safely
             !----------------------------------------------------------------
-            call compute_reaction_safe_dt(BE, BE%tendency_int_total, BE%tendency_sf, BE%tendency_bt, dt_left, dt_reaction_safe)
-            dt_sub = min(dt_left, dt_transport_safe, dt_reaction_safe, dt_to_next_event)
+            call compute_reaction_safe_dt(BE, BE%tendency_int_total, BE%tendency_sf, BE%tendency_bt, dt_left, dt_reaction_safe,reaction_limiter_name)
 
+            ! Time constraints due to reaching a known temporal boundary
+            dt_boundary = min(dt_left, dt_to_next_event)
+
+            ! Time constraints imposed by numerical stability / positivity
+            dt_numerical = min(dt_transport_safe, dt_reaction_safe)
+
+            ! Actual step
+            dt_sub = min(dt_boundary, dt_numerical)
+            dt_tol = 1.0e-10_rk * max(1.0_rk, dt_main)
+            
             if (dt_sub < BE%params%min_dt) then
-                write(*,*) 'integrate_bio_fabm: adaptive dt_sub below min_dt.'
-                write(*,*) 'dt_sub=', dt_sub, ' min_dt=', BE%params%min_dt
-                write(*,*) 'dt_transport_safe=', dt_transport_safe
-                write(*,*) 'dt_reaction_safe=', dt_reaction_safe
-                error stop
+                ! Only stop if it is a numerical constraint
+                if (dt_numerical < dt_boundary - dt_tol) then
+                    write(*,*) 'integrate_bio_fabm: adaptive dt below min_dt.'
+                    write(*,*) 'dt_sub=', dt_sub, ' min_dt=', BE%params%min_dt
+                    write(*,*) 'Variable = ', trim(reaction_limiter_name)
+                    write(*,*) 'dt_transport_safe=', dt_transport_safe
+                    write(*,*) 'dt_reaction_safe=', dt_reaction_safe
+                    write(*,*) 'dt_left=', dt_left
+                    write(*,*) 'dt_to_next_event=', dt_to_next_event
+                    error stop
+                end if
             end if
 
             !-----------------------------------------------------------------------------
