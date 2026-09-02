@@ -23,15 +23,15 @@ module grids
   integer,  parameter :: min_nz     = 3
 
   ! Sediment-grid defaults
-  real(rk), parameter :: sed_growth_factor = 1.2_rk     ! geometric growth
-  real(rk), parameter :: sed_min_dz        = 1.0e-4_rk  ! minimum allowed thickness for any sediment layer [m]
-  real(rk), parameter :: sed_min_depth     = 3.0e-2_rk  ! Minimum depth for sediments [m] (3 cm)
-  real(rk), parameter :: sed_default_dzmin = 1.0e-3_rk  ! default top layer [m]  (1 mm)
-  real(rk), parameter :: sed_default_dzmax = 2.0e-2_rk  ! default max layer [m]  (2 cm)
-  real(rk), parameter :: btm_wat_min_dz    = 0.1_rk     ! minimum allowed thickness for the bottom water layer [m]
-  real(rk), parameter :: btm_wat_max_dz    = 1.0_rk     ! Maximum allowed thickness for the bottom water layer [m]
-  real(rk), parameter :: btm_wat_default_dz = 0.1_rk    ! Default thickness for the bottom water layer [m]
-  real(rk), parameter :: def_depth_tol     = 1.0e-6_rk  ! Default tolerance to compare depths in grid
+  real(rk), parameter :: sed_min_dz          = 1.0e-4_rk  ! minimum allowed thickness for any sediment layer [m]
+  real(rk), parameter :: sed_min_depth       = 3.0e-2_rk  ! Minimum depth for sediments [m] (3 cm)
+  real(rk), parameter :: sed_default_dzmin   = 1.0e-3_rk  ! default top layer [m]  (1 mm)
+  real(rk), parameter :: sed_default_dzmax   = 2.0e-2_rk  ! default max layer [m]  (2 cm)
+  real(rk), parameter :: sed_default_gfactor = 1.1_rk     ! geometric growth
+  real(rk), parameter :: btm_wat_min_dz      = 0.1_rk     ! minimum allowed thickness for the bottom water layer [m]
+  real(rk), parameter :: btm_wat_max_dz      = 1.0_rk     ! Maximum allowed thickness for the bottom water layer [m]
+  real(rk), parameter :: btm_wat_default_dz  = 0.1_rk     ! Default thickness for the bottom water layer [m]
+  real(rk), parameter :: def_depth_tol       = 1.0e-6_rk  ! Default tolerance to compare depths in grid
 
 contains
 
@@ -209,7 +209,7 @@ contains
     !   - z(i)      = 0.5*(z_w(i-1) + z_w(i)), 1=bottom … nz=top (interface)
     !
     ! Layer thicknesses are constructed TOP-DOWN as a geometric sequence:
-    !   dz_top = dz_min, then dz_top*growth, dz_top*growth^2, ...
+    !   dz_top = dz_min, then dz_top*dz_growth_factor, dz_top*dz_growth_factor^2, ...
     !   until dz reaches dz_max; below that all layers have dz = dz_max.
     !
     ! Then the sequence is reversed to match bottom-first indexing.
@@ -222,7 +222,7 @@ contains
         type(VerticalGrid), intent(out) :: grid
         integer,  optional, intent(out) :: ierr          ! 0 is OK. >0 error codes
 
-        real(rk) :: depth, dz_min, dz_max
+        real(rk) :: depth, dz_min, dz_max, dz_growth_factor
         real(rk) :: rem, dz_next, dz_cur
         real(rk), allocatable :: dz_tmp(:)
         real(rk) :: orig_bottom, depth_extra
@@ -233,7 +233,7 @@ contains
         if (present(ierr)) ierr = 0
 
         ! Read user-defined choices for sediment grid
-        call read_sgrid_config(cfg, depth, dz_min, dz_max)
+        call read_sgrid_config(cfg, depth, dz_min, dz_max, dz_growth_factor)
 
         !------------------------------------------------------------------
         ! Special case: uniform grid (dz_min == dz_max)
@@ -284,7 +284,7 @@ contains
                 dz_tmp(n) = dz_cur
                 rem     = rem - dz_cur
                 ! Grow geometrically until dz_max is reached
-                if (dz_next < dz_max) dz_next = dz_next * sed_growth_factor
+                if (dz_next < dz_max) dz_next = dz_next * dz_growth_factor
             end if
         end do
 
@@ -597,11 +597,12 @@ contains
     end subroutine read_wgrid_config
 
     ! Read parameters from the sediment grid configuration
-    subroutine read_sgrid_config(cfg, depth, dz_min, dz_max)
+    subroutine read_sgrid_config(cfg, depth, dz_min, dz_max, dz_growth_factor)
         type(ConfigParams), intent(in)  :: cfg
         real(rk),           intent(out) :: depth       ! sediment depth [m]
         real(rk),           intent(out) :: dz_min      ! min layer thickness at top [m]
         real(rk),           intent(out) :: dz_max      ! max layer thickness [m]
+        real(rk),           intent(out) :: dz_growth_factor
 
 
         depth = cfg%get_param_num('grid.sediments.depth', required=.true., positive=.true., &
@@ -612,6 +613,10 @@ contains
         
         dz_max = cfg%get_param_num('grid.sediments.dz_max', positive=.true., &
                                     min=sed_min_dz, default=sed_default_dzmax, finite=.true.)
+
+        dz_growth_factor = cfg%get_param_num('grid.sediments.dz_growth_factor', positive=.true., &
+                                              min=1.01_rk, max=1.5_rk, default=sed_default_gfactor, &
+                                              finite=.true.)
         
 
         if (dz_max < dz_min) then
