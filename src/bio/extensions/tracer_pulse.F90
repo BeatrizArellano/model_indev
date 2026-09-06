@@ -30,7 +30,7 @@ module tracer_pulse
         integer  :: depth_idx = 0              
         integer  :: shallow_idx, deep_idx
 
-        character(len=:), allocatable :: mode  ! "rate" or "amount"
+        character(len=:), allocatable :: mode     ! "rate" or "amount"
         real(rk) :: rate_area = 0._rk             ! tracer units m s-1 (e.g. mmol m-2 s-1)
         real(rk) :: amount    = 0._rk             ! tracer units m-2
         real(rk) :: rate_vol  = 0.0_rk            ! tracer concentration units s-1, e.g. mmol m-3 s-1
