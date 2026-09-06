@@ -278,8 +278,9 @@ contains
         real(rk), allocatable :: centre_full(:)
         real(rk), allocatable :: interface_full(:)
 
-        real(rk), parameter :: sec_per_yr    = 365.25_rk * 86400.0_rk
+        real(rk), parameter :: sec_per_yr   = 365.25_rk * 86400.0_rk
         real(rk), parameter :: m2s_to_cm2yr = 1.0e4_rk * sec_per_yr 
+        real(rk), parameter :: ms_to_cmyr   = 100.0_rk * sec_per_yr
 
         nz_full = full_grid%nz
 
@@ -420,12 +421,14 @@ contains
         !============================================================
         allocate(interface_full(nz_full + 1))
         interface_full = get_nan_rk()
-        if (nsed > 0) interface_full(1:nsed+1) = SE%vel_solids(0:nsed)
+        if (nsed > 0) then
+            interface_full(1:nsed+1) = SE%vel_solids(0:nsed) * ms_to_cmyr
+        end if
 
         call init_static_profile(p          = prof, &
                                  name       = 'burial_velocity_solids', &
                                  long_name  = 'Burial velocity of solids', &
-                                 units      = 'm s-1', &
+                                 units      = 'cm yr-1', &
                                  profile_data = interface_full, &
                                  vert_coord = 'interface' )
         prof%has_max   = .true.
@@ -441,12 +444,14 @@ contains
         !============================================================
         allocate(interface_full(nz_full + 1))
         interface_full = get_nan_rk()
-        if (nsed > 0) interface_full(1:nsed+1) = SE%vel_solutes(0:nsed)
+        if (nsed > 0) then
+            interface_full(1:nsed+1) = SE%vel_solutes(0:nsed) * ms_to_cmyr
+        end if
 
         call init_static_profile(p          = prof, &
                                  name       = 'burial_velocity_solutes', &
                                  long_name  = 'Burial velocity of porewater', &
-                                 units      = 'm s-1', &
+                                 units      = 'cm yr-1', &
                                  profile_data = interface_full, &
                                  vert_coord = 'interface' )
         prof%has_max   = .true.
