@@ -10,16 +10,16 @@ module bio_main
     use initial_profiles,    only: set_initial_profiles, set_initial_sediment_values
     use molecular_diffusion, only: molecular_diffusivity, viscosity
     use numerical_stability, only: compute_transport_safe_dt, compute_reaction_safe_dt
+    use output_static,       only: StaticProfile
     use physics_types,       only: PhysicsState
     use pressure,            only: compute_pressure 
     use precision_types,     only: rk, lk
     use precision_utils,     only: get_nan_rk
     use read_config_yaml,    only: ConfigParams
     use sediment,            only: init_sediment, output_sed_profiles, clear_sediment_env, write_tracer_properties, &
-                                   phase_to_bulk, bulk_to_phase, phase_to_bulk_all, bulk_to_phase_all
+                                   phase_to_bulk, bulk_to_phase, phase_to_bulk_all, bulk_to_phase_all, recover_faunal_activity
     use sediment_diffusion,  only: scalar_diffusion_sed
     use sediment_exchange,   only: compute_solute_flux_swi, apply_particulate_deposition, apply_bioirrigation
-    use output_static,       only: StaticProfile
     use state_loader,        only: StateData, set_initial_state
     use time_types,          only: DateTime, CFCalendar
     use time_utils,          only: sec_per_day
@@ -568,10 +568,10 @@ contains
                 BE%BS%full_bioirr = get_nan_rk()
                 call register_variable(BE%env_int_vars, name='bioirrigation',            &
                                        long_name='Bioirrigation coefficient',            &
-                                       units='s-1', vert_coord='centre', n_space_dims=1, &
+                                       units='yr-1', vert_coord='centre', n_space_dims=1, &
                                        data_1d=BE%BS%full_bioirr,                        &
                                        minimum=0.0_rk, missing_value=get_nan_rk(),       &
-                                       state_var=.true.)                                 ! Mark as state variables so dynamic sediment properties can be written to restart files.
+                                       state_var=.false.)                                 ! Mark as state variables so dynamic sediment properties can be written to restart files.
             end if
             if(BE%SED%output_bioturb_dynamic) then
                 if(allocated(BE%BS%full_biotur)) deallocate(BE%BS%full_biotur)
@@ -580,10 +580,10 @@ contains
                 
                 call register_variable(BE%env_int_vars, name='bioturbation',                   &
                                        long_name='Bioturbation coefficient (Db)',              &
-                                       units='m2 s-1', vert_coord='interface', n_space_dims=1, &
+                                       units='cm2 yr-1', vert_coord='interface', n_space_dims=1, &
                                        data_1d=BE%BS%full_biotur,                              &
                                        minimum=0.0_rk, missing_value=get_nan_rk(),             &
-                                       state_var=.true.)
+                                       state_var=.false.)
             end if
         end if
 
@@ -817,7 +817,16 @@ contains
         end if
 
         ! Repair state, if needed, to let FABM restore all state variables within their registered bounds.
-        call check_and_repair_state(BE)      
+        call check_and_repair_state(BE)    
+        
+        !----------------------------------------------------
+        ! Recover benthic-faunal activity
+        !----------------------------------------------------
+        if (BE%params%sediments_enabled) then
+            if (BE%SED%faunal_activity < 1.0_rk) then
+                call recover_faunal_activity(BE%SED, dt_main)
+            end if
+        end if
 
         !----------------------------------------------------
         ! Compute molecular diffusivities per tracer (sediments only)
@@ -844,9 +853,10 @@ contains
             do k = 0, BE%nsed
                 BE%SED%diff_sed_max(k) = BE%SED%poro_w(k) * D0_max / max(BE%SED%theta2(k), 1.0e-12_rk)
             end do
+
             ! Compute effective biodiffusivities for particulates
             if (BE%SED%use_bioturbation) then
-                BE%SED%Db_eff_solids(0:nsed) = max(0.0_rk, (1.0_rk - BE%SED%poro_w(0:nsed)) * BE%SED%bioturb(0:nsed))
+                BE%SED%Db_eff_solids(0:nsed) = max(0.0_rk, (1.0_rk - BE%SED%poro_w(0:nsed)) * BE%SED%bioturb(0:nsed) * BE%SED%faunal_activity)
             else
                 BE%SED%Db_eff_solids(0:nsed) = 0.0_rk
             end if
@@ -1138,10 +1148,10 @@ contains
                         !-------------------------------------------------------------
                         ! NOTE: bioirrigation of solutes is done on porewater concentrations 
                         if (BE%SED%use_bioirrigation) then
-                            call apply_bioirrigation(dt=dt_sub, nsed=nsed, ntotal=nz, alpha=BE%SED%bioirr,                    &
-                                                    porewat_thickness=BE%SED%porewat_thickness, dz_wat_btm=BE%wat_grid%dz(1), &
-                                                    k_wat_btm=kwb, concentration=BE%BS%interior_state(:, ivar),               &
-                                                    bioirr_flux=BE%SED%bioirr_flux(ivar))
+                            call apply_bioirrigation(dt=dt_sub, nsed=nsed, ntotal=nz, alpha=BE%SED%bioirr,                               &
+                                                    faunal_activity=BE%SED%faunal_activity, porewat_thickness=BE%SED%porewat_thickness,  &
+                                                    dz_wat_btm=BE%wat_grid%dz(1), k_wat_btm=kwb,                                         &
+                                                    concentration=BE%BS%interior_state(:, ivar), bioirr_flux=BE%SED%bioirr_flux(ivar))
                         end if
                         ! Convert sediment-water fluxes to d-1 and compute total flux.
                         BE%SED%swi_flux_out(ivar)    = BE%SED%swi_flux(ivar)    * sec_per_day                   ! Diffusive component of the SWI flux
@@ -1475,6 +1485,9 @@ contains
         integer :: kwb, kws
         real(rk) :: Tbot, Sbot, Rhobot, Pbot
 
+        real(rk), parameter :: sec_per_yr = 365.25_rk * 86400.0_rk
+        real(rk), parameter :: m2s_to_cm2yr = 1.0e4_rk * sec_per_yr
+
         nz   = BE%grid%nz
         nsed = BE%nsed
         nwat = BE%nwat
@@ -1551,13 +1564,13 @@ contains
             ! Bioirrigation on full column (centres)
             if (allocated(BE%BS%full_bioirr) .and. BE%SED%output_bioirr_dynamic) then
                 BE%BS%full_bioirr = get_nan_rk()
-                BE%BS%full_bioirr(1:nsed) = BE%SED%bioirr(1:nsed)
+                BE%BS%full_bioirr(1:nsed) = BE%SED%bioirr(1:nsed) * BE%SED%faunal_activity * sec_per_yr
             end if
 
             ! Bioturbation on full column
             if (allocated(BE%BS%full_biotur) .and. BE%SED%output_bioturb_dynamic) then
                 BE%BS%full_biotur = get_nan_rk()
-                BE%BS%full_biotur(0:nsed) = BE%SED%bioturb(0:nsed)
+                BE%BS%full_biotur(0:nsed) = BE%SED%bioturb(0:nsed) * BE%SED%faunal_activity * m2s_to_cm2yr
             end if
         end if
 
