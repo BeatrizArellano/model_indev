@@ -651,6 +651,7 @@ contains
         si%output_swi_fluxes = user%output_swi_fluxes
         si%output_swi_diff_fluxes = user%output_swi_diff_fluxes
         si%output_swi_bio_fluxes = user%output_swi_bio_fluxes
+        si%output_deposition_fluxes = user%output_deposition_fluxes
         ! Copy cnpar value
         si%cnpar_sed = user%cnpar_sed
     end subroutine convert_units_to_SI

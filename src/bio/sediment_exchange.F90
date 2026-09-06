@@ -194,16 +194,19 @@ contains
     !! volume) and adding it to the sediment inventory expressed per bulk
     !! sediment volume. Only downward (negative) velocities contribute to
     !! deposition; no resuspension or upward exchange is represented.
-    subroutine apply_particulate_deposition(Cw_bot, dz_w_bot, vel_swi, dt, dz_sed_top, Cbulk_sed_top)
+    subroutine apply_particulate_deposition(Cw_bot, dz_w_bot, vel_swi, dt, dz_sed_top, Cbulk_sed_top, dep_flux)
         real(rk), intent(inout) :: Cw_bot          ! bottom-water concentration (per water volume)
         real(rk), intent(in)    :: dz_w_bot        ! thickness of bottom-water cell [m]
         real(rk), intent(in)    :: vel_swi         ! velocity at SWI interface [m/s] (negative downward)
         real(rk), intent(in)    :: dt              ! [s]
         real(rk), intent(in)    :: dz_sed_top      ! thickness of top sediment layer [m]
         real(rk), intent(inout) :: Cbulk_sed_top   ! bulk-sediment conc in top layer (per bulk volume)
+        real(rk), intent(out)   :: dep_flux   ! actual deposition flux [conc units m s-1]
 
         real(rk) :: dep_flux_req, dep_mass_req, dep_mass
         real(rk) :: available
+
+        dep_flux = 0.0_rk
 
         ! Only downward movement deposits into sediment.
         if (vel_swi < 0._rk) then
@@ -219,6 +222,9 @@ contains
 
             ! Positivity-preserving deposited inventory.
             dep_mass = min(dep_mass_req, available)
+
+            ! Actual flux that was transferred
+            dep_flux = dep_mass / dt
 
             ! Update bottom-water concentration.
             Cw_bot = Cw_bot - dep_mass / dz_w_bot

@@ -171,18 +171,24 @@ contains
                 if(allocated(BE%SED%bioirr_flux))     deallocate(BE%SED%bioirr_flux)
                 if(allocated(BE%SED%bioirr_flux_out)) deallocate(BE%SED%bioirr_flux_out)
                 if(allocated(BE%SED%total_swi_flux))  deallocate(BE%SED%total_swi_flux)
+                if (allocated(BE%SED%deposition_flux))     deallocate(BE%SED%deposition_flux)
+                if (allocated(BE%SED%deposition_flux_out)) deallocate(BE%SED%deposition_flux_out)
 
                 allocate(BE%SED%swi_flux(nint))                 
                 allocate(BE%SED%swi_flux_out(nint)) 
                 allocate(BE%SED%bioirr_flux(nint)) 
                 allocate(BE%SED%bioirr_flux_out(nint)) 
                 allocate(BE%SED%total_swi_flux(nint)) 
+                allocate(BE%SED%deposition_flux(nint))
+                allocate(BE%SED%deposition_flux_out(nint))
 
-                BE%SED%swi_flux        = 0._rk
-                BE%SED%swi_flux_out    = 0._rk
-                BE%SED%bioirr_flux     = 0._rk
-                BE%SED%bioirr_flux_out = 0._rk
-                BE%SED%total_swi_flux  = 0._rk
+                BE%SED%swi_flux            = 0._rk
+                BE%SED%swi_flux_out        = 0._rk
+                BE%SED%bioirr_flux         = 0._rk
+                BE%SED%bioirr_flux_out     = 0._rk
+                BE%SED%total_swi_flux      = 0._rk
+                BE%SED%deposition_flux     = 0.0_rk
+                BE%SED%deposition_flux_out = 0.0_rk
                 
             end if   
             do ivar = 1, nint
@@ -304,12 +310,33 @@ contains
                             stop 1
                         end select
                     end if
-                end if                        
+
+                    !-----------------------
+                    ! Register solids
+                    !----------------------
+                    if (BE%tracer_info(ivar)%is_particulate) then
+                        if (BE%SED%params_user%output_deposition_fluxes) then
+
+                            call register_variable(BE%deposition_flux_vars, name='dep_flux_'// &
+                                                   trim(BE%model%interior_state_variables(ivar)%name), &
+                                                   long_name='Deposition flux of '// &
+                                                   trim(BE%model%interior_state_variables(ivar)%long_name)// &
+                                                   ' into sediments (positive downward)', &
+                                                   units=trim(BE%model%interior_state_variables(ivar)%units)//' m d-1', &
+                                                   vert_coord='bottom', n_space_dims=0, &
+                                                   data_0d=BE%SED%deposition_flux_out(ivar), &
+                                                   state_var=.false.)
+
+                        end if
+
+                    end if
+                end if    
             end do
-            if (allocated(BE%int_vars))         call output_all_variables(BE%int_vars)
-            if (allocated(BE%tot_swiflux_vars)) call output_all_variables(BE%tot_swiflux_vars)
-            if (allocated(BE%dif_swiflux_vars)) call output_all_variables(BE%dif_swiflux_vars)
-            if (allocated(BE%bio_swiflux_vars)) call output_all_variables(BE%bio_swiflux_vars)
+            if (allocated(BE%int_vars))             call output_all_variables(BE%int_vars)
+            if (allocated(BE%tot_swiflux_vars))     call output_all_variables(BE%tot_swiflux_vars)
+            if (allocated(BE%dif_swiflux_vars))     call output_all_variables(BE%dif_swiflux_vars)
+            if (allocated(BE%bio_swiflux_vars))     call output_all_variables(BE%bio_swiflux_vars)
+            if (allocated(BE%deposition_flux_vars)) call output_all_variables(BE%deposition_flux_vars)
             ! Write dat file with information of the tracer properties
             if(BE%params%sediments_enabled) call write_tracer_properties(BE, 'tracer_properties.dat')
         end if
@@ -1186,11 +1213,14 @@ contains
                     if (BE%tracer_info(ivar)%is_particulate) then
                         vel_swi = BE%velocity(kwb, ivar)
                         call apply_particulate_deposition(Cw_bot        = BE%BS%interior_state(kwb, ivar), &
-                                                          dz_w_bot      = BE%wat_grid%dz(1), &
-                                                          vel_swi       = vel_swi,           &
-                                                          dt            = dt_sub,            &
-                                                          dz_sed_top    = BE%sed_grid%dz(kss), &
-                                                          Cbulk_sed_top = BE%SED%bulk_conc(kss, ivar))    
+                                                          dz_w_bot      = BE%wat_grid%dz(1),               &
+                                                          vel_swi       = vel_swi,                         &
+                                                          dt            = dt_sub,                          &
+                                                          dz_sed_top    = BE%sed_grid%dz(kss),             &
+                                                          Cbulk_sed_top = BE%SED%bulk_conc(kss, ivar),     &
+                                                          dep_flux      = BE%SED%deposition_flux(ivar))    
+
+                        BE%SED%deposition_flux_out(ivar) = BE%SED%deposition_flux(ivar) * sec_per_day
                     end if
                 end do
 
@@ -1431,6 +1461,14 @@ contains
             deallocate(BE%bio_swiflux_vars)
         end if
 
+        if (allocated(BE%deposition_flux_vars)) then
+            do i = 1, size(BE%deposition_flux_vars)
+                nullify(BE%deposition_flux_vars(i)%data_0d)
+                nullify(BE%deposition_flux_vars(i)%data_1d)
+            end do
+            deallocate(BE%deposition_flux_vars)
+        end if
+
         ! Deallocate BioEnv working arrays
         if (allocated(BE%velocity))           deallocate(BE%velocity)
         if (allocated(BE%tendency_int))       deallocate(BE%tendency_int)
@@ -1446,6 +1484,8 @@ contains
         if (allocated(BE%SED%bioirr_flux))     deallocate(BE%SED%bioirr_flux)
         if (allocated(BE%SED%bioirr_flux_out)) deallocate(BE%SED%bioirr_flux_out)
         if (allocated(BE%SED%total_swi_flux))  deallocate(BE%SED%total_swi_flux)
+        if (allocated(BE%SED%deposition_flux))     deallocate(BE%SED%deposition_flux)
+        if (allocated(BE%SED%deposition_flux_out)) deallocate(BE%SED%deposition_flux_out)
 
         ! Clear Tridiagonal workspace 
         call clear_tridiag(BE%wat_trid)
@@ -1722,6 +1762,7 @@ contains
         if (.not. allocated(BE%tot_swiflux_vars)) allocate(BE%tot_swiflux_vars(0))
         if (.not. allocated(BE%bio_swiflux_vars)) allocate(BE%bio_swiflux_vars(0))
         if (.not. allocated(BE%dif_swiflux_vars)) allocate(BE%dif_swiflux_vars(0))
+        if (.not. allocated(BE%deposition_flux_vars)) allocate(BE%deposition_flux_vars(0))
     end subroutine allocate_metadata_arrays
 
 end module bio_main
