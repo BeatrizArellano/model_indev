@@ -32,12 +32,14 @@ module bio_params
         !         * burial rate:  cm yr-1
         !         * bioturbation: cm2 yr-1
         !         * irrigation:   yr-1
+        !         * faunal recovery: yr-1
         !
         !     - SedimentEnv%params_SI   : "internal SI units"
         !         * depths:       m
         !         * burial rate:  m s-1
         !         * bioturbation: m2 s-1
         !         * irrigation:   s-1
+        !         * faunal recovery: s-1
         !
         !   Conversion is performed once during init_sediment() via convert_units_to_SI().
         !   Internal sediment computations must use params_SI only.
@@ -57,6 +59,8 @@ module bio_params
         character(:), allocatable :: irr_mode ! off | static | dynamic
         real(rk) :: irr_sfc                ! Exchange rate at the sediment-water interface (user: 1/yr; SI: 1/s) (alpha0 in Aller's model)
         real(rk) :: irr_ez                 ! Decay depth for exponential attenuation of irrigation (user: cm; SI: m)
+        !--- Faunal activity
+        real(rk) :: faunal_recovery_rate    ! Logistic recovery rate of faunal activity following disturbance (user: yr-1; SI: s-1)
         ! --- Bottom boundary
         logical :: bottom_outflow                   ! If true, allow porewater/solids to leave through deepest sediment boundary
         ! --- Output
@@ -90,6 +94,7 @@ module bio_params
     real(rk), parameter :: def_biot_ez    = 1.0_rk        ! Coefficient (decay depth) for exponential bioturbation decrease [cm]
     real(rk), parameter :: def_irr_sfc    = 200_rk        ! Irrigation rate at the sediment-water interface [yr-1]
     real(rk), parameter :: def_irr_ez     = 2.0_rk        ! Decay depth for exponential attenuation of irrigation [cm]    
+    real(rk), parameter :: def_faunal_recovery_rate = 1.0_rk  ! Logistic faunal recovery rate [yr-1]
     real(rk), parameter :: def_cnpar_sed  = 0.9_rk        ! Crank-Nicolson parameter to solve diffusive mixing [-]
     logical,  parameter :: def_bottom_outflow = .true.    ! Allow bottom outflow/burial/export by default
     character(len=*), parameter :: def_biot_mode = 'static'
@@ -145,6 +150,9 @@ contains
         SedP%irr_mode  = cfg_params%get_param_str('biogeochemistry.sediments.bioirrigation_mode', default=def_irr_mode, choices=mode_choices, trim_value=.true., match_case=.false.)
         SedP%irr_sfc = cfg_params%get_param_num('biogeochemistry.sediments.irrigation_surface', default=def_irr_sfc, finite=.true., min=0.0_rk)
         SedP%irr_ez  = cfg_params%get_param_num('biogeochemistry.sediments.irrigation_decay_depth', default=def_irr_ez, finite=.true., positive=.true.)
+        !--------- Faunal activity -------
+        SedP%faunal_recovery_rate = cfg_params%get_param_num('biogeochemistry.sediments.faunal_recovery_rate', default=def_faunal_recovery_rate, finite=.true., min=0.0_rk)
+
         ! --------- Bottom boundary -----------
         SedP%bottom_outflow = cfg_params%get_param_logical('biogeochemistry.sediments.bottom_outflow', default=def_bottom_outflow)
         !-------- Output sediment-water fluxes of solutes ----
@@ -183,6 +191,8 @@ contains
         p%irr_mode    = def_irr_mode
         p%irr_sfc     = def_irr_sfc
         p%irr_ez      = def_irr_ez
+
+        p%faunal_recovery_rate = def_faunal_recovery_rate
 
         p%bottom_outflow = def_bottom_outflow
 
