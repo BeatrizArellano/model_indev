@@ -327,15 +327,15 @@ contains
             dt_model%month == 2 .and. dt_model%day == 29 .and. &
             .not. is_leap_gregorian(series%repeat_year)) then
 
-            t_sample = int(nint(seconds_since_datetime_file(series%cal, series%u, &
+            t_sample = nint(seconds_since_datetime_file(series%cal, series%u, &
                                                             series%repeat_year, &
                                                             2, 28, &
-                                                            dt_model%hour, dt_model%minute, dt_model%second)), lk)
+                                                            dt_model%hour, dt_model%minute, dt_model%second), kind=lk)
          else
-            t_sample = int(nint(seconds_since_datetime_file(series%cal, series%u, &
+            t_sample = nint(seconds_since_datetime_file(series%cal, series%u, &
                                                             series%repeat_year, &
                                                             dt_model%month, dt_model%day, &
-                                                            dt_model%hour, dt_model%minute, dt_model%second)), lk)
+                                                            dt_model%hour, dt_model%minute, dt_model%second), kind=lk)
          end if
 
       case default

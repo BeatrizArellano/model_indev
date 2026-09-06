@@ -160,7 +160,7 @@ contains
         ! Total offset in whole seconds relative to midnight of the reference date,
         ! INCLUDING the reference time-of-day (so tsec=0 → the exact reference hms).
         ! Use FLOOR so negative fractional seconds don’t round toward zero.
-        total_s = int(floor(tsec), lk) + ref_secs_of_day
+        total_s = floor(tsec, kind=lk) + ref_secs_of_day
 
         ! Split into whole days since the reference DATE and leftover seconds within the day.
         days_since_ref    = total_s / SPD                ! truncates toward zero

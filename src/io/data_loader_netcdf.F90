@@ -203,7 +203,7 @@ contains
          return
       end if
 
-      scan%sim_offset = int(nint(t_start), lk)
+      scan%sim_offset = nint(t_start, kind=lk)
       scan%i0 = max(1, index_at_or_before(scan%axis%t_s, t_start))
       scan%i1 = max(scan%i0, index_at_or_before(scan%axis%t_s, t_end))
 
@@ -318,7 +318,7 @@ contains
       series%n        = nt
       series%idx      = 1
 
-      series%t_axis = int(nint(scan%axis%t_s(i0:i1)), lk)
+      series%t_axis = nint(scan%axis%t_s(i0:i1), kind=lk)
 
       call read_netcdf_timeseries_at_point(db, trim(spec%source_var), trim(scan%time_name), i0, i1, &
                                            scan%has_latlon, trim(scan%lat_name), trim(scan%lon_name), &
@@ -339,7 +339,7 @@ contains
 
          series%t_next = series%t_edge(2)
       else
-         dt_last = max(1_lk, int(nint(scan%median_dt), lk))
+         dt_last = max(1_lk, nint(scan%median_dt, kind=lk))
 
          series%t_edge(1) = series%t_axis(1)
          series%t_edge(2) = series%t_axis(1) + dt_last
