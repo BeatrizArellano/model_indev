@@ -133,12 +133,14 @@ module bio_types
       real(rk), allocatable :: bioirr_flux_out(:)  ! Flux of solutes due to bioirrigation at the sediment-water interface (tracer specific) [conc units * m d-1]
       real(rk), allocatable :: total_swi_flux(:)   ! Total flux of solutes at the sediment-water interface including bioirrigation and diffusion (tracer specific) [conc units * m d-1]
     
+      real(rk) :: faunal_activity = 1.0_rk         ! Relative faunal activity [0-1]. It scales directly bioirrigation and bioturbation activity. 
 
       ! --- Runtime flags 
       logical :: use_bioturbation        = .false.
       logical :: use_bioirrigation       = .false.
       logical :: output_bioturb_dynamic  = .false.
       logical :: output_bioirr_dynamic   = .false.
+      
       ! Working space
     type(TridiagCoeff)      :: sed_trid            ! workspace for solving scalar diffusion
   end type SedimentEnv  
