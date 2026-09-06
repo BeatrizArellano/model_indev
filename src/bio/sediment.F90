@@ -15,6 +15,9 @@ module sediment
 
     public :: init_sediment, output_sed_profiles, clear_sediment_env, write_tracer_properties
     public :: phase_to_bulk, bulk_to_phase, phase_to_bulk_all, bulk_to_phase_all
+    public :: recover_faunal_activity
+
+    real(rk), parameter :: faunal_activity_min = 1.0e-6_rk
 
 contains
 
@@ -47,6 +50,9 @@ contains
         SE%use_bioirrigation      = (SE%params_SI%irr_mode  /= 'off')
         SE%output_bioturb_dynamic = (SE%params_SI%biot_mode == 'dynamic')
         SE%output_bioirr_dynamic  = (SE%params_SI%irr_mode  == 'dynamic')
+
+        ! Undisturbed initial faunal activity
+        SE%faunal_activity = 1.0_rk 
 
         ! Compute profiles for sediment properties
         call compute_porosity_profile(grid, SE%params_SI, SE%poro, SE%poro_w, SE%theta2, SE%porewat_thickness, SE%solid_thickness)
@@ -189,6 +195,40 @@ contains
         end do
     end subroutine bulk_to_phase_all
 
+
+
+    !============================================================
+    ! Recover faunal activity following disturbance.
+    !
+    ! Faunal activity F is dimensionless and bounded between
+    ! faunal_activity_min and 1. Recovery follows logistic growth:
+    !     dF/dt = r F (1 - F)
+    !
+    ! where r is the faunal recovery rate [s-1].
+    !============================================================
+    subroutine recover_faunal_activity(SE, dt)
+        type(SedimentEnv), intent(inout) :: SE
+        real(rk),          intent(in)    :: dt   ! [s]
+
+        real(rk) :: F, r
+
+        if (dt <= 0.0_rk) return
+
+        r = SE%params_SI%faunal_recovery_rate
+        if (r <= 0.0_rk) return
+
+        F = min(1.0_rk, max(faunal_activity_min, SE%faunal_activity))
+
+        ! Exact solution of logistic recovery over dt
+        SE%faunal_activity = F / (F + (1.0_rk - F) * exp(-r * dt))
+
+        ! Check limits again (0,1]
+        SE%faunal_activity = min(1.0_rk, max(faunal_activity_min, SE%faunal_activity))
+        if (1.0_rk - SE%faunal_activity < 1.0e-8_rk) then
+            SE%faunal_activity = 1.0_rk
+        end if
+    end subroutine recover_faunal_activity
+
     !! Clear sediment environment state and release memory.
     !! Deallocates all sediment arrays, clears the tridiagonal workspace, resets flags/counters,
     !! and nullifies the grid pointer.
@@ -220,6 +260,7 @@ contains
         call clear_tridiag(SE%sed_trid)
 
         ! ---- Reset size/flags and pointer ----
+        SE%faunal_activity = 1.0_rk
         SE%nz      = 0
         SE%is_init = .false.
         nullify(SE%grid)
@@ -236,6 +277,9 @@ contains
         integer :: nz_full
         real(rk), allocatable :: centre_full(:)
         real(rk), allocatable :: interface_full(:)
+
+        real(rk), parameter :: sec_per_yr    = 365.25_rk * 86400.0_rk
+        real(rk), parameter :: m2s_to_cm2yr = 1.0e4_rk * sec_per_yr 
 
         nz_full = full_grid%nz
 
@@ -297,7 +341,7 @@ contains
 
         !============================================================
         ! Tortuosity squared on full grid (centres)
-        ! Neutral extension into water column: 1
+        ! ! Defined in sediments only; missing in water column
         !============================================================
         allocate(centre_full(nz_full))
         centre_full = get_nan_rk()
@@ -318,17 +362,19 @@ contains
 
         !============================================================
         ! Bioirrigation on full grid (centres)
-        ! Zero in water column
+        ! ! Defined in sediments only; missing in water column
         !============================================================
         if (SE%use_bioirrigation .and. .not. SE%output_bioirr_dynamic) then
             allocate(centre_full(nz_full))
             centre_full = get_nan_rk()
-            if (nsed > 0) centre_full(1:nsed) = SE%bioirr(1:nsed)
+            if (nsed > 0) then
+                centre_full(1:nsed) = SE%bioirr(1:nsed) * sec_per_yr
+            end if
 
             call init_static_profile(p          = prof,            &
                                      name       = 'bioirrigation', &
                                      long_name  = 'Bioirrigation coefficient', &
-                                     units      = 's-1', &
+                                     units      = 'yr-1', &
                                      profile_data = centre_full, &
                                      vert_coord = 'centre' )
             prof%has_min   = .true.
@@ -350,12 +396,14 @@ contains
         if (SE%use_bioturbation .and. .not. SE%output_bioturb_dynamic) then
             allocate(interface_full(nz_full + 1))
             interface_full = get_nan_rk()
-            if (nsed > 0) interface_full(1:nsed+1) = SE%bioturb(0:nsed)
+            if (nsed > 0) then
+                interface_full(1:nsed+1) = SE%bioturb(0:nsed) * m2s_to_cm2yr
+            end if
 
             call init_static_profile(p          = prof, &
                                      name       = 'bioturbation', &
                                      long_name  = 'Bioturbation coefficient', &
-                                     units      = 'm2 s-1', &
+                                     units      = 'cm2 yr-1', &
                                      profile_data = interface_full, &
                                      vert_coord = 'interface' )
             prof%has_min   = .true.
@@ -581,6 +629,8 @@ contains
         si%biot_mld      = user%biot_mld      * cm_to_m
         si%biot_ez       = user%biot_ez       * cm_to_m
         si%irr_ez        = user%irr_ez        * cm_to_m
+
+        si%faunal_recovery_rate = user%faunal_recovery_rate / yr_to_s
 
         ! Rates:
         ! sed_rate: cm/yr -> m/s
