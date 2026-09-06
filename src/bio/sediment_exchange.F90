@@ -271,11 +271,12 @@ contains
     ! equation 3.140 therein to model bioirrigation as a non-local exchange. 
     ! Specific discussion of this is in Boudreau (1984)
     !-----------------------------------------------------------------------
-    subroutine apply_bioirrigation(dt, nsed, ntotal, alpha, porewat_thickness, dz_wat_btm, k_wat_btm,   &
+    subroutine apply_bioirrigation(dt, nsed, ntotal, alpha, faunal_activity, porewat_thickness, dz_wat_btm, k_wat_btm,   &
                                    concentration, bioirr_flux)
         real(rk), intent(in)    :: dt
         integer,  intent(in)    :: nsed, ntotal
         real(rk), intent(in)    :: alpha(nsed)               ! Bioirrigation alpha [s^-1]       
+        real(rk), intent(in)    :: faunal_activity           ! scales bioirrigation between 0 and 1
         real(rk), intent(in)    :: porewat_thickness(nsed)   ! [m] porewater capacity per m2
         real(rk), intent(in)    :: dz_wat_btm                ! [m] Thickness of the bottom layer in water column        
         integer,  intent(in)    :: k_wat_btm                 ! Indices for water bottom and sediment 
@@ -291,7 +292,7 @@ contains
         bioirr_flux = 0._rk
 
         do k = 1, nsed
-            alpha_k = alpha(k)
+            alpha_k = alpha(k) * faunal_activity
             if (alpha_k <= 0._rk) cycle
 
             ! The amount of mass that can be exchanged depends on how much porewater exists in that layer.
@@ -316,7 +317,7 @@ contains
 
             ! Sediment-water flux due to bioirrigation [concentration units * m s-1]
             ! Positive into the water, negative into the sediments
-            bioirr_flux = bioirr_flux - dM / dt
+            bioirr_flux = bioirr_flux - alpha_k * (Cbw - Cs) * Hpw
         end do
 
         ! Update bottom water concentration
