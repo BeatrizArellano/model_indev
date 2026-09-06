@@ -160,11 +160,10 @@ contains
     !==================================================================
     ! Apply instantaneous trawling disturbance
     !==================================================================
-    subroutine trawling_apply(evt, BE, model_time)
+    subroutine trawling_apply(evt, BE)
 
         type(Event),  intent(in)    :: evt
         type(BioEnv), intent(inout) :: BE
-        real(rk),     intent(in)    :: model_time
 
         integer  :: ivar
         integer  :: wat_shallow_full_idx
