@@ -9,6 +9,7 @@ module event_manager
    use time_utils,       only: datetime_from_string, datetime_to_str, parse_interval_to_seconds
    use tracer_pulse,     only: tracer_pulse_prepare, tracer_pulse_apply
    use tracer_removal,   only: tracer_removal_prepare, tracer_removal_apply
+   use trawling,         only: trawling_prepare, trawling_apply
 
    implicit none
    private
@@ -121,9 +122,7 @@ contains
          !--------------------------------------------------------
          select case (trim(self%events(ievent)%event_type))
          case (EVENT_TRAWLING)
-            ! call trawling_apply(model_time, self%events(ievent), BE)
-            call fatal('event_manager:apply_instantaneous', &
-                        'Trawling event selected, but trawling_apply is not connected yet.')
+            call trawling_apply(self%events(ievent), BE)
 
          case default
             call fatal('event_manager:apply_instantaneous', &
@@ -435,7 +434,7 @@ contains
                call tracer_removal_prepare(self%events(i), self%events_cfg, BE)
 
             case (EVENT_TRAWLING)
-               !call trawling_prepare_event(self%events(i), self%events_cfg)
+               call trawling_prepare(self%events(i), self%events_cfg, BE)
 
             case default
                call fatal('event_manager:prepare_events', &
