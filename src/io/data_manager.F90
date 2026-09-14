@@ -467,13 +467,15 @@ contains
       type(DataVarSeries), intent(inout) :: full
       type(DataVarSeries), intent(in)    :: part
 
-      integer :: n0, n1, nadd, istart
+      real(rk), allocatable :: profile_tmp(:,:)
+      integer :: n0, n1, nadd, istart, nz
 
       if (part%is_const) then
          if (.not. allocated(full%name)) full%name = part%name
          if (.not. allocated(full%units) .and. allocated(part%units)) full%units = part%units
 
          full%is_const    = .true.
+         full%is_profile  = .false.
          full%const_value = part%const_value
          full%n           = 0
          full%idx         = 1
@@ -482,6 +484,8 @@ contains
          if (allocated(full%t_axis)) deallocate(full%t_axis)
          if (allocated(full%t_edge)) deallocate(full%t_edge)
          if (allocated(full%values)) deallocate(full%values)
+         if (allocated(full%depth)) deallocate(full%depth)
+         if (allocated(full%profile_values)) deallocate(full%profile_values)
 
          return
       end if
@@ -495,10 +499,44 @@ contains
 
       if (.not. allocated(part%t_axis)) return
 
+      if (full%is_profile .neqv. part%is_profile) then
+         error stop 'append_var_series: scalar/profile mismatch'
+      end if
+
       n0 = size(full%t_axis)
       n1 = size(part%t_axis)
 
       if (n1 <= 0) return
+
+      if (full%is_profile) then
+         if (.not. allocated(full%depth) .or. .not. allocated(part%depth)) then
+            error stop 'append_var_series: profile depth is not allocated'
+         end if
+         if (.not. allocated(full%profile_values) .or. .not. allocated(part%profile_values)) then
+            error stop 'append_var_series: profile values are not allocated'
+         end if
+         if (size(full%depth) /= size(part%depth)) then
+            error stop 'append_var_series: profile depth size mismatch'
+         end if
+         if (any(full%depth /= part%depth)) then
+            error stop 'append_var_series: profile depth coordinates differ'
+         end if
+         if (size(full%profile_values, 1) /= size(full%depth) .or. &
+            size(full%profile_values, 2) /= n0) then
+            error stop 'append_var_series: inconsistent existing profile shape'
+         end if
+         if (size(part%profile_values, 1) /= size(part%depth) .or. &
+            size(part%profile_values, 2) /= n1) then
+            error stop 'append_var_series: inconsistent appended profile shape'
+         end if
+      else
+         if (.not. allocated(full%values) .or. .not. allocated(part%values)) then
+            error stop 'append_var_series: scalar values are not allocated'
+         end if
+         if (size(full%values) /= n0 .or. size(part%values) /= n1) then
+            error stop 'append_var_series: scalar value/time size mismatch'
+         end if
+      end if
 
       istart = 1
 
@@ -514,8 +552,18 @@ contains
       nadd = n1 - istart + 1
 
       full%t_axis = [full%t_axis, part%t_axis(istart:n1)]
-      full%values = [full%values, part%values(istart:n1)]
-      full%n      = n0 + nadd
+
+      if (full%is_profile) then
+         nz = size(full%depth)
+         allocate(profile_tmp(nz, n0 + nadd))
+         profile_tmp(:, 1:n0) = full%profile_values
+         profile_tmp(:, n0 + 1:n0 + nadd) = part%profile_values(:, istart:n1)
+         call move_alloc(profile_tmp, full%profile_values)
+      else
+         full%values = [full%values, part%values(istart:n1)]
+      end if
+
+      full%n = n0 + nadd
    end subroutine append_var_series
 
 
@@ -527,6 +575,7 @@ contains
       if (allocated(src%units)) dst%units = src%units
 
       dst%is_const    = src%is_const
+      dst%is_profile  = src%is_profile
       dst%const_value = src%const_value
       dst%idx         = 1
       dst%n           = src%n
@@ -540,6 +589,8 @@ contains
       if (allocated(dst%t_axis)) deallocate(dst%t_axis)
       if (allocated(dst%t_edge)) deallocate(dst%t_edge)
       if (allocated(dst%values)) deallocate(dst%values)
+      if (allocated(dst%depth)) deallocate(dst%depth)
+      if (allocated(dst%profile_values)) deallocate(dst%profile_values)
 
       if (allocated(src%t_axis)) then
          allocate(dst%t_axis(size(src%t_axis)))
@@ -549,6 +600,16 @@ contains
       if (allocated(src%values)) then
          allocate(dst%values(size(src%values)))
          dst%values = src%values
+      end if
+
+      if (allocated(src%depth)) then
+         allocate(dst%depth(size(src%depth)))
+         dst%depth = src%depth
+      end if
+
+      if (allocated(src%profile_values)) then
+         allocate(dst%profile_values(size(src%profile_values, 1), size(src%profile_values, 2)))
+         dst%profile_values = src%profile_values
       end if
 
       if (allocated(src%t_edge)) then
