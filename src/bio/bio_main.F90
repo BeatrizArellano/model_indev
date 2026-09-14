@@ -784,7 +784,7 @@ contains
         real(rk),              intent(in)    :: doy_fraction   ! 0-based day of year + fraction
 
 
-        integer  :: nz, i, ivar, k, nint, nsfc, nbtm
+        integer  :: nz, i, ivar, k, nint, nsfc, nbtm, irelax
         real(rk) :: istep_rk, dt_main, dt_sub, model_time, current_time
         real(rk) :: dt_boundary, dt_numerical, dt_tol
         integer  :: isub
@@ -795,7 +795,7 @@ contains
         real(rk) :: vel_swi
         real(rk) :: c_w, c_s, M_old, M_new
         real(rk) :: D0, D0_max, Deff, phi_swi
-        real(rk) :: swi_flux, swi_flux_max, flux_into_water, flux_into_sed
+        real(rk) :: swi_flux, swi_flux_max, swi_flux_applied, flux_into_water, flux_into_sed
         real(rk) :: tol
         real(rk) :: Tbot, Sbot, Pbot
         real(rk) :: mu_dyn, nu_kin
@@ -1056,7 +1056,11 @@ contains
                 do ivar=1, nint
 
                     enforce_nonneg = .false.
-                    swi_flux        = 0.0_rk 
+                    swi_flux        = 0.0_rk
+                    irelax          = 0
+                    if (BE%has_input .and. BE%inputs%has_active_relaxations) then
+                        irelax = BE%inputs%relaxation_index(ivar)
+                    end if
                     if (BE%tracer_info(ivar)%disable_transport) cycle
                     ! NOTE: diffusion of solutes in sediments is done on porewater concentrations 
                     if (BE%tracer_info(ivar)%is_solute) then
@@ -1121,9 +1125,17 @@ contains
                             !---------------------------------------------------------
                             ! Water is receiver: no Patankar (using corrected flux)
                             !---------------------------------------------------------
-                            call scalar_diffusion(Var=BE%BS%interior_state(kwb:kws,ivar), N=nwat, dt=dt_sub, h=BE%wat_grid%dz, &
-                                                  diff=BE%BS%vert_diff(kwb-1:kws), cnpar=BE%params%cnpar, tricoef=BE%wat_trid, ierr=ierr, &
-                                                  enforce_nonneg=.false., bc_bot_type=BC_NEUMANN, bc_bot_value=flux_into_water)
+                            if (irelax > 0) then
+                                call scalar_diffusion(Var=BE%BS%interior_state(kwb:kws,ivar), N=nwat, dt=dt_sub, h=BE%wat_grid%dz, &
+                                                      diff=BE%BS%vert_diff(kwb-1:kws), cnpar=BE%params%cnpar, tricoef=BE%wat_trid, ierr=ierr, &
+                                                      enforce_nonneg=.false., bc_bot_type=BC_NEUMANN, bc_bot_value=flux_into_water, &
+                                                      relax_target=BE%inputs%relaxation_targets(:,irelax), &
+                                                      relax_timescale=BE%inputs%relaxations(irelax)%timescale_s)
+                            else
+                                call scalar_diffusion(Var=BE%BS%interior_state(kwb:kws,ivar), N=nwat, dt=dt_sub, h=BE%wat_grid%dz, &
+                                                      diff=BE%BS%vert_diff(kwb-1:kws), cnpar=BE%params%cnpar, tricoef=BE%wat_trid, ierr=ierr, &
+                                                      enforce_nonneg=.false., bc_bot_type=BC_NEUMANN, bc_bot_value=flux_into_water)
+                            end if
 
                         else if (swi_flux < 0._rk) then
                             !---------------------------------------------------------
@@ -1134,17 +1146,26 @@ contains
                             flux_into_water = swi_flux   ! Flux out of the water (negative)
                             flux_into_sed = -swi_flux    ! Flux into sediments (positive)
 
-                            M_old = sum(BE%BS%interior_state(kwb:kws, ivar) * BE%wat_grid%dz(1:nwat))
                             enforce_nonneg = .true.   ! To apply a Patankar limitation 
+                            swi_flux_applied = 0.0_rk
 
-                            ! Diffusion in the water column
-                            call scalar_diffusion(Var=BE%BS%interior_state(kwb:kws,ivar), N=nwat, dt=dt_sub, h=BE%wat_grid%dz, &
-                                                  diff=BE%BS%vert_diff(kwb-1:kws), cnpar=BE%params%cnpar, tricoef=BE%wat_trid, ierr=ierr, &
-                                                  enforce_nonneg=enforce_nonneg, bc_bot_type=BC_NEUMANN, bc_bot_value=flux_into_water)                                         
-                            
-                            M_new = sum(BE%BS%interior_state(kwb:kws, ivar) * BE%wat_grid%dz(1:nwat))
-                            ! Corrected flux going into the sediments. 
-                            swi_flux = - max(0._rk, (M_old - M_new) / dt_sub) ! Negative to keep sign consistency
+                            ! Diffusion in the water column. The realised Patankar boundary flux is returned
+                            ! explicitly because relaxation can also change the water-column inventory.
+                            if (irelax > 0) then
+                                call scalar_diffusion(Var=BE%BS%interior_state(kwb:kws,ivar), N=nwat, dt=dt_sub, h=BE%wat_grid%dz, &
+                                                      diff=BE%BS%vert_diff(kwb-1:kws), cnpar=BE%params%cnpar, tricoef=BE%wat_trid, ierr=ierr, &
+                                                      enforce_nonneg=enforce_nonneg, bc_bot_type=BC_NEUMANN, bc_bot_value=flux_into_water, &
+                                                      relax_target=BE%inputs%relaxation_targets(:,irelax), &
+                                                      relax_timescale=BE%inputs%relaxations(irelax)%timescale_s, &
+                                                      bc_bot_flux_applied=swi_flux_applied)
+                            else
+                                call scalar_diffusion(Var=BE%BS%interior_state(kwb:kws,ivar), N=nwat, dt=dt_sub, h=BE%wat_grid%dz, &
+                                                      diff=BE%BS%vert_diff(kwb-1:kws), cnpar=BE%params%cnpar, tricoef=BE%wat_trid, ierr=ierr, &
+                                                      enforce_nonneg=enforce_nonneg, bc_bot_type=BC_NEUMANN, bc_bot_value=flux_into_water, &
+                                                      bc_bot_flux_applied=swi_flux_applied)
+                            end if
+
+                            swi_flux = swi_flux_applied
                             tol = 1.0e-12_rk * max(1.0_rk, abs(swi_flux_max))
                             if (abs(swi_flux) < tol) swi_flux = 0._rk
 
@@ -1166,8 +1187,15 @@ contains
                                                       h=BE%sed_grid%dz, phase_thickness=BE%SED%porewat_thickness, &
                                                       diff=BE%SED%diff_sed, cnpar=BE%SED%params_SI%cnpar_sed, tricoef=BE%SED%sed_trid, ierr=ierr)
                             ! Diffusion within the water column
-                            call scalar_diffusion(Var=BE%BS%interior_state(kwb:kws,ivar), N=nwat, dt=dt_sub, h=BE%wat_grid%dz, &
-                                                  diff=BE%BS%vert_diff(kwb-1:kws), cnpar=BE%params%cnpar, tricoef=BE%wat_trid, ierr=ierr)
+                            if (irelax > 0) then
+                                call scalar_diffusion(Var=BE%BS%interior_state(kwb:kws,ivar), N=nwat, dt=dt_sub, h=BE%wat_grid%dz, &
+                                                      diff=BE%BS%vert_diff(kwb-1:kws), cnpar=BE%params%cnpar, tricoef=BE%wat_trid, ierr=ierr, &
+                                                      relax_target=BE%inputs%relaxation_targets(:,irelax), &
+                                                      relax_timescale=BE%inputs%relaxations(irelax)%timescale_s)
+                            else
+                                call scalar_diffusion(Var=BE%BS%interior_state(kwb:kws,ivar), N=nwat, dt=dt_sub, h=BE%wat_grid%dz, &
+                                                      diff=BE%BS%vert_diff(kwb-1:kws), cnpar=BE%params%cnpar, tricoef=BE%wat_trid, ierr=ierr)
+                            end if
 
                         end if
                         BE%SED%swi_flux(ivar) = swi_flux 
@@ -1256,13 +1284,24 @@ contains
                 do ivar=1, nint
 
                     enforce_nonneg = .false.
+                    irelax = 0
+                    if (BE%has_input .and. BE%inputs%has_active_relaxations) then
+                        irelax = BE%inputs%relaxation_index(ivar)
+                    end if
                     if (.not. BE%tracer_info(ivar)%disable_transport) then
 
                         ! Mix internal tracers vertically due to turbulent diffusion.
                         if (.not. BE%params%sediments_enabled .or. BE%tracer_info(ivar)%is_particulate) then
                             ! If sediments are enabled, diffusion of solutes within the water column is handled above
-                            call scalar_diffusion(Var=BE%BS%interior_state(kwb:kws,ivar), N=nwat, dt=dt_sub, h=BE%wat_grid%dz, &
-                                              diff=BE%BS%vert_diff(kwb-1:kws), cnpar=BE%params%cnpar, tricoef=BE%wat_trid, ierr=ierr)
+                            if (irelax > 0) then
+                                call scalar_diffusion(Var=BE%BS%interior_state(kwb:kws,ivar), N=nwat, dt=dt_sub, h=BE%wat_grid%dz, &
+                                                      diff=BE%BS%vert_diff(kwb-1:kws), cnpar=BE%params%cnpar, tricoef=BE%wat_trid, ierr=ierr, &
+                                                      relax_target=BE%inputs%relaxation_targets(:,irelax), &
+                                                      relax_timescale=BE%inputs%relaxations(irelax)%timescale_s)
+                            else
+                                call scalar_diffusion(Var=BE%BS%interior_state(kwb:kws,ivar), N=nwat, dt=dt_sub, h=BE%wat_grid%dz, &
+                                                      diff=BE%BS%vert_diff(kwb-1:kws), cnpar=BE%params%cnpar, tricoef=BE%wat_trid, ierr=ierr)
+                            end if
                         end if
 
                         if (any(BE%vel_faces(:, ivar) /= 0._rk)) then  
