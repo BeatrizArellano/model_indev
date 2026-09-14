@@ -131,7 +131,7 @@ contains
         if (BE%has_input) then
             call BE%inputs%init(BE%params%input_cfg_file, BE%model, BE%has_input, k_wat_sfc=BE%k_wat_sfc, k_wat_btm=BE%k_wat_btm, &
                                 calendar_cfg=cal, location=location, start_datetime=sim_startdate, end_datetime=sim_enddate, &
-                                load_yearly=load_yearly, ok=ok, errmsg=msg)
+                                load_yearly=load_yearly, target_depth=BE%wat_grid%z, ok=ok, errmsg=msg)
 
             if (.not. ok) stop 'BioInputs init failed: '//trim(msg)
         end if
@@ -140,7 +140,8 @@ contains
         !  Prepare external input data
         !--------------------------------------------------------
         if (BE%has_input) then
-            if (BE%inputs%has_active_dependencies .or. BE%inputs%has_active_sources) then
+            if (BE%inputs%has_active_dependencies .or. BE%inputs%has_active_sources .or. &
++                BE%inputs%has_active_relaxations) then
                 call BE%inputs%prepare(timestep, ok=ok, errmsg=msg)
                 if (.not. ok) stop 'BioInputs init failed: '//trim(msg)
             end if
@@ -837,7 +838,8 @@ contains
         ! Update external input data
         !-------------------------------------------
         if (BE%has_input) then
-            if (BE%inputs%has_active_dependencies .or. BE%inputs%has_active_sources) then
+            if (BE%inputs%has_active_dependencies .or. BE%inputs%has_active_sources .or. &
++                BE%inputs%has_active_relaxations) then
                 call BE%inputs%tick(model_time_int)
                 call BE%inputs%update(model_time_int)
             end if
