@@ -314,11 +314,10 @@ contains
       class(DataManager), intent(inout) :: self
       character(*),       intent(in)    :: name
       integer(lk),        intent(in)    :: model_time
-      real(rk),            intent(out)   :: values(:)
-      logical, optional,   intent(out)   :: ok
+      real(rk),           intent(out)   :: values(:)
+      logical, optional,  intent(out)   :: ok
       character(*), optional, intent(out) :: errmsg
 
-      type(DataVarSeries), pointer :: series
       integer :: idx
       character(len=512) :: lmsg
 
@@ -343,50 +342,52 @@ contains
          return
       end if
 
-      series => self%data_curr%vars(idx)
+      associate(series => self%data_curr%vars(idx))
 
-      if (.not. series%is_profile) then
-         lmsg = 'variable '//trim(name)//' is scalar; use DataManager%value instead'
-         if (present(ok))     ok = .false.
-         if (present(errmsg)) errmsg = 'DataManager%profile: '//trim(lmsg)
-         call stop_fatal('profile', lmsg, self%stop_on_error)
-         return
-      end if
+         if (.not. series%is_profile) then
+            lmsg = 'variable '//trim(name)//' is scalar; use DataManager%value instead'
+            if (present(ok))     ok = .false.
+            if (present(errmsg)) errmsg = 'DataManager%profile: '//trim(lmsg)
+            call stop_fatal('profile', lmsg, self%stop_on_error)
+            return
+         end if
 
-      if (.not. allocated(series%depth)) then
-         lmsg = 'profile depth is not allocated for '//trim(name)
-         if (present(ok))     ok = .false.
-         if (present(errmsg)) errmsg = 'DataManager%profile: '//trim(lmsg)
-         call stop_fatal('profile', lmsg, self%stop_on_error)
-         return
-      end if
+         if (.not. allocated(series%depth)) then
+            lmsg = 'profile depth is not allocated for '//trim(name)
+            if (present(ok))     ok = .false.
+            if (present(errmsg)) errmsg = 'DataManager%profile: '//trim(lmsg)
+            call stop_fatal('profile', lmsg, self%stop_on_error)
+            return
+         end if
 
-      if (.not. allocated(series%profile_values)) then
-         lmsg = 'profile values are not allocated for '//trim(name)
-         if (present(ok))     ok = .false.
-         if (present(errmsg)) errmsg = 'DataManager%profile: '//trim(lmsg)
-         call stop_fatal('profile', lmsg, self%stop_on_error)
-         return
-      end if
+         if (.not. allocated(series%profile_values)) then
+            lmsg = 'profile values are not allocated for '//trim(name)
+            if (present(ok))     ok = .false.
+            if (present(errmsg)) errmsg = 'DataManager%profile: '//trim(lmsg)
+            call stop_fatal('profile', lmsg, self%stop_on_error)
+            return
+         end if
 
-      if (size(values) /= size(series%depth)) then
-         lmsg = 'output size does not match profile depth size for '//trim(name)
-         if (present(ok))     ok = .false.
-         if (present(errmsg)) errmsg = 'DataManager%profile: '//trim(lmsg)
-         call stop_fatal('profile', lmsg, self%stop_on_error)
-         return
-      end if
+         if (size(values) /= size(series%depth)) then
+            lmsg = 'output size does not match profile depth size for '//trim(name)
+            if (present(ok))     ok = .false.
+            if (present(errmsg)) errmsg = 'DataManager%profile: '//trim(lmsg)
+            call stop_fatal('profile', lmsg, self%stop_on_error)
+            return
+         end if
 
-      if (series%n <= 0) then
-         lmsg = 'empty input series for '//trim(name)
-         if (present(ok))     ok = .false.
-         if (present(errmsg)) errmsg = 'DataManager%profile: '//trim(lmsg)
-         call stop_fatal('profile', lmsg, self%stop_on_error)
-         return
-      end if
+         if (series%n <= 0) then
+            lmsg = 'empty input series for '//trim(name)
+            if (present(ok))     ok = .false.
+            if (present(errmsg)) errmsg = 'DataManager%profile: '//trim(lmsg)
+            call stop_fatal('profile', lmsg, self%stop_on_error)
+            return
+         end if
 
-      call advance_series_cursor(series, self%sampling_time(series, model_time))
-      values = series%profile_values(:, series%idx)
+         call advance_series_cursor(series, self%sampling_time(series, model_time))
+         values = series%profile_values(:, series%idx)
+
+      end associate
    end subroutine profile
 
 
