@@ -28,29 +28,29 @@ contains
       real(rk) :: source_min, source_max, target_min, target_max
 
       if (.not. spec%is_profile) then
-         error stop 'load_netcdf_profile_series: spec is not marked as a profile for '//trim(spec%name)
+         call profile_load_error('Spec is not marked as a profile for ', spec%name)
       end if
 
       if (.not. allocated(spec%source_depth)) then
-         error stop 'load_netcdf_profile_series: source_depth is not available for '//trim(spec%name)
+         call profile_load_error('source_depth is not available for ', spec%name)
       end if
       if (size(spec%source_depth) < 2) then
-         error stop 'load_netcdf_profile_series: source_depth must contain at least two levels for '//trim(spec%name)
+         call profile_load_error('source_depth must contain at least two levels for ', spec%name)
       end if
 
       if (.not. allocated(spec%target_depth)) then
-         error stop 'load_netcdf_profile_series: target_depth is not available for '//trim(spec%name)
+         call profile_load_error('target_depth is not available for ', spec%name)
       end if
       if (size(spec%target_depth) < 1) then
-         error stop 'load_netcdf_profile_series: target_depth is empty for '//trim(spec%name)
+         call profile_load_error('target_depth is empty for ', spec%name)
       end if
       if (any(.not. ieee_is_finite(spec%target_depth))) then
-         error stop 'load_netcdf_profile_series: target_depth contains NaN/Inf for '//trim(spec%name)
+         call profile_load_error('target_depth contains NaN/Inf for ', spec%name)
       end if
 
       nt = max(0, i1 - i0 + 1)
       if (nt <= 0) then
-         error stop 'load_netcdf_profile_series: empty time window for '//trim(spec%name)
+         call profile_load_error('Empty time window for ', spec%name)
       end if
 
       call read_netcdf_profile_at_point(db, trim(spec%source_var), trim(scan%time_dim), &
@@ -59,10 +59,10 @@ contains
                                         scan%yi, scan%xi, native_values)
 
       if (size(native_values, 1) /= size(spec%source_depth)) then
-         error stop 'load_netcdf_profile_series: source depth size does not match profile data for '//trim(spec%name)
+         call profile_load_error('Source depth size does not match profile data for ', spec%name)
       end if
       if (size(native_values, 2) /= nt) then
-         error stop 'load_netcdf_profile_series: time size does not match profile data for '//trim(spec%name)
+         call profile_load_error('Time size does not match profile data for ', spec%name)
       end if
 
       source_min = minval(spec%source_depth)
@@ -71,7 +71,7 @@ contains
       target_max = maxval(spec%target_depth)
 
       if (target_max < source_min .or. target_min > source_max) then
-         error stop 'load_netcdf_profile_series: source and target depth ranges do not overlap for '//trim(spec%name)
+         call profile_load_error('Source and target depth ranges do not overlap for ', spec%name)
       end if
 
       if (allocated(series%t_axis)) deallocate(series%t_axis)
@@ -186,5 +186,13 @@ contains
          end if
       end do
    end subroutine interpolate_profile_linear
+
+
+   subroutine profile_load_error(message, name)
+      character(*), intent(in) :: message, name
+
+      write(*,'(A)') 'ERROR load_netcdf_profile_series: '//trim(message)//trim(name)
+      error stop 'load_netcdf_profile_series failed.'
+   end subroutine profile_load_error
 
 end module data_loader_netcdf_profile
