@@ -58,6 +58,11 @@ module data_types
 
       real(rk) :: const_value = 0.0_rk
 
+      ! Optional vertical-profile metadata. Scalar inputs leave these untouched.
+      logical :: is_profile = .false.
+      character(:), allocatable :: depth_var
+      real(rk), allocatable :: target_depth(:)
+
       integer :: file_index = 0
       integer :: calendar   = 0
 
@@ -83,6 +88,12 @@ module data_types
       integer(lk), allocatable :: t_axis(:)
       integer(lk), allocatable :: t_edge(:)
       real(rk),    allocatable :: values(:)
+
+      ! Optional vertical-profile storage on the target/model grid.
+      ! profile_values is ordered as (depth, time).
+      logical :: is_profile = .false.
+      real(rk), allocatable :: depth(:)
+      real(rk), allocatable :: profile_values(:,:)
 
       type(CFCalendar) :: cal
       type(CFUnits)    :: u
