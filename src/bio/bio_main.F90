@@ -141,7 +141,7 @@ contains
         !--------------------------------------------------------
         if (BE%has_input) then
             if (BE%inputs%has_active_dependencies .or. BE%inputs%has_active_sources .or. &
-+                BE%inputs%has_active_relaxations) then
+                BE%inputs%has_active_relaxations) then
                 call BE%inputs%prepare(timestep, ok=ok, errmsg=msg)
                 if (.not. ok) stop 'BioInputs init failed: '//trim(msg)
             end if
@@ -839,7 +839,7 @@ contains
         !-------------------------------------------
         if (BE%has_input) then
             if (BE%inputs%has_active_dependencies .or. BE%inputs%has_active_sources .or. &
-+                BE%inputs%has_active_relaxations) then
+                BE%inputs%has_active_relaxations) then
                 call BE%inputs%tick(model_time_int)
                 call BE%inputs%update(model_time_int)
             end if
