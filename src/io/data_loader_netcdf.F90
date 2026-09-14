@@ -28,8 +28,12 @@ module data_loader_netcdf
       character(:), allocatable :: path
 
       character(:), allocatable :: time_name
+      character(:), allocatable :: time_dim
+
       character(:), allocatable :: lat_name
+      character(:), allocatable :: lat_dim
       character(:), allocatable :: lon_name
+      character(:), allocatable :: lon_dim
 
       logical :: has_latlon = .false.
       logical :: is_point   = .true.
@@ -128,6 +132,8 @@ contains
          return
       end if
 
+      scan%time_dim = trim(dimnames(1))
+
       ntime = dimlens(1)
       if (ntime < 1) then
          errmsg = 'CF time variable '//trim(scan%time_name)//' is empty in '//trim(path)//'.'
@@ -211,8 +217,8 @@ contains
       call clear_char_list(scan%vars_missing)
 
       do i = 1, size(required_vars)
-         call check_var_dims_cf(db, trim(required_vars(i)), scan%has_latlon, scan%time_name, &
-                                scan%lat_name, scan%lon_name, scan%vars_present, scan%vars_missing)
+         call check_var_dims_cf(db, trim(required_vars(i)), scan%has_latlon, scan%time_dim, &
+                                scan%lat_dim, scan%lon_dim, scan%vars_present, scan%vars_missing)
       end do
 
       if (allocated(scan%vars_missing) .and. size(scan%vars_missing) > 0) then
@@ -223,8 +229,8 @@ contains
       end if
 
       do i = 1, size(required_vars)
-         if (.not. is_var_valid_in_period(db, trim(required_vars(i)), scan%time_name, &
-                                          scan%lat_name, scan%lon_name, scan%has_latlon, &
+         if (.not. is_var_valid_in_period(db, trim(required_vars(i)), scan%time_dim, &
+                                          scan%lat_dim, scan%lon_dim, scan%has_latlon, &
                                           scan%i0, scan%i1, scan%yi, scan%xi)) then
             errmsg = 'Variable '//trim(required_vars(i))// &
                      ' contains NaN/Inf values in '//trim(path)// &
@@ -320,8 +326,8 @@ contains
 
       series%t_axis = nint(scan%axis%t_s(i0:i1), kind=lk)
 
-      call read_netcdf_timeseries_at_point(db, trim(spec%source_var), trim(scan%time_name), i0, i1, &
-                                           scan%has_latlon, trim(scan%lat_name), trim(scan%lon_name), &
+      call read_netcdf_timeseries_at_point(db, trim(spec%source_var), trim(scan%time_dim), i0, i1, &
+                                           scan%has_latlon, trim(scan%lat_dim), trim(scan%lon_dim), &
                                            scan%yi, scan%xi, series%values)
 
       allocate(series%t_edge(nt + 1))
@@ -349,10 +355,10 @@ contains
    end subroutine load_netcdf_series
 
 
-   subroutine read_netcdf_timeseries_at_point(db, varname, time_name, i0, i1, &
-                                              has_latlon, lat_name, lon_name, yi, xi, out)
+   subroutine read_netcdf_timeseries_at_point(db, varname, time_dim, i0, i1, &
+                                              has_latlon, lat_dim, lon_dim, yi, xi, out)
       type(NcFile), intent(in)  :: db
-      character(*), intent(in)  :: varname, time_name, lat_name, lon_name
+      character(*), intent(in)  :: varname, time_dim, lat_dim, lon_dim
       logical,      intent(in)  :: has_latlon
       integer,      intent(in)  :: i0, i1, yi, xi
       real(rk),     intent(out) :: out(:)
@@ -362,6 +368,8 @@ contains
       integer, allocatable :: dlens(:)
       integer :: itime, ilat, ilon, nt
       integer :: start(NF90_MAX_VAR_DIMS), count(NF90_MAX_VAR_DIMS)
+      logical :: uses_latlon, ok_dims
+      character(len=512) :: errmsg_dims
 
       call nc_check(nf90_inq_varid(db%ncid, trim(varname), vid), 'inq_varid('//trim(varname)//')')
       call nc_check(nf90_inquire_variable(db%ncid, vid, xtype=xtype, ndims=ndims, dimids=dimids, nAtts=natts), &
@@ -371,17 +379,12 @@ contains
 
       call nc_var_dims(db, varname, dnames, dlens)
 
-      itime = find_name(dnames, trim(time_name))
-      if (itime <= 0) call nc_check(NF90_EBADDIM, 'time dimension not found for '//trim(varname))
-
-      if (has_latlon) then
-         ilat = find_name(dnames, trim(lat_name))
-         ilon = find_name(dnames, trim(lon_name))
-         if (ilat <= 0 .or. ilon <= 0) call nc_check(NF90_EBADDIM, 'lat/lon dimensions not found for '//trim(varname))
-         if (yi < 1 .or. yi > dlens(ilat) .or. xi < 1 .or. xi > dlens(ilon)) &
-            call nc_check(NF90_EEDGE, 'selected lat/lon index out of range for '//trim(varname))
-      else
-         if (ndims /= 1) call nc_check(NF90_EINVALCOORDS, trim(varname)//' must be 1-D when no lat/lon axes are present')
+      call resolve_timeseries_dims(db, varname, time_dim, has_latlon, lat_dim, lon_dim, &
+                                   uses_latlon, itime, ilat, ilon, ok_dims, errmsg_dims)
+      if (.not. ok_dims) then
+         write(*,'(A)') trim(errmsg_dims)
+         call nc_check(NF90_EBADDIM, &
+                        'read_netcdf_timeseries_at_point: '//trim(varname))
       end if
 
       nt = i1 - i0 + 1
@@ -391,10 +394,17 @@ contains
 
       start(1:ndims) = 1
       count(1:ndims) = 1
+
       start(itime) = i0
       count(itime) = nt
 
-      if (has_latlon) then
+      if (uses_latlon) then
+         if (yi < 1 .or. yi > dlens(ilat) .or. &
+            xi < 1 .or. xi > dlens(ilon)) then
+            call nc_check(NF90_EEDGE, &
+                           'selected lat/lon index out of range for '//trim(varname))
+         end if
+
          start(ilat) = yi
          start(ilon) = xi
       end if
@@ -520,6 +530,8 @@ contains
          scan%lon_convention = '-'
          scan%lat_found = location%lat
          scan%lon_found = location%lon
+         scan%lat_dim = ''
+         scan%lon_dim = ''
          scan%yi = 1
          scan%xi = 1
          ok = .true.
@@ -531,6 +543,7 @@ contains
          errmsg = 'Latitude coordinate must be 1-D; curvilinear grids are not supported yet.'
          return
       end if
+      scan%lat_dim = trim(dimnames(1))
       allocate(scan%lat(dimlens(1)))
       call nc_read_real_1d(db, scan%lat_name, scan%lat)
 
@@ -539,7 +552,15 @@ contains
          errmsg = 'Longitude coordinate must be 1-D; curvilinear grids are not supported yet.'
          return
       end if
+      scan%lon_dim = trim(dimnames(1))
       allocate(scan%lon(dimlens(1)))
+
+      if (trim(scan%lat_dim) == trim(scan%lon_dim)) then
+         errmsg = 'Latitude and longitude coordinates must use distinct dimensions; '// &
+                  'paired horizontal coordinates are not supported yet.'
+         return
+      end if
+
       call nc_read_real_1d(db, scan%lon_name, scan%lon)
 
       if (any(.not. ieee_is_finite(scan%lat)) .or. any(.not. ieee_is_finite(scan%lon))) then
@@ -578,48 +599,103 @@ contains
    end subroutine find_horizontal_coordinates
 
 
-   subroutine check_var_dims_cf(db, vname, require_latlon, time_name, lat_name, lon_name, present, missing)
+   subroutine resolve_timeseries_dims(db, vname, time_dim, has_latlon, lat_dim, lon_dim, &
+                                   uses_latlon, itime, ilat, ilon, ok, errmsg)
       type(NcFile), intent(in) :: db
       character(*), intent(in) :: vname
-      logical,      intent(in) :: require_latlon
-      character(*), intent(in) :: time_name, lat_name, lon_name
+      character(*), intent(in) :: time_dim
+      logical,      intent(in) :: has_latlon
+      character(*), intent(in) :: lat_dim, lon_dim
+
+      logical,      intent(out) :: uses_latlon
+      integer,      intent(out) :: itime, ilat, ilon
+      logical,      intent(out) :: ok
+      character(*), intent(out) :: errmsg
+
+      character(:), allocatable :: dnames(:)
+      integer, allocatable :: dlens(:)
+      integer :: ndims
+
+      ok = .false.
+      errmsg = ''
+
+      uses_latlon = .false.
+      itime = 0
+      ilat  = 0
+      ilon  = 0
+
+      call nc_var_dims(db, vname, dnames, dlens)
+
+      ndims = size(dnames)
+
+      itime = find_name(dnames, trim(time_dim))
+      if (itime <= 0) then
+         errmsg = 'Variable '//trim(vname)//' does not contain time dimension '// &
+                  trim(time_dim)//'.'
+         return
+      end if
+
+      ! Pure time-dependent variable: var(time)
+      if (ndims == 1) then
+         ok = .true.
+         return
+      end if
+
+      ! Time-dependent spatial variable: var(time, lat, lon)
+      ! Dimension order does not matter.
+      if (ndims == 3 .and. has_latlon) then
+
+         ilat = find_name(dnames, trim(lat_dim))
+         ilon = find_name(dnames, trim(lon_dim))
+
+         if (ilat > 0 .and. ilon > 0 .and. &
+            ilat /= ilon .and. &
+            itime /= ilat .and. itime /= ilon) then
+
+            uses_latlon = .true.
+            ok = .true.
+            return
+         end if
+      end if
+
+      errmsg = 'Variable '//trim(vname)//' has unsupported dimensions.'
+
+   end subroutine resolve_timeseries_dims
+
+
+   subroutine check_var_dims_cf(db, vname, has_latlon, time_dim, lat_dim, lon_dim, present, missing)
+      type(NcFile), intent(in) :: db
+      character(*), intent(in) :: vname
+      logical,      intent(in) :: has_latlon
+      character(*), intent(in) :: time_dim, lat_dim, lon_dim
       character(:), allocatable, intent(inout) :: present(:), missing(:)
 
-      character(:), allocatable :: dimnames(:)
-      integer, allocatable :: dimlens(:)
+      logical :: uses_latlon, ok_dims
+      integer :: itime, ilat, ilon
+      character(len=512) :: errmsg_dims
 
       if (.not. nc_has_var(db, vname)) then
          call append_string(missing, vname)
          return
       end if
 
-      call nc_var_dims(db, vname, dimnames, dimlens)
+      call resolve_timeseries_dims(db, vname, time_dim, has_latlon, lat_dim, lon_dim, &
+                                    uses_latlon, itime, ilat, ilon, ok_dims, errmsg_dims)
 
-      if (.not. has_name(dimnames, trim(time_name))) then
+      if (.not. ok_dims) then
          call append_string(missing, vname)
          return
       end if
 
-      if (require_latlon) then
-         if (.not. has_name(dimnames, trim(lat_name))) then
-            call append_string(missing, vname)
-            return
-         end if
-
-         if (.not. has_name(dimnames, trim(lon_name))) then
-            call append_string(missing, vname)
-            return
-         end if
-      end if
-
       call append_string(present, vname)
+
    end subroutine check_var_dims_cf
 
 
-   logical function is_var_valid_in_period(db, vname, time_name, lat_name, lon_name, has_latlon, &
+   logical function is_var_valid_in_period(db, vname, time_dim, lat_dim, lon_dim, has_latlon, &
                                            i0, i1, yi, xi) result(good)
       type(NcFile), intent(in) :: db
-      character(*), intent(in) :: vname, time_name, lat_name, lon_name
+      character(*), intent(in) :: vname, time_dim, lat_dim, lon_dim
       logical,      intent(in) :: has_latlon
       integer,      intent(in) :: i0, i1, yi, xi
 
@@ -634,7 +710,9 @@ contains
       end if
 
       allocate(buf(nt))
-      call read_netcdf_timeseries_at_point(db, vname, time_name, i0, i1, has_latlon, lat_name, lon_name, yi, xi, buf)
+      call read_netcdf_timeseries_at_point(db, trim(vname), trim(time_dim), i0, i1, &
+                                          has_latlon, trim(lat_dim), trim(lon_dim), &
+                                          yi, xi, buf)
       if (any(.not. ieee_is_finite(buf))) good = .false.
    end function is_var_valid_in_period
 
@@ -643,8 +721,11 @@ contains
 
       if (allocated(scan%path)) deallocate(scan%path)
       if (allocated(scan%time_name)) deallocate(scan%time_name)
+      if (allocated(scan%time_dim))  deallocate(scan%time_dim)
       if (allocated(scan%lat_name)) deallocate(scan%lat_name)
+      if (allocated(scan%lat_dim))  deallocate(scan%lat_dim)
       if (allocated(scan%lon_name)) deallocate(scan%lon_name)
+      if (allocated(scan%lon_dim))  deallocate(scan%lon_dim)
       if (allocated(scan%lat)) deallocate(scan%lat)
       if (allocated(scan%lon)) deallocate(scan%lon)
       if (allocated(scan%lon_convention)) deallocate(scan%lon_convention)
