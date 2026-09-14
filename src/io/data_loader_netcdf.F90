@@ -21,6 +21,7 @@ module data_loader_netcdf
    public :: build_netcdf_year_windows
    public :: load_netcdf_series
    public :: read_netcdf_timeseries_at_point
+   public :: read_netcdf_profile_at_point
 
    integer(lk), parameter :: INF_EDGE = huge(1_lk)
 
@@ -258,6 +259,18 @@ contains
             return
          end if
 
+         if (.not. is_profile_valid_in_period(db, trim(specs(i)%source_var), &
+                                              scan%time_dim, specs(i)%depth_dim, &
+                                              scan%lat_dim, scan%lon_dim, scan%has_latlon, &
+                                              scan%i0, scan%i1, scan%yi, scan%xi)) then
+            errmsg = 'Profile variable '//trim(specs(i)%source_var)// &
+                     ' contains NaN/Inf values in '//trim(path)// &
+                     ' during the simulation period. Verify the input data for this location.'
+            call nc_close(db)
+            ok = .false.
+            return
+         end if
+
          call append_string(scan%vars_present, trim(specs(i)%source_var))
       end do
 
@@ -431,6 +444,88 @@ contains
       call nc_check(nf90_get_var(db%ncid, vid, out, start=start(1:ndims), count=count(1:ndims)), &
                     'get_var slice '//trim(varname))
    end subroutine read_netcdf_timeseries_at_point
+
+
+   subroutine read_netcdf_profile_at_point(db, varname, time_dim, depth_dim, i0, i1, &
+                                           has_latlon, lat_dim, lon_dim, yi, xi, out)
+      type(NcFile), intent(in) :: db
+      character(*), intent(in) :: varname, time_dim, depth_dim, lat_dim, lon_dim
+      logical,      intent(in) :: has_latlon
+      integer,      intent(in) :: i0, i1, yi, xi
+      real(rk), allocatable, intent(out) :: out(:,:)
+
+      integer :: vid, ndims, dimids(NF90_MAX_VAR_DIMS), xtype, natts
+      character(:), allocatable :: dnames(:)
+      integer, allocatable :: dlens(:)
+      integer :: itime, idepth, ilat, ilon, nt, ndepth, it
+      integer :: start(NF90_MAX_VAR_DIMS), count(NF90_MAX_VAR_DIMS)
+      logical :: uses_latlon, ok_dims
+      character(len=512) :: errmsg_dims
+
+      call nc_check(nf90_inq_varid(db%ncid, trim(varname), vid), &
+                    'inq_varid('//trim(varname)//')')
+      call nc_check(nf90_inquire_variable(db%ncid, vid, xtype=xtype, ndims=ndims, &
+                                          dimids=dimids, nAtts=natts), &
+                    'inquire_variable('//trim(varname)//')')
+
+      if (xtype == NF90_CHAR) then
+         call nc_check(NF90_EBADTYPE, &
+                       'read_netcdf_profile_at_point: '//trim(varname)//' is character')
+      end if
+
+      call nc_var_dims(db, varname, dnames, dlens)
+
+      call resolve_profile_dims(db, varname, time_dim, depth_dim, has_latlon, &
+                                lat_dim, lon_dim, uses_latlon, itime, idepth, &
+                                ilat, ilon, ok_dims, errmsg_dims)
+      if (.not. ok_dims) then
+         write(*,'(A)') trim(errmsg_dims)
+         call nc_check(NF90_EBADDIM, &
+                       'read_netcdf_profile_at_point: '//trim(varname))
+      end if
+
+      nt = i1 - i0 + 1
+      if (nt < 1) then
+         call nc_check(NF90_EEDGE, 'empty time window for '//trim(varname))
+      end if
+      if (i0 < 1 .or. i1 > dlens(itime)) then
+         call nc_check(NF90_EEDGE, 'time indices out of range for '//trim(varname))
+      end if
+
+      ndepth = dlens(idepth)
+      if (ndepth < 1) then
+         call nc_check(NF90_EEDGE, 'empty depth dimension for '//trim(varname))
+      end if
+
+      allocate(out(ndepth, nt))
+
+      start(1:ndims) = 1
+      count(1:ndims) = 1
+      count(idepth) = ndepth
+
+      if (uses_latlon) then
+         if (yi < 1 .or. yi > dlens(ilat) .or. &
+            xi < 1 .or. xi > dlens(ilon)) then
+            call nc_check(NF90_EEDGE, &
+                          'selected lat/lon index out of range for '//trim(varname))
+         end if
+
+         start(ilat) = yi
+         start(ilon) = xi
+      end if
+
+      ! Read one complete vertical profile at each time. All other dimensions
+      ! are singleton selections, so the returned array always has (depth,time)
+      ! layout regardless of the source variable's dimension order.
+      do it = 1, nt
+         start(itime) = i0 + it - 1
+         count(itime) = 1
+
+         call nc_check(nf90_get_var(db%ncid, vid, out(:,it), &
+                                    start=start(1:ndims), count=count(1:ndims)), &
+                       'get_var profile slice '//trim(varname))
+      end do
+   end subroutine read_netcdf_profile_at_point
 
 
    subroutine collect_required_vars(specs, path, names)
@@ -908,6 +1003,31 @@ contains
                                           yi, xi, buf)
       if (any(.not. ieee_is_finite(buf))) good = .false.
    end function is_var_valid_in_period
+
+
+   logical function is_profile_valid_in_period(db, vname, time_dim, depth_dim, &
+                                               lat_dim, lon_dim, has_latlon, &
+                                               i0, i1, yi, xi) result(good)
+      type(NcFile), intent(in) :: db
+      character(*), intent(in) :: vname, time_dim, depth_dim, lat_dim, lon_dim
+      logical,      intent(in) :: has_latlon
+      integer,      intent(in) :: i0, i1, yi, xi
+
+      real(rk), allocatable :: buf(:,:)
+
+      good = .true.
+      if (i1 < i0) then
+         good = .false.
+         return
+      end if
+
+      call read_netcdf_profile_at_point(db, trim(vname), trim(time_dim), &
+                                        trim(depth_dim), i0, i1, has_latlon, &
+                                        trim(lat_dim), trim(lon_dim), yi, xi, buf)
+
+      if (any(.not. ieee_is_finite(buf))) good = .false.
+   end function is_profile_valid_in_period
+
 
    subroutine clear_scan(scan)
       type(NetcdfScan), intent(inout) :: scan
