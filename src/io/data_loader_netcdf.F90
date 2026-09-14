@@ -774,7 +774,11 @@ contains
       ok = .false.
       errmsg = ''
 
-      if (.not. allocated(spec%source_var) .or. len_trim(spec%source_var) == 0) then
+      if (.not. allocated(spec%source_var)) then
+         errmsg = 'Profile input is missing source_var.'
+         return
+      end if
+      if (len_trim(spec%source_var) == 0) then
          errmsg = 'Profile input is missing source_var.'
          return
       end if
@@ -784,7 +788,11 @@ contains
          return
       end if
 
-      if (.not. allocated(spec%depth_var) .or. len_trim(spec%depth_var) == 0) then
+      if (.not. allocated(spec%depth_var)) then
+         errmsg = 'Profile variable '//trim(spec%source_var)//' requires depth_var.'
+         return
+      end if
+      if (len_trim(spec%depth_var) == 0) then
          errmsg = 'Profile variable '//trim(spec%source_var)//' requires depth_var.'
          return
       end if
