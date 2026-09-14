@@ -41,6 +41,7 @@ module data_manager
       procedure :: prepare
       procedure :: tick
       procedure :: value
+      procedure :: profile
       procedure :: sampling_time
       procedure :: get_index
       procedure :: clear      
@@ -274,6 +275,7 @@ contains
       character(*), optional, intent(out) :: errmsg
 
       integer :: idx
+      character(len=512) :: lmsg
 
       v = 0.0_rk
 
@@ -296,8 +298,119 @@ contains
          return
       end if
 
+      if (self%data_curr%vars(idx)%is_profile) then
+         lmsg = 'variable '//trim(name)//' is a profile; use DataManager%profile instead'
+         if (present(ok))     ok = .false.
+         if (present(errmsg)) errmsg = 'DataManager%value: '//trim(lmsg)
+         call stop_fatal('value', lmsg, self%stop_on_error)
+         return
+      end if
+
       v = value_at_step(self%data_curr%vars(idx), self%sampling_time(self%data_curr%vars(idx), model_time))
    end function value
+
+
+   subroutine profile(self, name, model_time, values, ok, errmsg)
+      class(DataManager), intent(inout) :: self
+      character(*),       intent(in)    :: name
+      integer(lk),        intent(in)    :: model_time
+      real(rk),            intent(out)   :: values(:)
+      logical, optional,   intent(out)   :: ok
+      character(*), optional, intent(out) :: errmsg
+
+      type(DataVarSeries), pointer :: series
+      integer :: idx
+      character(len=512) :: lmsg
+
+      values = 0.0_rk
+
+      if (present(ok))     ok = .true.
+      if (present(errmsg)) errmsg = ''
+
+      if (.not. self%have_curr) then
+         if (present(ok))     ok = .false.
+         if (present(errmsg)) errmsg = 'DataManager%profile: data are not loaded'
+         call stop_fatal('profile', 'data are not loaded', self%stop_on_error)
+         return
+      end if
+
+      idx = find_data_index(self%data_curr, name)
+
+      if (idx <= 0) then
+         if (present(ok))     ok = .false.
+         if (present(errmsg)) errmsg = 'DataManager%profile: missing variable '//trim(name)
+         call stop_fatal('profile', 'missing variable '//trim(name), self%stop_on_error)
+         return
+      end if
+
+      series => self%data_curr%vars(idx)
+
+      if (.not. series%is_profile) then
+         lmsg = 'variable '//trim(name)//' is scalar; use DataManager%value instead'
+         if (present(ok))     ok = .false.
+         if (present(errmsg)) errmsg = 'DataManager%profile: '//trim(lmsg)
+         call stop_fatal('profile', lmsg, self%stop_on_error)
+         return
+      end if
+
+      if (.not. allocated(series%depth)) then
+         lmsg = 'profile depth is not allocated for '//trim(name)
+         if (present(ok))     ok = .false.
+         if (present(errmsg)) errmsg = 'DataManager%profile: '//trim(lmsg)
+         call stop_fatal('profile', lmsg, self%stop_on_error)
+         return
+      end if
+
+      if (.not. allocated(series%profile_values)) then
+         lmsg = 'profile values are not allocated for '//trim(name)
+         if (present(ok))     ok = .false.
+         if (present(errmsg)) errmsg = 'DataManager%profile: '//trim(lmsg)
+         call stop_fatal('profile', lmsg, self%stop_on_error)
+         return
+      end if
+
+      if (size(values) /= size(series%depth)) then
+         lmsg = 'output size does not match profile depth size for '//trim(name)
+         if (present(ok))     ok = .false.
+         if (present(errmsg)) errmsg = 'DataManager%profile: '//trim(lmsg)
+         call stop_fatal('profile', lmsg, self%stop_on_error)
+         return
+      end if
+
+      if (series%n <= 0) then
+         lmsg = 'empty input series for '//trim(name)
+         if (present(ok))     ok = .false.
+         if (present(errmsg)) errmsg = 'DataManager%profile: '//trim(lmsg)
+         call stop_fatal('profile', lmsg, self%stop_on_error)
+         return
+      end if
+
+      call advance_series_cursor(series, self%sampling_time(series, model_time))
+      values = series%profile_values(:, series%idx)
+   end subroutine profile
+
+
+   subroutine advance_series_cursor(series, sample_time)
+      type(DataVarSeries), intent(inout) :: series
+      integer(lk),         intent(in)    :: sample_time
+
+      if (sample_time < series%t_edge(series%idx) .or. &
+         sample_time >= series%t_edge(series%idx + 1)) then
+         series%idx = 1
+         series%t_next = series%t_edge(2)
+      end if
+
+      do while (series%idx < series%n .and. sample_time >= series%t_edge(series%idx + 1))
+         series%idx = series%idx + 1
+
+         if (series%idx < series%n) then
+            series%t_next = series%t_edge(series%idx + 1)
+         else
+            series%t_next = huge(1_lk)
+         end if
+      end do
+   end subroutine advance_series_cursor
+
 
    integer(lk) function sampling_time(self, series, model_time) result(t_sample)
       class(DataManager), intent(in) :: self
