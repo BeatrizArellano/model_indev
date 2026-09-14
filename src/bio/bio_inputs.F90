@@ -87,6 +87,7 @@ module bio_inputs
         real(rk), allocatable :: dep_values(:)
         real(rk), allocatable :: source_values(:)
         real(rk), allocatable :: relaxation_targets(:,:) ! (water depth, relaxation)
+        integer,  allocatable :: relaxation_index(:)     ! FABM interior tracer -> relaxation entry (0 = none)
 
         type(BioInputSpec), allocatable :: dependencies(:)
         type(BioInputSpec), allocatable :: sources(:)
@@ -209,6 +210,8 @@ contains
         self%has_active_dependencies = allocated(self%dependencies) .and. size(self%dependencies) > 0
         self%has_active_sources      = allocated(self%sources)      .and. size(self%sources) > 0
         self%has_active_relaxations  = allocated(self%relaxations)  .and. size(self%relaxations) > 0
+
+        call build_relaxation_index(self, size(FabmMod%interior_state_variables))
 
         has_input = self%has_active_dependencies .or. self%has_active_sources .or. self%has_active_relaxations
 
@@ -342,6 +345,7 @@ contains
         if (allocated(self%dep_values)) deallocate(self%dep_values)
         if (allocated(self%source_values)) deallocate(self%source_values)
         if (allocated(self%relaxation_targets)) deallocate(self%relaxation_targets)
+        if (allocated(self%relaxation_index)) deallocate(self%relaxation_index)
 
         call self%dm%clear()
         call self%cfg%clear()
@@ -884,6 +888,27 @@ contains
         end do
         call move_alloc(tmp, specs)
     end subroutine compact_active_relaxations
+
+    subroutine build_relaxation_index(self, nint)
+        class(BioInputs), intent(inout) :: self
+        integer,          intent(in)    :: nint
+
+        integer :: i, ivar
+
+        if (allocated(self%relaxation_index)) deallocate(self%relaxation_index)
+        allocate(self%relaxation_index(nint))
+        self%relaxation_index = 0
+
+        if (.not. allocated(self%relaxations)) return
+
+        do i = 1, size(self%relaxations)
+            ivar = self%relaxations(i)%state_index
+            if (ivar < 1 .or. ivar > nint) then
+                error stop 'build_relaxation_index: invalid FABM interior-state index.'
+            end if
+            self%relaxation_index(ivar) = i
+        end do
+    end subroutine build_relaxation_index
 
     subroutine initialise_data_manager(self, calendar_cfg, location, start_datetime, end_datetime, load_yearly, &
                                        target_depth, ok, errmsg)
