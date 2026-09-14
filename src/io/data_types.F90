@@ -61,6 +61,8 @@ module data_types
       ! Optional vertical-profile metadata. Scalar inputs leave these untouched.
       logical :: is_profile = .false.
       character(:), allocatable :: depth_var
+      character(:), allocatable :: depth_dim
+      real(rk), allocatable :: source_depth(:)
       real(rk), allocatable :: target_depth(:)
 
       integer :: file_index = 0
