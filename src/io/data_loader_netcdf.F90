@@ -68,15 +68,15 @@ contains
 
    subroutine scan_netcdf_file(path, specs, location, start_datetime, end_datetime, &
                                calendar_default, scan, ok, errmsg, max_sep_deg)
-      character(*),        intent(in)  :: path
-      type(DataSpec),      intent(in)  :: specs(:)
-      type(LocationInfo),  intent(in)  :: location
-      type(DateTime),      intent(in)  :: start_datetime, end_datetime
-      character(*),        intent(in)  :: calendar_default
-      type(NetcdfScan),    intent(out) :: scan
-      logical,             intent(out) :: ok
-      character(*),        intent(out) :: errmsg
-      real(rk), optional,  intent(in)  :: max_sep_deg
+      character(*),        intent(in)    :: path
+      type(DataSpec),      intent(inout) :: specs(:)
+      type(LocationInfo),  intent(in)    :: location
+      type(DateTime),      intent(in)    :: start_datetime, end_datetime
+      character(*),        intent(in)    :: calendar_default
+      type(NetcdfScan),    intent(out)   :: scan
+      logical,             intent(out)   :: ok
+      character(*),        intent(out)   :: errmsg
+      real(rk), optional,  intent(in)    :: max_sep_deg
 
       type(NcFile) :: db
       character(:), allocatable :: required_vars(:)
@@ -216,6 +216,8 @@ contains
       call clear_char_list(scan%vars_present)
       call clear_char_list(scan%vars_missing)
 
+      ! Preserve the existing scalar pathway exactly as before. Profile variables
+      ! are validated separately because their vertical coordinate is spec-specific.
       do i = 1, size(required_vars)
          call check_var_dims_cf(db, trim(required_vars(i)), scan%has_latlon, scan%time_dim, &
                                 scan%lat_dim, scan%lon_dim, scan%vars_present, scan%vars_missing)
@@ -240,6 +242,23 @@ contains
             ok = .false. 
             return
          end if
+      end do
+
+      do i = 1, size(specs)
+         if (specs(i)%input_type /= DATA_INPUT_FILE) cycle
+         if (.not. specs(i)%is_profile) cycle
+         if (.not. allocated(specs(i)%path)) cycle
+         if (trim(specs(i)%path) /= trim(path)) cycle
+
+         call prepare_profile_spec(db, specs(i), scan%time_dim, scan%has_latlon, &
+                                   scan%lat_dim, scan%lon_dim, lok, errmsg)
+         if (.not. lok) then
+            call nc_close(db)
+            ok = .false.
+            return
+         end if
+
+         call append_string(scan%vars_present, trim(specs(i)%source_var))
       end do
 
       ok = .true.
@@ -427,6 +446,7 @@ contains
 
       do i = 1, size(specs)
          if (specs(i)%input_type /= DATA_INPUT_FILE) cycle
+         if (specs(i)%is_profile) cycle
          if (.not. allocated(specs(i)%path)) cycle
          if (trim(specs(i)%path) /= trim(path)) cycle
          if (.not. allocated(specs(i)%source_var)) cycle
@@ -438,6 +458,7 @@ contains
 
       do i = 1, size(specs)
          if (specs(i)%input_type /= DATA_INPUT_FILE) cycle
+         if (specs(i)%is_profile) cycle
          if (.not. allocated(specs(i)%path)) cycle
          if (trim(specs(i)%path) /= trim(path)) cycle
 
@@ -661,6 +682,170 @@ contains
       errmsg = 'Variable '//trim(vname)//' has unsupported dimensions.'
 
    end subroutine resolve_timeseries_dims
+
+
+   subroutine resolve_profile_dims(db, vname, time_dim, depth_dim, has_latlon, lat_dim, lon_dim, &
+                                   uses_latlon, itime, idepth, ilat, ilon, ok, errmsg)
+      type(NcFile), intent(in) :: db
+      character(*), intent(in) :: vname, time_dim, depth_dim
+      logical,      intent(in) :: has_latlon
+      character(*), intent(in) :: lat_dim, lon_dim
+
+      logical,      intent(out) :: uses_latlon
+      integer,      intent(out) :: itime, idepth, ilat, ilon
+      logical,      intent(out) :: ok
+      character(*), intent(out) :: errmsg
+
+      character(:), allocatable :: dnames(:)
+      integer, allocatable :: dlens(:)
+      integer :: ndims
+
+      ok = .false.
+      errmsg = ''
+
+      uses_latlon = .false.
+      itime  = 0
+      idepth = 0
+      ilat   = 0
+      ilon   = 0
+
+      call nc_var_dims(db, vname, dnames, dlens)
+      ndims = size(dnames)
+
+      itime  = find_name(dnames, trim(time_dim))
+      idepth = find_name(dnames, trim(depth_dim))
+
+      if (itime <= 0) then
+         errmsg = 'Profile variable '//trim(vname)//' does not contain time dimension '// &
+                  trim(time_dim)//'.'
+         return
+      end if
+
+      if (idepth <= 0) then
+         errmsg = 'Profile variable '//trim(vname)//' does not contain depth dimension '// &
+                  trim(depth_dim)//'.'
+         return
+      end if
+
+      if (itime == idepth) then
+         errmsg = 'Profile variable '//trim(vname)//' uses the same dimension for time and depth.'
+         return
+      end if
+
+      ! Point profile: var(time, depth), in either order.
+      if (ndims == 2) then
+         ok = .true.
+         return
+      end if
+
+      ! Gridded profile: var(time, depth, lat, lon), in arbitrary order.
+      if (ndims == 4 .and. has_latlon) then
+         ilat = find_name(dnames, trim(lat_dim))
+         ilon = find_name(dnames, trim(lon_dim))
+
+         if (ilat > 0 .and. ilon > 0 .and. &
+            ilat /= ilon .and. itime /= ilat .and. itime /= ilon .and. &
+            idepth /= ilat .and. idepth /= ilon) then
+            uses_latlon = .true.
+            ok = .true.
+            return
+         end if
+      end if
+
+      errmsg = 'Profile variable '//trim(vname)//' has unsupported dimensions.'
+   end subroutine resolve_profile_dims
+
+
+   subroutine prepare_profile_spec(db, spec, time_dim, has_latlon, lat_dim, lon_dim, ok, errmsg)
+      type(NcFile),   intent(in)    :: db
+      type(DataSpec), intent(inout) :: spec
+      character(*),   intent(in)    :: time_dim, lat_dim, lon_dim
+      logical,        intent(in)    :: has_latlon
+      logical,        intent(out)   :: ok
+      character(*),   intent(out)   :: errmsg
+
+      character(:), allocatable :: dimnames(:)
+      integer, allocatable :: dimlens(:)
+      logical :: uses_latlon, ok_dims
+      integer :: itime, idepth, ilat, ilon, ndepth
+      character(len=512) :: errmsg_dims
+      real(rk), allocatable :: dz(:)
+
+      ok = .false.
+      errmsg = ''
+
+      if (.not. allocated(spec%source_var) .or. len_trim(spec%source_var) == 0) then
+         errmsg = 'Profile input is missing source_var.'
+         return
+      end if
+
+      if (.not. nc_has_var(db, trim(spec%source_var))) then
+         errmsg = 'Profile variable '//trim(spec%source_var)//' is missing from NetCDF file.'
+         return
+      end if
+
+      if (.not. allocated(spec%depth_var) .or. len_trim(spec%depth_var) == 0) then
+         errmsg = 'Profile variable '//trim(spec%source_var)//' requires depth_var.'
+         return
+      end if
+
+      if (.not. nc_has_var(db, trim(spec%depth_var))) then
+         errmsg = 'Depth coordinate '//trim(spec%depth_var)//' for profile '// &
+                  trim(spec%source_var)//' is missing from NetCDF file.'
+         return
+      end if
+
+      call nc_var_dims(db, trim(spec%depth_var), dimnames, dimlens)
+      if (size(dimlens) /= 1) then
+         errmsg = 'Depth coordinate '//trim(spec%depth_var)//' must be 1-D.'
+         return
+      end if
+
+      spec%depth_dim = trim(dimnames(1))
+      ndepth = dimlens(1)
+      if (ndepth < 2) then
+         errmsg = 'Depth coordinate '//trim(spec%depth_var)//' must contain at least two levels.'
+         return
+      end if
+
+      if (trim(spec%depth_dim) == trim(time_dim)) then
+         errmsg = 'Depth coordinate '//trim(spec%depth_var)//' cannot use the time dimension.'
+         return
+      end if
+
+      if (has_latlon) then
+         if (trim(spec%depth_dim) == trim(lat_dim) .or. trim(spec%depth_dim) == trim(lon_dim)) then
+            errmsg = 'Depth coordinate '//trim(spec%depth_var)//' must use a dimension distinct from latitude/longitude.'
+            return
+         end if
+      end if
+
+      if (allocated(spec%source_depth)) deallocate(spec%source_depth)
+      allocate(spec%source_depth(ndepth))
+      call nc_read_real_1d(db, trim(spec%depth_var), spec%source_depth)
+
+      if (any(.not. ieee_is_finite(spec%source_depth))) then
+         errmsg = 'Depth coordinate '//trim(spec%depth_var)//' contains NaN/Inf values.'
+         return
+      end if
+
+      allocate(dz(ndepth - 1))
+      dz = spec%source_depth(2:ndepth) - spec%source_depth(1:ndepth - 1)
+      if (.not. (all(dz > 0.0_rk) .or. all(dz < 0.0_rk))) then
+         errmsg = 'Depth coordinate '//trim(spec%depth_var)//' must be strictly monotonic.'
+         return
+      end if
+
+      call resolve_profile_dims(db, trim(spec%source_var), trim(time_dim), trim(spec%depth_dim), &
+                                has_latlon, trim(lat_dim), trim(lon_dim), uses_latlon, &
+                                itime, idepth, ilat, ilon, ok_dims, errmsg_dims)
+      if (.not. ok_dims) then
+         errmsg = trim(errmsg_dims)
+         return
+      end if
+
+      ok = .true.
+   end subroutine prepare_profile_spec
 
 
    subroutine check_var_dims_cf(db, vname, has_latlon, time_dim, lat_dim, lon_dim, present, missing)
