@@ -5,6 +5,7 @@ module data_loader
                                   DATA_FORMAT_WHITESPACE, DATA_TIME_ABSOLUTE
    use data_loader_netcdf,  only: NetcdfScan, scan_netcdf_file, &
                                   build_netcdf_year_windows, load_netcdf_series
+   use data_loader_netcdf_profile, only: load_netcdf_profile_series
    use data_loader_text,    only: TextScan, scan_text_file, build_text_full_window, load_text_series
    use geo_utils,           only: LocationInfo
    use netcdf_io,           only: NcFile, nc_open, nc_close
@@ -291,7 +292,11 @@ contains
                   return
                end if
 
-               call load_netcdf_series(input%vars(i), state%nc_scans(j), db, state%specs(i), i0, i1)
+               if (state%specs(i)%is_profile) then
+                  call load_netcdf_profile_series(input%vars(i), state%nc_scans(j), db, state%specs(i), i0, i1)
+               else
+                  call load_netcdf_series(input%vars(i), state%nc_scans(j), db, state%specs(i), i0, i1)
+               end if
 
                input%vars(i)%name  = state%specs(i)%name
                input%vars(i)%units = state%specs(i)%units
@@ -398,6 +403,7 @@ contains
 
       series%name        = trim(name)
       series%is_const    = .true.
+      series%is_profile  = .false.
       series%const_value = value
       series%idx         = 1
       series%n           = 0
@@ -410,6 +416,8 @@ contains
       if (allocated(series%t_axis)) deallocate(series%t_axis)
       if (allocated(series%t_edge)) deallocate(series%t_edge)
       if (allocated(series%values)) deallocate(series%values)
+      if (allocated(series%depth)) deallocate(series%depth)
+      if (allocated(series%profile_values)) deallocate(series%profile_values)
    end subroutine set_constant_series
 
 
@@ -685,6 +693,11 @@ contains
             return
          end if
 
+         if (specs(i)%is_profile .and. specs(i)%input_type /= DATA_INPUT_FILE) then
+            errmsg = 'DataSpec '//trim(specs(i)%name)//' is marked as a profile, but profile inputs currently require input_type=file.'
+            return
+         end if
+
          select case (specs(i)%input_type)
 
          case (DATA_INPUT_FILE)
@@ -701,6 +714,31 @@ contains
             if (specs(i)%format == DATA_FORMAT_UNKNOWN) then
                errmsg = 'DataSpec '//trim(specs(i)%name)//' has input_type=file but unknown format.'
                return
+            end if
+
+            if (specs(i)%is_profile) then
+               if (specs(i)%format /= DATA_FORMAT_NETCDF) then
+                  errmsg = 'DataSpec '//trim(specs(i)%name)//' is a profile, but only NetCDF profile inputs are supported.'
+                  return
+               end if
+
+               if (.not. allocated(specs(i)%depth_var)) then
+                  errmsg = 'DataSpec '//trim(specs(i)%name)//' is a profile but has no depth_var.'
+                  return
+               end if
+               if (len_trim(specs(i)%depth_var) == 0) then
+                  errmsg = 'DataSpec '//trim(specs(i)%name)//' is a profile but has an empty depth_var.'
+                  return
+               end if
+
+               if (.not. allocated(specs(i)%target_depth)) then
+                  errmsg = 'DataSpec '//trim(specs(i)%name)//' is a profile but has no target_depth.'
+                  return
+               end if
+               if (size(specs(i)%target_depth) < 1) then
+                  errmsg = 'DataSpec '//trim(specs(i)%name)//' is a profile but target_depth is empty.'
+                  return
+               end if
             end if
 
             if (specs(i)%repeat_enabled) then
@@ -850,8 +888,19 @@ contains
          return
       end if
 
-      if (allocated(series%values) .and. allocated(series%t_axis)) then
-         has_data = size(series%values) > 0 .and. size(series%t_axis) > 0
+      if (.not. allocated(series%t_axis)) return
+      if (size(series%t_axis) <= 0) return
+
+      if (series%is_profile) then
+         if (.not. allocated(series%depth)) return
+         if (.not. allocated(series%profile_values)) return
+
+         has_data = size(series%depth) > 0 .and. &
+                    size(series%profile_values, 1) == size(series%depth) .and. &
+                    size(series%profile_values, 2) == size(series%t_axis)
+      else
+         if (.not. allocated(series%values)) return
+         has_data = size(series%values) == size(series%t_axis)
       end if
    end function series_has_data
 
