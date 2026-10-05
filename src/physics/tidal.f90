@@ -20,6 +20,7 @@ module tidal
   use find_utils,       only: argmin_abs_vec
   use geo_utils,        only: simple_distance_deg
   use precision_types,  only: rk
+  use precision_utils,  only: is_finite_rk
   use physics_params,   only: Omega  
   use read_config_yaml, only: ConfigParams
   use str_utils,        only: to_upper
@@ -272,12 +273,15 @@ contains
       real(rk) :: tol
       real(rk), allocatable :: file_lon(:), file_lat(:), dist(:)
       real(rk), allocatable :: col_values(:)
+      real(rk), allocatable :: sema_values(:,:), semi_values(:,:)
+      real(rk), allocatable :: inc_values(:,:), pha_values(:,:)
 
       integer :: i, k, idx
       integer :: i_lon, i_lat
       integer :: i_sema, i_semi, i_inc, i_pha, nfound
 
       logical :: ok
+      logical, allocatable :: valid_row(:), constituent_present(:)
       character(len=512) :: errmsg
 
       fname = cfg%get_param_str('tides.filename', required=.true., trim_value=.true., empty_ok=.false., allow_numeric=.false.)
@@ -297,30 +301,27 @@ contains
       call str_to_real_vec(table%values(:,i_lat), file_lat, ok, errmsg, label='lat')
       if (.not. ok) error stop trim(errmsg)
 
-      allocate(dist(table%nrow))
+      allocate(valid_row(table%nrow), dist(table%nrow))
+      allocate(constituent_present(size(constituents)))
+      allocate(sema_values(table%nrow, size(constituents)))
+      allocate(semi_values(table%nrow, size(constituents)))
+      allocate(inc_values(table%nrow, size(constituents)))
+      allocate(pha_values(table%nrow, size(constituents)))
 
-      do i = 1, table%nrow
-        dist(i) = simple_distance_deg(lat, lon, file_lat(i), file_lon(i))
-      end do
+      constituent_present = .false.
+      sema_values = 0.0_rk
+      semi_values = 0.0_rk
+      inc_values  = 0.0_rk
+      pha_values  = 0.0_rk
 
-      idx = argmin_abs_vec(dist)
+      ! Start with rows that have valid coordinates. A textual "NaN" can be
+      ! successfully parsed as a real, so parsing alone is not sufficient.
+      valid_row = is_finite_rk(file_lat) .and. is_finite_rk(file_lon)
 
-      if (dist(idx) > tol) then
-        write(*,'(A,F10.4,A,F10.4,A,F10.4)') &
-              'Error reading tidal parameters. Nearest tidal point is too far away: lon=', file_lon(idx), &
-              ', lat=', file_lat(idx), ', distance_deg=', dist(idx)
-        error stop 'read_from_file: nearest tidal point is outside tides.tol_deg.'
-      end if
-
-      allocate(tide_set%C(size(constituents)))
-
+      ! Read all available constituents first and build a mask of rows with a
+      ! complete, finite and physically valid tidal ellipse. This ensures that
+      ! all constituents are taken from one spatially coherent grid point.
       do k = 1, size(constituents)
-        tide_set%C(k)%name  = to_upper(trim(constituents(k)))
-        tide_set%C(k)%smaj  = 0.0_rk
-        tide_set%C(k)%smin  = 0.0_rk
-        tide_set%C(k)%theta = 0.0_rk
-        tide_set%C(k)%phase = 0.0_rk
-
         call get_tidal_column_indices(table, constituents(k), i_sema, i_semi, i_inc, i_pha, nfound)
 
         if (nfound == 0) then
@@ -333,24 +334,79 @@ contains
           error stop 'read_from_file: incomplete tidal constituent columns for ' // trim(constituents(k)) // '.'
         end if
 
+        constituent_present(k) = .true.
+
         call str_to_real_vec(table%values(:,i_sema), col_values, ok, errmsg, label=trim(table%header(i_sema)))
         if (.not. ok) error stop trim(errmsg)
-        tide_set%C(k)%smaj = col_values(idx)
+        sema_values(:,k) = col_values
 
         call str_to_real_vec(table%values(:,i_semi), col_values, ok, errmsg, label=trim(table%header(i_semi)))
         if (.not. ok) error stop trim(errmsg)
-        tide_set%C(k)%smin = col_values(idx)
+        semi_values(:,k) = col_values
 
         call str_to_real_vec(table%values(:,i_inc), col_values, ok, errmsg, label=trim(table%header(i_inc)))
         if (.not. ok) error stop trim(errmsg)
-        tide_set%C(k)%theta = col_values(idx)
+        inc_values(:,k) = col_values
 
         call str_to_real_vec(table%values(:,i_pha), col_values, ok, errmsg, label=trim(table%header(i_pha)))
         if (.not. ok) error stop trim(errmsg)
-        tide_set%C(k)%phase = col_values(idx)
+        pha_values(:,k) = col_values
 
-        if (abs(tide_set%C(k)%smin) > tide_set%C(k)%smaj + 1.0e-12_rk) then
-          error stop 'read_from_file: invalid tidal ellipse: |semi_minor| > semi_major.'
+        valid_row = valid_row                                                   &
+                  .and. is_finite_rk(sema_values(:,k))                          &
+                  .and. is_finite_rk(semi_values(:,k))                          &
+                  .and. is_finite_rk(inc_values(:,k))                           &
+                  .and. is_finite_rk(pha_values(:,k))                           &
+                  .and. (sema_values(:,k) >= 0.0_rk)                            &
+                  .and. (abs(semi_values(:,k)) <= sema_values(:,k) + 1.0e-12_rk)
+      end do
+
+      if (.not. any(valid_row)) then
+        write(*,'(A,F10.4,A,F10.4)') &
+              'Error reading tidal parameters. No valid tidal rows are available near lon=', lon, &
+              ', lat=', lat
+        error stop 'read_from_file: tidal file contains no rows with valid coordinates and tidal parameters.'
+      end if
+
+      ! Invalid rows are assigned a very large distance so they cannot be
+      ! selected by argmin_abs_vec.
+      dist = huge(1.0_rk)
+      do i = 1, table%nrow
+        if (valid_row(i)) then
+          dist(i) = simple_distance_deg(lat, lon, file_lat(i), file_lon(i))
+        end if
+      end do
+
+      idx = argmin_abs_vec(dist)
+
+      if (dist(idx) > tol) then
+        write(*,'(A,F10.4,A,F10.4,A,F10.4)') &
+              'Error reading tidal parameters. Nearest valid tidal point is too far away: lon=', file_lon(idx), &
+              ', lat=', file_lat(idx), ', distance_deg=', dist(idx)
+        error stop 'read_from_file: nearest valid tidal point is outside tides.tol_deg.'
+      end if
+
+      allocate(tide_set%C(size(constituents)))
+
+      do k = 1, size(constituents)
+        tide_set%C(k)%name  = to_upper(trim(constituents(k)))
+        tide_set%C(k)%smaj  = 0.0_rk
+        tide_set%C(k)%smin  = 0.0_rk
+        tide_set%C(k)%theta = 0.0_rk
+        tide_set%C(k)%phase = 0.0_rk
+
+        if (.not. constituent_present(k)) cycle
+
+        tide_set%C(k)%smaj  = sema_values(idx,k)
+        tide_set%C(k)%smin  = semi_values(idx,k)
+        tide_set%C(k)%theta = inc_values(idx,k)
+        tide_set%C(k)%phase = pha_values(idx,k)
+
+        ! Defensive check: the selected row should already satisfy this through
+        ! valid_row, but keep the invariant explicit at assignment time.
+        if (tide_set%C(k)%smaj < 0.0_rk .or. &
+            abs(tide_set%C(k)%smin) > tide_set%C(k)%smaj + 1.0e-12_rk) then
+          error stop 'read_from_file: invalid tidal ellipse at selected tidal point.'
         end if
 
       end do
