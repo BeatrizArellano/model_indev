@@ -328,7 +328,8 @@ contains
             ! Apply disturbance to benthic-faunal activity
             !----------------------------------------------------------
             if (TR%affect_fauna .and. TR%fauna_depletion > 0.0_rk) then
-                BE%SED%faunal_activity = max(0.0_rk, BE%SED%faunal_activity * (1.0_rk - TR%fauna_depletion))
+                BE%SED%faunal_activity = max(BE%SED%params_SI%faunal_activity_min, &
+                                             BE%SED%faunal_activity * (1.0_rk - TR%fauna_depletion))
             end if
 
             !---------Mass conservation check (Debug)------
