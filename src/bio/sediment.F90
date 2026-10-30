@@ -17,7 +17,7 @@ module sediment
     public :: phase_to_bulk, bulk_to_phase, phase_to_bulk_all, bulk_to_phase_all
     public :: recover_faunal_activity
 
-    real(rk), parameter :: faunal_activity_min = 1.0e-6_rk
+    real(rk), parameter :: faunal_recovery_seed = 1.0e-6_rk  ! Numerical seed for recovery from complete depletion
 
 contains
 
@@ -200,8 +200,8 @@ contains
     !============================================================
     ! Recover faunal activity following disturbance.
     !
-    ! Faunal activity F is dimensionless and bounded between
-    ! faunal_activity_min and 1. Recovery follows logistic growth:
+    ! Faunal activity F is dimensionless and bounded by the user-defined
+    ! ecological minimum and 1. Recovery follows logistic growth:
     !     dF/dt = r F (1 - F)
     !
     ! where r is the faunal recovery rate [s-1].
@@ -210,20 +210,27 @@ contains
         type(SedimentEnv), intent(inout) :: SE
         real(rk),          intent(in)    :: dt   ! [s]
 
-        real(rk) :: F, r
+        real(rk) :: F, r, Fmin
 
         if (dt <= 0.0_rk) return
 
         r = SE%params_SI%faunal_recovery_rate
-        if (r <= 0.0_rk) return
+        Fmin = SE%params_SI%faunal_activity_min
+        F = min(1.0_rk, max(Fmin, SE%faunal_activity))
 
-        F = min(1.0_rk, max(faunal_activity_min, SE%faunal_activity))
+        ! Respect the ecological floor even if recovery is disabled.
+        if (r <= 0.0_rk) then
+            SE%faunal_activity = F
+            return
+        end if
 
-        ! Exact solution of logistic recovery over dt
+        ! Seed logistic growth from complete depletion when Fmin = 0.
+        F = max(faunal_recovery_seed, F)
+
+        ! Exact solution of logistic recovery over dt.
         SE%faunal_activity = F / (F + (1.0_rk - F) * exp(-r * dt))
 
-        ! Check limits again (0,1]
-        SE%faunal_activity = min(1.0_rk, max(faunal_activity_min, SE%faunal_activity))
+        SE%faunal_activity = min(1.0_rk, max(Fmin, SE%faunal_activity))
         if (1.0_rk - SE%faunal_activity < 1.0e-8_rk) then
             SE%faunal_activity = 1.0_rk
         end if
@@ -636,6 +643,7 @@ contains
         si%irr_ez        = user%irr_ez        * cm_to_m
 
         si%faunal_recovery_rate = user%faunal_recovery_rate / yr_to_s
+        si%faunal_activity_min = user%faunal_activity_min  ! Dimensionless: unchanged
 
         ! Rates:
         ! sed_rate: cm/yr -> m/s
