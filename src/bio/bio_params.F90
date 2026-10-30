@@ -61,6 +61,7 @@ module bio_params
         real(rk) :: irr_ez                 ! Decay depth for exponential attenuation of irrigation (user: cm; SI: m)
         !--- Faunal activity
         real(rk) :: faunal_recovery_rate    ! Logistic recovery rate of faunal activity following disturbance (user: yr-1; SI: s-1)
+        real(rk) :: faunal_activity_min    ! Minimum residual faunal activity fraction [-]; same in user and SI parameters
         ! --- Bottom boundary
         logical :: bottom_outflow                   ! If true, allow porewater/solids to leave through deepest sediment boundary
         ! --- Output
@@ -96,6 +97,7 @@ module bio_params
     real(rk), parameter :: def_irr_sfc    = 200_rk        ! Irrigation rate at the sediment-water interface [yr-1]
     real(rk), parameter :: def_irr_ez     = 2.0_rk        ! Decay depth for exponential attenuation of irrigation [cm]    
     real(rk), parameter :: def_faunal_recovery_rate = 1.0_rk  ! Logistic faunal recovery rate [yr-1]
+    real(rk), parameter :: def_faunal_activity_min = 0.1_rk   ! Minimum residual faunal activity fraction [-]
     real(rk), parameter :: def_cnpar_sed  = 0.9_rk        ! Crank-Nicolson parameter to solve diffusive mixing [-]
     logical,  parameter :: def_bottom_outflow = .true.    ! Allow bottom outflow/burial/export by default
     character(len=*), parameter :: def_biot_mode = 'static'
@@ -153,6 +155,8 @@ contains
         SedP%irr_ez  = cfg_params%get_param_num('biogeochemistry.sediments.irrigation_decay_depth', default=def_irr_ez, finite=.true., positive=.true.)
         !--------- Faunal activity -------
         SedP%faunal_recovery_rate = cfg_params%get_param_num('biogeochemistry.sediments.faunal_recovery_rate', default=def_faunal_recovery_rate, finite=.true., min=0.0_rk)
+        SedP%faunal_activity_min = cfg_params%get_param_num('biogeochemistry.sediments.faunal_activity_min', &
+                                                           default=def_faunal_activity_min, finite=.true., min=0.0_rk, max=1.0_rk)
 
         ! --------- Bottom boundary -----------
         SedP%bottom_outflow = cfg_params%get_param_logical('biogeochemistry.sediments.bottom_outflow', default=def_bottom_outflow)
@@ -195,6 +199,7 @@ contains
         p%irr_ez      = def_irr_ez
 
         p%faunal_recovery_rate = def_faunal_recovery_rate
+        p%faunal_activity_min = def_faunal_activity_min
 
         p%bottom_outflow = def_bottom_outflow
 
