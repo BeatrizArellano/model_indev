@@ -655,11 +655,18 @@ contains
         ! irr_sfc: 1/yr -> 1/s
         si%irr_sfc = user%irr_sfc / yr_to_s
 
+        ! Natural resuspension parameters are already provided in SI units.
+        si%resuspension_enabled = user%resuspension_enabled
+        si%tau_crit = user%tau_crit
+        si%erosion_coefficient = user%erosion_coefficient
+        si%sediment_density = user%sediment_density
+
         si%bottom_outflow    = user%bottom_outflow
         si%output_swi_fluxes = user%output_swi_fluxes
         si%output_swi_diff_fluxes = user%output_swi_diff_fluxes
         si%output_swi_bio_fluxes = user%output_swi_bio_fluxes
         si%output_deposition_fluxes = user%output_deposition_fluxes
+        si%output_resuspension_fluxes = user%output_resuspension_fluxes
         ! Copy cnpar value
         si%cnpar_sed = user%cnpar_sed
     end subroutine convert_units_to_SI
