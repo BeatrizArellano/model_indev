@@ -1,7 +1,7 @@
 ! Standalone numerical tests; compile with precision_types and sediment_exchange.
 program test_particulate_exchange
     use precision_types,   only: rk
-    use sediment_exchange, only: compute_natural_erosion, apply_particulate_exchange
+    use sediment_exchange, only: compute_natural_erosion, apply_particulate_exchange, apply_particulate_deposition
     implicit none
 
     call test_erosion_law()
@@ -13,6 +13,8 @@ program test_particulate_exchange
     call test_large_timestep()
     call test_substepping_consistency()
     call test_small_timestep()
+    call test_solid_phase_conversion_and_flux_budget()
+    call test_legacy_deposition_transfer()
     print '(A)', 'PASS: all sediment particulate exchange tests'
 contains
     subroutine assert_close(actual, expected, label, rtol, atol)
@@ -198,4 +200,55 @@ contains
         call assert_close(fe,ker*is0,'tiny dt erosion rate',rtol=1.e-11_rk,atol=1.e-17_rk)
         call assert_close(cw*2._rk+cs*0.001_rk,iw0+is0,'tiny dt conserved')
     end subroutine test_small_timestep
+
+    ! Simulates adaptive substeps using the same phase->bulk conversion
+    ! and flux time-accumulation convention as bio_main.
+    subroutine test_solid_phase_conversion_and_flux_budget()
+        real(rk), parameter :: phi=0.8_rk, dzs=0.001_rk, dzw=2._rk, dt_main=600._rk
+        real(rk), parameter :: pieces(3)=[60._rk,120._rk,420._rk]
+        real(rk) :: cw, cs_solid, cs_bulk, dep, resusp, initial_total, initial_solid
+        real(rk) :: dep_output, resusp_output, delta_solid
+        integer :: i
+
+        cw=2._rk
+        cs_solid=100._rk  ! Concentration per volume of solids
+        cs_bulk=(1._rk-phi)*cs_solid
+        initial_solid=cs_bulk*dzs
+        initial_total=cw*dzw+initial_solid
+
+        dep_output=0._rk
+        resusp_output=0._rk
+        do i=1,size(pieces)
+            call apply_particulate_exchange(cw,dzw,-1.e-5_rk,pieces(i),dzs,cs_bulk, &
+                phi,1.e-5_rk,2650._rk,dep,resusp)
+            dep_output=dep_output+dep*(pieces(i)/dt_main)*86400._rk
+            resusp_output=resusp_output+resusp*(pieces(i)/dt_main)*86400._rk
+        end do
+
+        cs_solid=cs_bulk/(1._rk-phi)
+        delta_solid=(1._rk-phi)*cs_solid*dzs-initial_solid
+
+        call assert_close(cw*dzw+(1._rk-phi)*cs_solid*dzs,initial_total, &
+            'solid phase conversion conserves full inventory')
+        call assert_close(delta_solid,(dep_output-resusp_output)*dt_main/86400._rk, &
+            'time-averaged gross fluxes close sediment inventory budget',atol=1.e-15_rk)
+        call assert_nonnegative(cw,'subcycled water inventory')
+        call assert_nonnegative(cs_solid,'subcycled solid phase inventory')
+    end subroutine test_solid_phase_conversion_and_flux_budget
+
+    ! The disabled branch must continue to use the original explicit scheme
+    ! (which remains distinct from analytic deposition when erosion is zero).
+    subroutine test_legacy_deposition_transfer()
+        real(rk) :: cw, cs_bulk, dep
+        real(rk), parameter :: dt=3600._rk, dzw=2._rk, dzs=0.001_rk
+        cw=2._rk
+        cs_bulk=10._rk
+        call apply_particulate_deposition(cw,dzw,-1.e-5_rk,dt,dzs,cs_bulk,dep)
+        call assert_close(cw,2._rk*(1._rk-1.e-5_rk*dt/dzw), &
+            'legacy explicit deposition bottom-water concentration')
+        call assert_close(cs_bulk*dzs+cw*dzw,4.01_rk, &
+            'legacy deposition conserved')
+        call assert_close(dep*dt,4._rk-cw*dzw, &
+            'legacy deposition transferred amount')
+    end subroutine test_legacy_deposition_transfer
 end program test_particulate_exchange
