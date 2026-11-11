@@ -1889,6 +1889,7 @@ contains
         if (.not. allocated(BE%bio_swiflux_vars)) allocate(BE%bio_swiflux_vars(0))
         if (.not. allocated(BE%dif_swiflux_vars)) allocate(BE%dif_swiflux_vars(0))
         if (.not. allocated(BE%deposition_flux_vars)) allocate(BE%deposition_flux_vars(0))
+        if (.not. allocated(BE%resuspension_flux_vars)) allocate(BE%resuspension_flux_vars(0))
     end subroutine allocate_metadata_arrays
 
 end module bio_main
