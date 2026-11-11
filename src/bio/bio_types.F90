@@ -131,8 +131,11 @@ module bio_types
       real(rk), allocatable :: swi_flux_out(:)     ! Flux of solutes at the sediment-water interface (tracer specific) [conc units * m d-1]
       real(rk), allocatable :: bioirr_flux(:)      ! Flux of solutes due to bioirrigation at the sediment-water interface (tracer specific) [conc units * m s-1]
       real(rk), allocatable :: bioirr_flux_out(:)  ! Flux of solutes due to bioirrigation at the sediment-water interface (tracer specific) [conc units * m d-1]
-      real(rk), allocatable :: deposition_flux(:)
-      real(rk), allocatable :: deposition_flux_out(:)
+      real(rk), allocatable :: deposition_flux(:)          ! Gross deposition rate [tracer m-2 s-1] (substep)
+      real(rk), allocatable :: deposition_flux_out(:)      ! Main-step mean gross deposition [tracer m-2 d-1]
+      real(rk), allocatable :: resuspension_flux(:)        ! Gross resuspension rate [tracer m-2 s-1] (substep)
+      real(rk), allocatable :: resuspension_flux_out(:)    ! Main-step mean gross resuspension [tracer m-2 d-1]
+      real(rk) :: natural_erosion_flux_out = 0._rk          ! Potential dry-sediment erosion [kg m-2 d-1]
       real(rk), allocatable :: total_swi_flux(:)   ! Total flux of solutes at the sediment-water interface including bioirrigation and diffusion (tracer specific) [conc units * m d-1]
     
       real(rk) :: faunal_activity = 1.0_rk         ! Relative faunal activity [0-1]. It scales directly bioirrigation and bioturbation activity. 
@@ -220,6 +223,7 @@ module bio_types
     type(VarMetadata), allocatable :: bio_swiflux_vars(:)          ! Metadata for Sediment-water interface bioirrigation fluxes
     type(VarMetadata), allocatable :: dif_swiflux_vars(:)          ! Metadata for Sediment-water interface diffusive fluxes
     type(VarMetadata), allocatable :: deposition_flux_vars(:)      ! Metadata for deposition fluxes for solids
+    type(VarMetadata), allocatable :: resuspension_flux_vars(:)    ! Gross particulate and potential erosion diagnostics
     ! Other environment arrays
     type(VarMetadata), allocatable :: env_int_vars(:)          ! 1D environment variables like par/swr/pres, etc.
     ! Working arrays
