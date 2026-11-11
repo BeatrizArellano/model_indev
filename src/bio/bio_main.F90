@@ -862,9 +862,10 @@ contains
         !--------------------------------------------
         call update_environment_data(PS, FS, BE)
 
-        ! Bed stress is fixed over the main biological timestep, as are the
-        ! other transport coefficients. The analytic exchange is recomputed
-        ! per adaptive substep with its current donor inventories.
+        ! Compute potential dry-sediment erosion from bottom shear stress.
+        ! This physical erosion rate is shared by all particulate tracers;
+        ! actual tracer resuspension is calculated during adaptive substeps.
+        ! Stress is fixed over the main biological timestep.
         erosion_flux = 0._rk
         if (BE%params%sediments_enabled) then
             BE%SED%deposition_flux     = 0._rk
