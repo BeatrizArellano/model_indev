@@ -240,9 +240,56 @@ contains
 
 
     !-----------------------------------------------------------------------
-    ! Potential dry-sediment erosion rate under bottom shear stress.
-    ! Partheniades law: E = M * max(0, tau_b/tau_crit - 1).
-    ! E [kg dry solids m-2 s-1]; no erosion at or below tau_crit.
+    ! compute_natural_erosion
+    !
+    ! Potential erosion of cohesive surface sediment driven by bottom stress.
+    ! Linear Ariathurai-Partheniades erosion law:
+    !
+    !   E = M * max(0, tau_b/tau_crit - 1)
+    !
+    ! E        : potential dry-sediment erosion intensity [kg m-2 s-1].
+    ! M        : empirical erosion coefficient [kg m-2 s-1].
+    ! tau_b    : applied bottom shear stress [Pa].
+    ! tau_crit : critical stress above which erosion begins [Pa].
+    !
+    ! PHYSICAL INTERPRETATION AND LIMITATIONS
+    ! ---------------------------------------
+    ! E describes potential removal of dry bulk sediment solids, NOT the
+    ! resuspension flux of an individual biogeochemical tracer. It is used
+    ! as a physical forcing to transfer particulate tracer inventories.
+    !
+    ! The uppermost sediment layer has a reference dry-solid mass per area:
+    !
+    !   m_top = rho_s * (1 - phi_top) * dz_top      [kg m-2]
+    !
+    ! The particulate exchange routine converts E to a first-order
+    ! removal coefficient shared by all eligible particulate tracers:
+    !
+    !   k_e = E / m_top                            [s-1]
+    !
+    ! For erosion alone, the fraction of an initial tracer inventory
+    ! removed during a time interval dt is:
+    !
+    !   f = 1 - exp(-k_e * dt)                      [0, 1]
+    !
+    ! Thus the tracer-specific removal is bounded by the tracer inventory
+    ! available in the top layer. When deposition is also present, the
+    ! analytical two-way exchange accounts for simultaneous replenishment.
+    !
+    ! IMPORTANT: E itself is NOT capped by an explicitly prognosed
+    ! mineral inventory. Mineral sediment mass, bed elevation, porosity
+    ! and layer geometry are not updated by erosion in this model.
+    ! A fixed tau_crit does not reproduce depth-limited Type I cohesive
+    ! erosion with increasing resistance below the sediment surface.
+    !
+    ! REFERENCES
+    ! ----------
+    ! Partheniades (1965), Erosion and deposition of cohesive soils.
+    !   J. Hydraulics Division, ASCE, 91(HY1), 105-139.
+    ! Ariathurai & Krone (1976), Finite element model for cohesive
+    !   sediment transport. J. Hydraulics Division, 102(3), 323-338.
+    ! Sanford & Maa (2001), A unified erosion formulation for fine
+    !   sediments. Marine Geology, 179, 9-23.
     !-----------------------------------------------------------------------
     subroutine compute_natural_erosion(tau_b, tau_crit, erosion_coefficient, erosion_flux)
         real(rk), intent(in)  :: tau_b               ! Bottom shear stress [Pa]
@@ -267,9 +314,23 @@ contains
     !
     ! Areal inventories are Iw=Cw_bot*dz_w_bot and
     ! Is=Cbulk_sed_top*dz_sed_top; transfer conserves Iw+Is.
+    ! The solids fraction (1-phi) is already included in Cbulk;
+    ! it MUST NOT be multiplied into Is a second time.
     !
     ! Deposition rate k_d=max(0,-vel_swi)/dz_w_bot [s-1].
     ! Resuspension rate k_e=E/[rho_s*(1-phi)*dz_sed_top] [s-1].
+    !
+    ! A single potential dry-sediment erosion flux E [kg m-2 s-1]
+    ! supplies the same k_e for every eligible particulate tracer.
+    ! Actual tracer resuspension depends on its available inventory Is:
+    !
+    !   F_resusp = k_e * Is         [tracer units m-2 s-1]
+    !
+    ! With erosion alone, Is(t+dt)=Is(t)*exp(-k_e*dt), so no more
+    ! tracer inventory can be removed than initially exists.
+    ! With simultaneous deposition, some particles deposited during
+    ! the substep may also be resuspended; the coupled solution handles
+    ! this cycling while conserving the combined water-sediment inventory.
     ! Constant rates are integrated analytically for the whole substep;
     ! no exchange-specific stability restriction is required.
     !
@@ -277,7 +338,13 @@ contains
     ! [tracer units m-2 s-1], downward and upward respectively.
     ! Distinct gross fluxes include repeated cycling during a long substep.
     ! Requires nonnegative concentrations and physically valid geometry.
-    ! Does not erode mineral mass or change the sediment grid.
+    ! Does not erode mineral mass, change porosity or change sediment
+    ! layer geometry. It is an analytical tracer-exchange closure, not
+    ! a prognostic sediment-mass erosion or bed-consolidation model.
+    ! A constant critical stress implies a simplified Type II erosion
+    ! law; depletion of tracer inventory is not a Type I erosion law.
+    ! Although the exchange is unconditionally positivity-preserving,
+    ! operator-splitting errors in the wider model still depend on dt.
     !-----------------------------------------------------------------------
     subroutine apply_particulate_exchange(Cw_bot, dz_w_bot, vel_swi, dt, dz_sed_top, &
                                            Cbulk_sed_top, porosity_top, erosion_flux, &
