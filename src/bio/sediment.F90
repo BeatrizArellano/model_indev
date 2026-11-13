@@ -45,15 +45,15 @@ contains
 
         ! Natural sediment resuspension configuration
         if (SE%params_SI%resuspension_enabled) then
-            write(*,'(A)') '  natural sediment resuspension: enabled'
-            write(*,'(A,F8.4,A)') '    critical shear stress: ', &
+            write(*,'(A)') '  Natural sediment resuspension: enabled'
+            write(*,'(A,F8.4,A)') '    Critical shear stress: ', &
                 SE%params_SI%tau_crit, ' Pa'
-            write(*,'(A,ES12.4,A)') '    erosion coefficient:   ', &
+            write(*,'(A,ES12.4,A)') '    Erosion coefficient:   ', &
                 SE%params_SI%erosion_coefficient, ' kg m-2 s-1'
-            write(*,'(A,F10.2,A)') '    sediment density:     ', &
+            write(*,'(A,F10.2,A)') '    Sediment density:     ', &
                 SE%params_SI%sediment_density, ' kg m-3'
         else
-            write(*,'(A)') '  natural sediment resuspension: disabled'
+            write(*,'(A)') '  Natural sediment resuspension: disabled'
         end if
 
         ! Allocate working arrays 
