@@ -138,7 +138,8 @@ contains
         long_name  = csv_escape(var%long_name)
         vert_coord = csv_escape(trim(var%vert_coord))
 
-        write(unit,'(A,",",A,",",I0,",",ES24.16,",",ES24.16,",",A,",",A)', &
+        ! Explicit 3-digit exponents keep even subnormal real64 values parseable in CSV readers.
+        write(unit,'(A,",",A,",",I0,",",ES24.16E3,",",ES24.16E3,",",A,",",A)', &
             iostat=ios, iomsg=iomsg) &
             name, vert_coord, k, z, value, units, long_name
 
