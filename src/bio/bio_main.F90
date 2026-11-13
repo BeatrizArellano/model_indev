@@ -64,7 +64,7 @@ contains
         integer  :: n_total_hz_diag, n_save_hz
         real(rk) :: dt_main
 
-        logical :: ok
+        logical :: ok, applied
         character(len=512) :: msg
 
         write(*,'(A)') 'Initialising biogeochemistry via FABM...'
@@ -725,9 +725,15 @@ contains
         ! Initialise values in the sediments (if applicable)
         !----------------------------------------
         if (BE%params%sediments_enabled .and. BE%has_input) then
-            call set_initial_sediment_values(BE%params%input_cfg_file, BE%model,BE%BS%interior_state,BE%nsed, ok, msg)
+            call set_initial_sediment_values(BE%params%input_cfg_file, BE%model, &
+                                             BE%BS%interior_state, BE%nsed, ok, msg, applied)
             if (.not. ok) error stop 'Setting initial sediment values failed: '//trim(msg)
-            write(*,'(A)') '  ✓ Sediment initial values set successfully.'
+            if (applied) then
+                if (load_init_state) then
+                    write(*,'(A)') 'WARNING: Prescribed sediment initial values override restart concentrations.'
+                end if
+                write(*,'(A)') '  ✓ Sediment initial values set successfully.'
+            end if
         end if 
 
         !------------------------------------------
