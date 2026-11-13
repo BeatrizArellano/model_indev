@@ -68,6 +68,7 @@ module bio_inputs
         integer :: state_index = -1                  ! FABM interior-state index
 
         logical :: active = .false.
+        logical :: output = .false.                 ! Save applied relaxation tendency
         logical :: has_repeat_year = .false.
         integer :: repeat_year = -1
     end type RelaxationSpec
@@ -487,6 +488,7 @@ contains
                 specs(nactive)%mode = to_lower(trim(mode))
                 specs(nactive)%data_name = 'relax:'//trim(keys(i))
                 specs(nactive)%active = .true.
+                specs(nactive)%output = self%cfg%get_param_logical(base//'.output', default=.false.)
 
                 specs(nactive)%timescale = self%cfg%get_param_num(base//'.timescale', required=.true., &
                                                                   positive=.true., finite=.true.)

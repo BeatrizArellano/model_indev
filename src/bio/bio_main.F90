@@ -62,6 +62,7 @@ contains
         integer  :: ivar, nz, nint, nsfc, nbtm
         integer  :: n_total_int_diag, n_save_int, j
         integer  :: n_total_hz_diag, n_save_hz
+        integer  :: irelax, n_save_relax
         real(rk) :: dt_main
 
         logical :: ok, applied
@@ -358,6 +359,30 @@ contains
                                            long_name='Potential dry-sediment erosion driven by bottom shear stress', &
                                            units='kg m-2 d-1', vert_coord='bottom', n_space_dims=0, &
                                            data_0d=BE%SED%natural_erosion_flux_out, state_var=.false.)
+                end if
+            end if
+            ! Register only relaxation entries with output: true.
+            ! The full active-relaxation index is preserved for the solver.
+            n_save_relax = 0
+            if (BE%has_input .and. BE%inputs%has_active_relaxations) then
+                do irelax = 1, size(BE%inputs%relaxations)
+                    if (BE%inputs%relaxations(irelax)%output) n_save_relax = n_save_relax + 1
+                end do
+                if (n_save_relax > 0) then
+                    allocate(BE%relax_tendency(BE%nwat, size(BE%inputs%relaxations)))
+                    BE%relax_tendency = 0.0_rk
+                    do irelax = 1, size(BE%inputs%relaxations)
+                        if (.not. BE%inputs%relaxations(irelax)%output) cycle
+                        ivar = BE%inputs%relaxations(irelax)%state_index
+                        call register_variable(BE%relax_vars, &
+                            name='relax_'//trim(BE%inputs%relaxations(irelax)%tracer), &
+                            long_name='Water-column relaxation tendency of '// &
+                                      trim(BE%model%interior_state_variables(ivar)%long_name), &
+                            units=trim(BE%model%interior_state_variables(ivar)%units)//' s-1', &
+                            vert_coord='centre', n_space_dims=1, &
+                            data_1d=BE%relax_tendency(:,irelax), state_var=.false.)
+                    end do
+                    call output_all_variables(BE%relax_vars)
                 end if
             end if
             if (allocated(BE%int_vars))             call output_all_variables(BE%int_vars)
@@ -835,6 +860,7 @@ contains
         real(rk) :: mu_dyn, nu_kin
         logical  :: enforce_nonneg
         integer  :: ierr   
+        real(rk) :: relax_step(BE%nwat) ! Temporary result from the implicit solver
 
 
         if (.not. BE%is_init) then
@@ -963,6 +989,7 @@ contains
         !------------------------------------------------------
         call compute_transport_safe_dt(BE, dt_main, dt_transport_safe)
         
+        if (allocated(BE%relax_tendency)) BE%relax_tendency = 0.0_rk
         dt_done = 0.0_rk  ! How long of the main time step has been completed
         isub    = 0       ! Number of substep
 
@@ -1182,11 +1209,21 @@ contains
                             ! Water is receiver: no Patankar (using corrected flux)
                             !---------------------------------------------------------
                             if (irelax > 0) then
-                                call scalar_diffusion(Var=BE%BS%interior_state(kwb:kws,ivar), N=nwat, dt=dt_sub, h=BE%wat_grid%dz, &
-                                                      diff=BE%BS%vert_diff(kwb-1:kws), cnpar=BE%params%cnpar, tricoef=BE%wat_trid, ierr=ierr, &
-                                                      enforce_nonneg=.false., bc_bot_type=BC_NEUMANN, bc_bot_value=flux_into_water, &
-                                                      relax_target=BE%inputs%relaxation_targets(:,irelax), &
-                                                      relax_timescale=BE%inputs%relaxations(irelax)%timescale_s)
+                                if (BE%inputs%relaxations(irelax)%output) then
+                                    call scalar_diffusion(Var=BE%BS%interior_state(kwb:kws,ivar), N=nwat, dt=dt_sub, h=BE%wat_grid%dz, &
+                                                          diff=BE%BS%vert_diff(kwb-1:kws), cnpar=BE%params%cnpar, tricoef=BE%wat_trid, ierr=ierr, &
+                                                          enforce_nonneg=.false., bc_bot_type=BC_NEUMANN, bc_bot_value=flux_into_water, &
+                                                          relax_target=BE%inputs%relaxation_targets(:,irelax), &
+                                                          relax_timescale=BE%inputs%relaxations(irelax)%timescale_s, &
+                                                      relax_tendency=relax_step)
+                                    BE%relax_tendency(:,irelax) = BE%relax_tendency(:,irelax) + relax_step*dt_sub
+                                else
+                                    call scalar_diffusion(Var=BE%BS%interior_state(kwb:kws,ivar), N=nwat, dt=dt_sub, h=BE%wat_grid%dz, &
+                                                          diff=BE%BS%vert_diff(kwb-1:kws), cnpar=BE%params%cnpar, tricoef=BE%wat_trid, ierr=ierr, &
+                                                          enforce_nonneg=.false., bc_bot_type=BC_NEUMANN, bc_bot_value=flux_into_water, &
+                                                          relax_target=BE%inputs%relaxation_targets(:,irelax), &
+                                                          relax_timescale=BE%inputs%relaxations(irelax)%timescale_s)
+                                end if
                             else
                                 call scalar_diffusion(Var=BE%BS%interior_state(kwb:kws,ivar), N=nwat, dt=dt_sub, h=BE%wat_grid%dz, &
                                                       diff=BE%BS%vert_diff(kwb-1:kws), cnpar=BE%params%cnpar, tricoef=BE%wat_trid, ierr=ierr, &
@@ -1208,12 +1245,23 @@ contains
                             ! Diffusion in the water column. The realised Patankar boundary flux is returned
                             ! explicitly because relaxation can also change the water-column inventory.
                             if (irelax > 0) then
-                                call scalar_diffusion(Var=BE%BS%interior_state(kwb:kws,ivar), N=nwat, dt=dt_sub, h=BE%wat_grid%dz, &
-                                                      diff=BE%BS%vert_diff(kwb-1:kws), cnpar=BE%params%cnpar, tricoef=BE%wat_trid, ierr=ierr, &
-                                                      enforce_nonneg=enforce_nonneg, bc_bot_type=BC_NEUMANN, bc_bot_value=flux_into_water, &
-                                                      relax_target=BE%inputs%relaxation_targets(:,irelax), &
-                                                      relax_timescale=BE%inputs%relaxations(irelax)%timescale_s, &
-                                                      bc_bot_flux_applied=swi_flux_applied)
+                                if (BE%inputs%relaxations(irelax)%output) then
+                                    call scalar_diffusion(Var=BE%BS%interior_state(kwb:kws,ivar), N=nwat, dt=dt_sub, h=BE%wat_grid%dz, &
+                                                          diff=BE%BS%vert_diff(kwb-1:kws), cnpar=BE%params%cnpar, tricoef=BE%wat_trid, ierr=ierr, &
+                                                          enforce_nonneg=enforce_nonneg, bc_bot_type=BC_NEUMANN, bc_bot_value=flux_into_water, &
+                                                          relax_target=BE%inputs%relaxation_targets(:,irelax), &
+                                                          relax_timescale=BE%inputs%relaxations(irelax)%timescale_s, &
+                                                          bc_bot_flux_applied=swi_flux_applied, &
+                                                      relax_tendency=relax_step)
+                                    BE%relax_tendency(:,irelax) = BE%relax_tendency(:,irelax) + relax_step*dt_sub
+                                else
+                                    call scalar_diffusion(Var=BE%BS%interior_state(kwb:kws,ivar), N=nwat, dt=dt_sub, h=BE%wat_grid%dz, &
+                                                          diff=BE%BS%vert_diff(kwb-1:kws), cnpar=BE%params%cnpar, tricoef=BE%wat_trid, ierr=ierr, &
+                                                          enforce_nonneg=enforce_nonneg, bc_bot_type=BC_NEUMANN, bc_bot_value=flux_into_water, &
+                                                          relax_target=BE%inputs%relaxation_targets(:,irelax), &
+                                                          relax_timescale=BE%inputs%relaxations(irelax)%timescale_s, &
+                                                          bc_bot_flux_applied=swi_flux_applied)
+                                end if
                             else
                                 call scalar_diffusion(Var=BE%BS%interior_state(kwb:kws,ivar), N=nwat, dt=dt_sub, h=BE%wat_grid%dz, &
                                                       diff=BE%BS%vert_diff(kwb-1:kws), cnpar=BE%params%cnpar, tricoef=BE%wat_trid, ierr=ierr, &
@@ -1244,10 +1292,19 @@ contains
                                                       diff=BE%SED%diff_sed, cnpar=BE%SED%params_SI%cnpar_sed, tricoef=BE%SED%sed_trid, ierr=ierr)
                             ! Diffusion within the water column
                             if (irelax > 0) then
-                                call scalar_diffusion(Var=BE%BS%interior_state(kwb:kws,ivar), N=nwat, dt=dt_sub, h=BE%wat_grid%dz, &
-                                                      diff=BE%BS%vert_diff(kwb-1:kws), cnpar=BE%params%cnpar, tricoef=BE%wat_trid, ierr=ierr, &
-                                                      relax_target=BE%inputs%relaxation_targets(:,irelax), &
-                                                      relax_timescale=BE%inputs%relaxations(irelax)%timescale_s)
+                                if (BE%inputs%relaxations(irelax)%output) then
+                                    call scalar_diffusion(Var=BE%BS%interior_state(kwb:kws,ivar), N=nwat, dt=dt_sub, h=BE%wat_grid%dz, &
+                                                          diff=BE%BS%vert_diff(kwb-1:kws), cnpar=BE%params%cnpar, tricoef=BE%wat_trid, ierr=ierr, &
+                                                          relax_target=BE%inputs%relaxation_targets(:,irelax), &
+                                                          relax_timescale=BE%inputs%relaxations(irelax)%timescale_s, &
+                                                      relax_tendency=relax_step)
+                                    BE%relax_tendency(:,irelax) = BE%relax_tendency(:,irelax) + relax_step*dt_sub
+                                else
+                                    call scalar_diffusion(Var=BE%BS%interior_state(kwb:kws,ivar), N=nwat, dt=dt_sub, h=BE%wat_grid%dz, &
+                                                          diff=BE%BS%vert_diff(kwb-1:kws), cnpar=BE%params%cnpar, tricoef=BE%wat_trid, ierr=ierr, &
+                                                          relax_target=BE%inputs%relaxation_targets(:,irelax), &
+                                                          relax_timescale=BE%inputs%relaxations(irelax)%timescale_s)
+                                end if
                             else
                                 call scalar_diffusion(Var=BE%BS%interior_state(kwb:kws,ivar), N=nwat, dt=dt_sub, h=BE%wat_grid%dz, &
                                                       diff=BE%BS%vert_diff(kwb-1:kws), cnpar=BE%params%cnpar, tricoef=BE%wat_trid, ierr=ierr)
@@ -1376,10 +1433,19 @@ contains
                         if (.not. BE%params%sediments_enabled .or. BE%tracer_info(ivar)%is_particulate) then
                             ! If sediments are enabled, diffusion of solutes within the water column is handled above
                             if (irelax > 0) then
-                                call scalar_diffusion(Var=BE%BS%interior_state(kwb:kws,ivar), N=nwat, dt=dt_sub, h=BE%wat_grid%dz, &
-                                                      diff=BE%BS%vert_diff(kwb-1:kws), cnpar=BE%params%cnpar, tricoef=BE%wat_trid, ierr=ierr, &
-                                                      relax_target=BE%inputs%relaxation_targets(:,irelax), &
-                                                      relax_timescale=BE%inputs%relaxations(irelax)%timescale_s)
+                                if (BE%inputs%relaxations(irelax)%output) then
+                                    call scalar_diffusion(Var=BE%BS%interior_state(kwb:kws,ivar), N=nwat, dt=dt_sub, h=BE%wat_grid%dz, &
+                                                          diff=BE%BS%vert_diff(kwb-1:kws), cnpar=BE%params%cnpar, tricoef=BE%wat_trid, ierr=ierr, &
+                                                          relax_target=BE%inputs%relaxation_targets(:,irelax), &
+                                                          relax_timescale=BE%inputs%relaxations(irelax)%timescale_s, &
+                                                      relax_tendency=relax_step)
+                                    BE%relax_tendency(:,irelax) = BE%relax_tendency(:,irelax) + relax_step*dt_sub
+                                else
+                                    call scalar_diffusion(Var=BE%BS%interior_state(kwb:kws,ivar), N=nwat, dt=dt_sub, h=BE%wat_grid%dz, &
+                                                          diff=BE%BS%vert_diff(kwb-1:kws), cnpar=BE%params%cnpar, tricoef=BE%wat_trid, ierr=ierr, &
+                                                          relax_target=BE%inputs%relaxation_targets(:,irelax), &
+                                                          relax_timescale=BE%inputs%relaxations(irelax)%timescale_s)
+                                end if
                             else
                                 call scalar_diffusion(Var=BE%BS%interior_state(kwb:kws,ivar), N=nwat, dt=dt_sub, h=BE%wat_grid%dz, &
                                                       diff=BE%BS%vert_diff(kwb-1:kws), cnpar=BE%params%cnpar, tricoef=BE%wat_trid, ierr=ierr)
@@ -1422,6 +1488,9 @@ contains
             dt_done = dt_done + dt_sub     
         end do     
         !----- End of inner loop (Adaptive substeps)
+
+        ! Main-step average of the actually applied implicit relaxation sources.
+        if (allocated(BE%relax_tendency)) BE%relax_tendency = BE%relax_tendency / dt_main
 
         ! Compute totals for conserved quantities if needed
         if (BE%params%output_conserved .and. BE%n_conserved > 0) then
@@ -1591,6 +1660,13 @@ contains
             end do
             deallocate(BE%deposition_flux_vars)
         end if
+        if (allocated(BE%relax_vars)) then
+            do i = 1, size(BE%relax_vars)
+                nullify(BE%relax_vars(i)%data_0d)
+                nullify(BE%relax_vars(i)%data_1d)
+            end do
+            deallocate(BE%relax_vars)
+        end if
         if (allocated(BE%resuspension_flux_vars)) then
             do i = 1, size(BE%resuspension_flux_vars)
                 nullify(BE%resuspension_flux_vars(i)%data_0d)
@@ -1600,6 +1676,7 @@ contains
         end if
 
         ! Deallocate BioEnv working arrays
+        if (allocated(BE%relax_tendency))     deallocate(BE%relax_tendency)
         if (allocated(BE%velocity))           deallocate(BE%velocity)
         if (allocated(BE%tendency_int))       deallocate(BE%tendency_int)
         if (allocated(BE%tendency_int_evt))   deallocate(BE%tendency_int_evt)
@@ -1891,6 +1968,7 @@ contains
         if (.not. allocated(BE%diag_int_vars))    allocate(BE%diag_int_vars(0))
         if (.not. allocated(BE%diag_hz_vars))     allocate(BE%diag_hz_vars(0))
         if (.not. allocated(BE%conserved_vars))   allocate(BE%conserved_vars(0))
+        if (.not. allocated(BE%relax_vars))       allocate(BE%relax_vars(0))
         if (.not. allocated(BE%env_int_vars))     allocate(BE%env_int_vars(0))
         if (.not. allocated(BE%tot_swiflux_vars)) allocate(BE%tot_swiflux_vars(0))
         if (.not. allocated(BE%bio_swiflux_vars)) allocate(BE%bio_swiflux_vars(0))

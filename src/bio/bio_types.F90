@@ -218,6 +218,9 @@ module bio_types
     real(rk), allocatable :: conserved_boundary(:)             ! (n_conserved): surface+bottom totals [per m2]
     real(rk), allocatable :: conserved_total(:)                ! column-integrated totals [per m2]
     type(VarMetadata), allocatable :: conserved_vars(:)        ! metadata for conserved totals
+    ! Optional water-column relaxation diagnostics
+    real(rk), allocatable :: relax_tendency(:,:)               ! (nwat, n_active_relaxations), concentration s-1
+    type(VarMetadata), allocatable :: relax_vars(:)            ! Selected relaxation output profiles
     ! 
     type(VarMetadata), allocatable :: tot_swiflux_vars(:)          ! Metadata for Sediment-water interface total fluxes
     type(VarMetadata), allocatable :: bio_swiflux_vars(:)          ! Metadata for Sediment-water interface bioirrigation fluxes
