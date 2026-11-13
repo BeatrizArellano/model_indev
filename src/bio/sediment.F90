@@ -43,6 +43,19 @@ contains
             write(*,'(A)') '  Sediment bottom boundary: closed/no-outflow for porewater and solids.'
         end if
 
+        ! Natural sediment resuspension configuration
+        if (SE%params_SI%resuspension_enabled) then
+            write(*,'(A)') '  natural sediment resuspension: enabled'
+            write(*,'(A,F8.4,A)') '    critical shear stress: ', &
+                SE%params_SI%tau_crit, ' Pa'
+            write(*,'(A,ES12.4,A)') '    erosion coefficient:   ', &
+                SE%params_SI%erosion_coefficient, ' kg m-2 s-1'
+            write(*,'(A,F10.2,A)') '    sediment density:     ', &
+                SE%params_SI%sediment_density, ' kg m-3'
+        else
+            write(*,'(A)') '  natural sediment resuspension: disabled'
+        end if
+
         ! Allocate working arrays 
         call allocate_sed_arrays(SE)
 
