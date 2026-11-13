@@ -62,13 +62,14 @@ contains
     end subroutine set_initial_profiles
 
 
-    subroutine set_initial_sediment_values(input_cfg_file, FabmMod, state, nsed, ok, errmsg)
+    subroutine set_initial_sediment_values(input_cfg_file, FabmMod, state, nsed, ok, errmsg, applied)
         character(*),            intent(in)    :: input_cfg_file
         class(type_fabm_model),  pointer, intent(in) :: FabmMod
         real(rk),                intent(inout) :: state(:,:)
         integer,                 intent(in)    :: nsed
         logical,                 intent(out)   :: ok
         character(*),            intent(out)   :: errmsg
+        logical,                 intent(out)   :: applied
 
         type(ConfigParams) :: cfg
 
@@ -81,6 +82,7 @@ contains
         logical  :: found
 
         ok = .false.
+        applied = .false.
         errmsg = ''
 
         ! Checks
@@ -127,6 +129,7 @@ contains
             state(1:nsed, ivar) = initial_value
         end do
 
+        applied = size(tracer_names) > 0
         ok = .true.
     end subroutine set_initial_sediment_values
 
