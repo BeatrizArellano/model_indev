@@ -19,7 +19,8 @@ module bio_main
     use sediment,            only: init_sediment, output_sed_profiles, clear_sediment_env, write_tracer_properties, &
                                    phase_to_bulk, bulk_to_phase, phase_to_bulk_all, bulk_to_phase_all, recover_faunal_activity
     use sediment_diffusion,  only: scalar_diffusion_sed
-    use sediment_exchange,   only: compute_solute_flux_swi, apply_particulate_deposition, apply_bioirrigation
+    use sediment_exchange,   only: compute_solute_flux_swi, apply_particulate_deposition, apply_bioirrigation, &
+                                   compute_natural_erosion, apply_particulate_exchange
     use state_loader,        only: StateData, set_initial_state
     use time_types,          only: DateTime, CFCalendar
     use time_utils,          only: sec_per_day
@@ -174,6 +175,8 @@ contains
                 if(allocated(BE%SED%total_swi_flux))  deallocate(BE%SED%total_swi_flux)
                 if (allocated(BE%SED%deposition_flux))     deallocate(BE%SED%deposition_flux)
                 if (allocated(BE%SED%deposition_flux_out)) deallocate(BE%SED%deposition_flux_out)
+                if (allocated(BE%SED%resuspension_flux)) deallocate(BE%SED%resuspension_flux)
+                if (allocated(BE%SED%resuspension_flux_out)) deallocate(BE%SED%resuspension_flux_out)
 
                 allocate(BE%SED%swi_flux(nint))                 
                 allocate(BE%SED%swi_flux_out(nint)) 
@@ -182,14 +185,19 @@ contains
                 allocate(BE%SED%total_swi_flux(nint)) 
                 allocate(BE%SED%deposition_flux(nint))
                 allocate(BE%SED%deposition_flux_out(nint))
+                allocate(BE%SED%resuspension_flux(nint))
+                allocate(BE%SED%resuspension_flux_out(nint))
 
                 BE%SED%swi_flux            = 0._rk
                 BE%SED%swi_flux_out        = 0._rk
                 BE%SED%bioirr_flux         = 0._rk
                 BE%SED%bioirr_flux_out     = 0._rk
                 BE%SED%total_swi_flux      = 0._rk
-                BE%SED%deposition_flux     = 0.0_rk
-                BE%SED%deposition_flux_out = 0.0_rk
+                BE%SED%deposition_flux     = 0._rk
+                BE%SED%deposition_flux_out = 0._rk
+                BE%SED%resuspension_flux     = 0._rk
+                BE%SED%resuspension_flux_out = 0._rk
+                BE%SED%natural_erosion_flux_out = 0._rk
                 
             end if   
             do ivar = 1, nint
@@ -330,14 +338,34 @@ contains
 
                         end if
 
+                        if (BE%SED%params_user%output_resuspension_fluxes) then
+                            call register_variable(BE%resuspension_flux_vars, name='resusp_flux_'// &
+                                                   trim(BE%model%interior_state_variables(ivar)%name), &
+                                                   long_name='Gross resuspension flux of '// &
+                                                   trim(BE%model%interior_state_variables(ivar)%long_name)// &
+                                                   ' from surface sediments (positive upward)', &
+                                                   units=trim(BE%model%interior_state_variables(ivar)%units)//' m d-1', &
+                                                   vert_coord='bottom', n_space_dims=0, &
+                                                   data_0d=BE%SED%resuspension_flux_out(ivar), &
+                                                   state_var=.false.)
+                        end if
                     end if
-                end if    
+                end if
             end do
+            if (BE%params%sediments_enabled) then
+                if (BE%SED%params_user%output_resuspension_fluxes) then
+                    call register_variable(BE%resuspension_flux_vars, name='natural_erosion_flux', &
+                                           long_name='Potential dry-sediment erosion driven by bottom shear stress', &
+                                           units='kg m-2 d-1', vert_coord='bottom', n_space_dims=0, &
+                                           data_0d=BE%SED%natural_erosion_flux_out, state_var=.false.)
+                end if
+            end if
             if (allocated(BE%int_vars))             call output_all_variables(BE%int_vars)
             if (allocated(BE%tot_swiflux_vars))     call output_all_variables(BE%tot_swiflux_vars)
             if (allocated(BE%dif_swiflux_vars))     call output_all_variables(BE%dif_swiflux_vars)
             if (allocated(BE%bio_swiflux_vars))     call output_all_variables(BE%bio_swiflux_vars)
             if (allocated(BE%deposition_flux_vars)) call output_all_variables(BE%deposition_flux_vars)
+            if (allocated(BE%resuspension_flux_vars)) call output_all_variables(BE%resuspension_flux_vars)
             ! Write dat file with information of the tracer properties
             if(BE%params%sediments_enabled) call write_tracer_properties(BE, 'tracer_properties.dat')
         end if
@@ -792,7 +820,7 @@ contains
         real(rk) :: dt_transport_safe, dt_reaction_safe, dt_to_next_event
         character(len=128) :: reaction_limiter_name
         integer  :: kwb, kws, ksb, kss, kswi, nwat, nsed, nfaces_wat
-        real(rk) :: vel_swi
+        real(rk) :: vel_swi, erosion_flux
         real(rk) :: c_w, c_s, M_old, M_new
         real(rk) :: D0, D0_max, Deff, phi_swi
         real(rk) :: swi_flux, swi_flux_max, swi_flux_applied, flux_into_water, flux_into_sed
@@ -833,6 +861,28 @@ contains
         ! Update FABM with environment data
         !--------------------------------------------
         call update_environment_data(PS, FS, BE)
+
+        ! Compute potential dry-sediment erosion from bottom shear stress.
+        ! This physical erosion rate is shared by all particulate tracers;
+        ! actual tracer resuspension is calculated during adaptive substeps.
+        ! Stress is fixed over the main biological timestep.
+        erosion_flux = 0._rk
+        if (BE%params%sediments_enabled) then
+            BE%SED%deposition_flux     = 0._rk
+            BE%SED%deposition_flux_out = 0._rk
+            BE%SED%resuspension_flux     = 0._rk
+            BE%SED%resuspension_flux_out = 0._rk
+            BE%SED%natural_erosion_flux_out = 0._rk
+
+            if (BE%SED%params_SI%resuspension_enabled) then
+                call compute_natural_erosion( &
+                    tau_b=BE%BS%stressb, &
+                    tau_crit=BE%SED%params_SI%tau_crit, &
+                    erosion_coefficient=BE%SED%params_SI%erosion_coefficient, &
+                    erosion_flux=erosion_flux)
+                BE%SED%natural_erosion_flux_out = erosion_flux * sec_per_day
+            end if
+        end if
 
         !-------------------------------------------
         ! Update external input data
@@ -1236,22 +1286,48 @@ contains
                 
 
                 !----------------------------------------------------------
-                !--- Particulate deposition at Sediment-water interface
+                !--- Two-way particulate exchange at the sediment-water interface
+                !    Sediment concentrations are PER BULK VOLUME at this point:
+                !    Cbulk=(1-porosity)*Csolid. The analytical routine conserves
+                !    Cw*dz_w + Cbulk*dz_s, using the same top-layer porosity.
                 !----------------------------------------------------------
                 do ivar=1, nint
                     if (BE%tracer_info(ivar)%disable_transport) cycle
-                    if (BE%tracer_info(ivar)%is_particulate) then
-                        vel_swi = BE%velocity(kwb, ivar)
-                        call apply_particulate_deposition(Cw_bot        = BE%BS%interior_state(kwb, ivar), &
-                                                          dz_w_bot      = BE%wat_grid%dz(1),               &
-                                                          vel_swi       = vel_swi,                         &
-                                                          dt            = dt_sub,                          &
-                                                          dz_sed_top    = BE%sed_grid%dz(kss),             &
-                                                          Cbulk_sed_top = BE%SED%bulk_conc(kss, ivar),     &
-                                                          dep_flux      = BE%SED%deposition_flux(ivar))    
+                    if (.not. BE%tracer_info(ivar)%is_particulate) cycle
 
-                        BE%SED%deposition_flux_out(ivar) = BE%SED%deposition_flux(ivar) * sec_per_day
+                    vel_swi = BE%velocity(kwb, ivar)
+                    if (BE%SED%params_SI%resuspension_enabled) then
+                        call apply_particulate_exchange( &
+                            Cw_bot          = BE%BS%interior_state(kwb, ivar), &
+                            dz_w_bot        = BE%wat_grid%dz(1), &
+                            vel_swi         = vel_swi, &
+                            dt              = dt_sub, &
+                            dz_sed_top      = BE%sed_grid%dz(kss), &
+                            Cbulk_sed_top   = BE%SED%bulk_conc(kss, ivar), &
+                            porosity_top    = BE%SED%poro(kss), &
+                            erosion_flux    = erosion_flux, &
+                            sediment_density= BE%SED%params_SI%sediment_density, &
+                            dep_flux        = BE%SED%deposition_flux(ivar), &
+                            resusp_flux     = BE%SED%resuspension_flux(ivar))
+                    else
+                        ! Preserve the original deposition algorithm when disabled.
+                        call apply_particulate_deposition( &
+                            Cw_bot          = BE%BS%interior_state(kwb, ivar), &
+                            dz_w_bot        = BE%wat_grid%dz(1), &
+                            vel_swi         = vel_swi, &
+                            dt              = dt_sub, &
+                            dz_sed_top      = BE%sed_grid%dz(kss), &
+                            Cbulk_sed_top   = BE%SED%bulk_conc(kss, ivar), &
+                            dep_flux        = BE%SED%deposition_flux(ivar))
+                        BE%SED%resuspension_flux(ivar) = 0._rk
                     end if
+
+                    ! Gross fluxes from each substep are time-integrated to
+                    ! main-step mean fluxes; never overwrite with the last step.
+                    BE%SED%deposition_flux_out(ivar) = BE%SED%deposition_flux_out(ivar) + &
+                        BE%SED%deposition_flux(ivar) * (dt_sub / dt_main) * sec_per_day
+                    BE%SED%resuspension_flux_out(ivar) = BE%SED%resuspension_flux_out(ivar) + &
+                        BE%SED%resuspension_flux(ivar) * (dt_sub / dt_main) * sec_per_day
                 end do
 
                 !----------------------------------------------------------------
@@ -1509,6 +1585,13 @@ contains
             end do
             deallocate(BE%deposition_flux_vars)
         end if
+        if (allocated(BE%resuspension_flux_vars)) then
+            do i = 1, size(BE%resuspension_flux_vars)
+                nullify(BE%resuspension_flux_vars(i)%data_0d)
+                nullify(BE%resuspension_flux_vars(i)%data_1d)
+            end do
+            deallocate(BE%resuspension_flux_vars)
+        end if
 
         ! Deallocate BioEnv working arrays
         if (allocated(BE%velocity))           deallocate(BE%velocity)
@@ -1527,6 +1610,9 @@ contains
         if (allocated(BE%SED%total_swi_flux))  deallocate(BE%SED%total_swi_flux)
         if (allocated(BE%SED%deposition_flux))     deallocate(BE%SED%deposition_flux)
         if (allocated(BE%SED%deposition_flux_out)) deallocate(BE%SED%deposition_flux_out)
+        if (allocated(BE%SED%resuspension_flux)) deallocate(BE%SED%resuspension_flux)
+        if (allocated(BE%SED%resuspension_flux_out)) deallocate(BE%SED%resuspension_flux_out)
+        BE%SED%natural_erosion_flux_out = 0._rk
 
         ! Clear Tridiagonal workspace 
         call clear_tridiag(BE%wat_trid)
@@ -1804,6 +1890,7 @@ contains
         if (.not. allocated(BE%bio_swiflux_vars)) allocate(BE%bio_swiflux_vars(0))
         if (.not. allocated(BE%dif_swiflux_vars)) allocate(BE%dif_swiflux_vars(0))
         if (.not. allocated(BE%deposition_flux_vars)) allocate(BE%deposition_flux_vars(0))
+        if (.not. allocated(BE%resuspension_flux_vars)) allocate(BE%resuspension_flux_vars(0))
     end subroutine allocate_metadata_arrays
 
 end module bio_main

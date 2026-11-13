@@ -5,6 +5,7 @@ module sediment_exchange
 
     public :: compute_solute_flux_swi
     public :: apply_particulate_deposition
+    public :: compute_natural_erosion, apply_particulate_exchange
     public :: apply_bioirrigation
 
     ! Kinematic viscosity of water (ν) [m^2 s^-1] (used as a Constant)
@@ -236,6 +237,186 @@ contains
             Cbulk_sed_top = Cbulk_sed_top + dep_mass / dz_sed_top
         end if
     end subroutine apply_particulate_deposition
+
+
+    !-----------------------------------------------------------------------
+    ! compute_natural_erosion
+    !
+    ! Potential erosion of cohesive surface sediment driven by bottom stress.
+    ! Linear Ariathurai-Partheniades erosion law:
+    !
+    !   E = M * max(0, tau_b/tau_crit - 1)
+    !
+    ! E        : potential dry-sediment erosion intensity [kg m-2 s-1].
+    ! M        : empirical erosion coefficient [kg m-2 s-1].
+    ! tau_b    : applied bottom shear stress [Pa].
+    ! tau_crit : critical stress above which erosion begins [Pa].
+    !
+    ! PHYSICAL INTERPRETATION AND LIMITATIONS
+    ! ---------------------------------------
+    ! E describes potential removal of dry bulk sediment solids, NOT the
+    ! resuspension flux of an individual biogeochemical tracer. It is used
+    ! as a physical forcing to transfer particulate tracer inventories.
+    !
+    ! The uppermost sediment layer has a reference dry-solid mass per area:
+    !
+    !   m_top = rho_s * (1 - phi_top) * dz_top      [kg m-2]
+    !
+    ! The particulate exchange routine converts E to a first-order
+    ! removal coefficient shared by all eligible particulate tracers:
+    !
+    !   k_e = E / m_top                            [s-1]
+    !
+    ! For erosion alone, the fraction of an initial tracer inventory
+    ! removed during a time interval dt is:
+    !
+    !   f = 1 - exp(-k_e * dt)                      [0, 1]
+    !
+    ! Thus the tracer-specific removal is bounded by the tracer inventory
+    ! available in the top layer. When deposition is also present, the
+    ! analytical two-way exchange accounts for simultaneous replenishment.
+    !
+    ! IMPORTANT: E itself is NOT capped by an explicitly prognosed
+    ! mineral inventory. Mineral sediment mass, bed elevation, porosity
+    ! and layer geometry are not updated by erosion in this model.
+    ! A fixed tau_crit does not reproduce depth-limited Type I cohesive
+    ! erosion with increasing resistance below the sediment surface.
+    !
+    ! REFERENCES
+    ! ----------
+    ! Partheniades (1965), Erosion and deposition of cohesive soils.
+    !   J. Hydraulics Division, ASCE, 91(HY1), 105-139.
+    ! Ariathurai & Krone (1976), Finite element model for cohesive
+    !   sediment transport. J. Hydraulics Division, 102(3), 323-338.
+    ! Sanford & Maa (2001), A unified erosion formulation for fine
+    !   sediments. Marine Geology, 179, 9-23.
+    !-----------------------------------------------------------------------
+    subroutine compute_natural_erosion(tau_b, tau_crit, erosion_coefficient, erosion_flux)
+        real(rk), intent(in)  :: tau_b               ! Bottom shear stress [Pa]
+        real(rk), intent(in)  :: tau_crit            ! Critical erosion stress [Pa]
+        real(rk), intent(in)  :: erosion_coefficient ! Partheniades M [kg m-2 s-1]
+        real(rk), intent(out) :: erosion_flux        ! Potential dry-sediment erosion [kg m-2 s-1]
+
+        if (tau_crit <= 0._rk .or. erosion_coefficient < 0._rk) &
+            error stop 'compute_natural_erosion: invalid erosion parameters'
+
+        erosion_flux = erosion_coefficient * max(0._rk, tau_b/tau_crit - 1._rk)
+    end subroutine compute_natural_erosion
+
+    !-----------------------------------------------------------------------
+    ! Exact, conservative two-way exchange of ONE particulate tracer between
+    ! the bottom-water cell and uppermost sediment layer over a substep.
+    !
+    ! Cw_bot: concentration per WATER volume.
+    ! Cbulk_sed_top: concentration per BULK sediment volume, NOT per volume
+    !   of solids. The caller must use phase_to_bulk_all before this routine
+    !   and bulk_to_phase_all afterwards. For solids Cbulk = (1-phi)*Csolid.
+    !
+    ! Areal inventories are Iw=Cw_bot*dz_w_bot and
+    ! Is=Cbulk_sed_top*dz_sed_top; transfer conserves Iw+Is.
+    ! The solids fraction (1-phi) is already included in Cbulk;
+    ! it MUST NOT be multiplied into Is a second time.
+    !
+    ! Deposition rate k_d=max(0,-vel_swi)/dz_w_bot [s-1].
+    ! Resuspension rate k_e=E/[rho_s*(1-phi)*dz_sed_top] [s-1].
+    !
+    ! A single potential dry-sediment erosion flux E [kg m-2 s-1]
+    ! supplies the same k_e for every eligible particulate tracer.
+    ! Actual tracer resuspension depends on its available inventory Is:
+    !
+    !   F_resusp = k_e * Is         [tracer units m-2 s-1]
+    !
+    ! With erosion alone, Is(t+dt)=Is(t)*exp(-k_e*dt), so no more
+    ! tracer inventory can be removed than initially exists.
+    ! With simultaneous deposition, some particles deposited during
+    ! the substep may also be resuspended; the coupled solution handles
+    ! this cycling while conserving the combined water-sediment inventory.
+    ! Constant rates are integrated analytically for the whole substep;
+    ! no exchange-specific stability restriction is required.
+    !
+    ! dep_flux and resusp_flux: positive GROSS time-averaged transfers,
+    ! [tracer units m-2 s-1], downward and upward respectively.
+    ! Distinct gross fluxes include repeated cycling during a long substep.
+    ! Requires nonnegative concentrations and physically valid geometry.
+    ! Does not erode mineral mass, change porosity or change sediment
+    ! layer geometry. It is an analytical tracer-exchange closure, not
+    ! a prognostic sediment-mass erosion or bed-consolidation model.
+    ! A constant critical stress implies a simplified Type II erosion
+    ! law; depletion of tracer inventory is not a Type I erosion law.
+    ! Although the exchange is unconditionally positivity-preserving,
+    ! operator-splitting errors in the wider model still depend on dt.
+    !-----------------------------------------------------------------------
+    subroutine apply_particulate_exchange(Cw_bot, dz_w_bot, vel_swi, dt, dz_sed_top, &
+                                           Cbulk_sed_top, porosity_top, erosion_flux, &
+                                           sediment_density, dep_flux, resusp_flux)
+        real(rk), intent(inout) :: Cw_bot          ! Bottom-water concentration [per water m3]
+        real(rk), intent(in)    :: dz_w_bot        ! Bottom water cell thickness [m]
+        real(rk), intent(in)    :: vel_swi         ! SWI settling velocity [m s-1]; negative down
+        real(rk), intent(in)    :: dt              ! Adaptive substep [s]
+        real(rk), intent(in)    :: dz_sed_top      ! Top sediment layer thickness [m]
+        real(rk), intent(inout) :: Cbulk_sed_top   ! Particulate concentration [per bulk sediment m3]
+        real(rk), intent(in)    :: porosity_top    ! Top-layer porosity [-]
+        real(rk), intent(in)    :: erosion_flux    ! Potential erosion E [kg dry solids m-2 s-1]
+        real(rk), intent(in)    :: sediment_density ! Dry solid grain density [kg m-3]
+        real(rk), intent(out)   :: dep_flux        ! Gross deposition [tracer m-2 s-1], positive down
+        real(rk), intent(out)   :: resusp_flux     ! Gross resuspension [tracer m-2 s-1], positive up
+
+        real(rk) :: kd, ke, rate_sum, x, decay, transfer_fraction, mean_fraction
+        real(rk) :: water_to_sed, sed_to_water, i_w_old, i_s_old, i_total
+        real(rk) :: i_w_eq, i_s_eq, i_w_avg, i_s_avg, i_w_new, i_s_new
+
+        dep_flux = 0._rk
+        resusp_flux = 0._rk
+
+        if (dt < 0._rk) error stop 'apply_particulate_exchange: negative dt'
+        if (dt <= 0._rk) return
+        if (dz_w_bot <= 0._rk .or. dz_sed_top <= 0._rk) &
+            error stop 'apply_particulate_exchange: nonpositive layer thickness'
+        if (porosity_top < 0._rk .or. porosity_top >= 1._rk) &
+            error stop 'apply_particulate_exchange: porosity must be in [0,1)'
+        if (sediment_density <= 0._rk .or. erosion_flux < 0._rk) &
+            error stop 'apply_particulate_exchange: invalid sediment mass parameters'
+        if (Cw_bot < 0._rk .or. Cbulk_sed_top < 0._rk) &
+            error stop 'apply_particulate_exchange: negative particulate inventory'
+
+        kd = max(0._rk, -vel_swi) / dz_w_bot
+        ke = erosion_flux / (sediment_density * (1._rk - porosity_top) * dz_sed_top)
+        rate_sum = kd + ke
+        if (rate_sum <= 0._rk) return
+
+        i_w_old = Cw_bot * dz_w_bot
+        i_s_old = Cbulk_sed_top * dz_sed_top
+        i_total = i_w_old + i_s_old
+
+        x = rate_sum * dt
+        decay = exp(-x)
+        ! Avoid catastrophic cancellation in 1-exp(-x) and (1-exp(-x))/x.
+        if (x < 1.0e-4_rk) then
+            transfer_fraction = x * (1._rk - x*(0.5_rk - x*(1._rk/6._rk - &
+                                x*(1._rk/24._rk - x/120._rk))))
+            mean_fraction = transfer_fraction / x
+        else
+            transfer_fraction = 1._rk - decay
+            mean_fraction = transfer_fraction / x
+        end if
+
+        ! Transition fractions are each in [0,1], so new stocks stay >=0.
+        water_to_sed = (kd/rate_sum) * transfer_fraction
+        sed_to_water = (ke/rate_sum) * transfer_fraction
+        i_w_new = (1._rk - water_to_sed)*i_w_old + sed_to_water*i_s_old
+        i_s_new = (1._rk - sed_to_water)*i_s_old + water_to_sed*i_w_old
+
+        ! Exact time integrals of the two gross fluxes, not just the net change.
+        i_w_eq = (ke/rate_sum) * i_total
+        i_s_eq = (kd/rate_sum) * i_total
+        i_w_avg = mean_fraction*i_w_old + (1._rk - mean_fraction)*i_w_eq
+        i_s_avg = mean_fraction*i_s_old + (1._rk - mean_fraction)*i_s_eq
+        dep_flux = kd * i_w_avg
+        resusp_flux = ke * i_s_avg
+
+        Cw_bot = i_w_new / dz_w_bot
+        Cbulk_sed_top = i_s_new / dz_sed_top
+    end subroutine apply_particulate_exchange
 
     !-----------------------------------------------------------------------
     ! apply_bioirrigation: Apply bioirrigation as a non-local exchange 

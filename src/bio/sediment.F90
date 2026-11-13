@@ -43,6 +43,19 @@ contains
             write(*,'(A)') '  Sediment bottom boundary: closed/no-outflow for porewater and solids.'
         end if
 
+        ! Natural sediment resuspension configuration
+        if (SE%params_SI%resuspension_enabled) then
+            write(*,'(A)') '  Natural sediment resuspension: enabled'
+            write(*,'(A,F8.4,A)') '    Critical shear stress: ', &
+                SE%params_SI%tau_crit, ' Pa'
+            write(*,'(A,ES12.4,A)') '    Erosion coefficient:   ', &
+                SE%params_SI%erosion_coefficient, ' kg m-2 s-1'
+            write(*,'(A,F10.2,A)') '    Sediment density:     ', &
+                SE%params_SI%sediment_density, ' kg m-3'
+        else
+            write(*,'(A)') '  Natural sediment resuspension: disabled'
+        end if
+
         ! Allocate working arrays 
         call allocate_sed_arrays(SE)
 
@@ -655,11 +668,18 @@ contains
         ! irr_sfc: 1/yr -> 1/s
         si%irr_sfc = user%irr_sfc / yr_to_s
 
+        ! Natural resuspension parameters are already provided in SI units.
+        si%resuspension_enabled = user%resuspension_enabled
+        si%tau_crit = user%tau_crit
+        si%erosion_coefficient = user%erosion_coefficient
+        si%sediment_density = user%sediment_density
+
         si%bottom_outflow    = user%bottom_outflow
         si%output_swi_fluxes = user%output_swi_fluxes
         si%output_swi_diff_fluxes = user%output_swi_diff_fluxes
         si%output_swi_bio_fluxes = user%output_swi_bio_fluxes
         si%output_deposition_fluxes = user%output_deposition_fluxes
+        si%output_resuspension_fluxes = user%output_resuspension_fluxes
         ! Copy cnpar value
         si%cnpar_sed = user%cnpar_sed
     end subroutine convert_units_to_SI

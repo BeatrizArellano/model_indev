@@ -50,6 +50,11 @@ module bio_params
         real(rk) :: poro_sfc                ! Porosity at SWI [-]
         real(rk) :: poro_deep               ! Asymptotic porosity at depth [-]
         real(rk) :: poro_decay              ! Decay depth for porosity exponential decay (user: cm; SI: m)     
+        !--- Natural resuspension (all coefficients already in SI units)
+        logical  :: resuspension_enabled = .false.  ! Bottom-stress-driven particulate erosion
+        real(rk) :: tau_crit = 0.3_rk              ! Critical erosion stress [Pa]
+        real(rk) :: erosion_coefficient = 1.0e-5_rk ! Partheniades coefficient [kg m-2 s-1]
+        real(rk) :: sediment_density = 2650._rk   ! Density of sediment solid grains [kg m-3]
         !--- Bioturbation
         character(:), allocatable :: biot_mode ! off | static | dynamic
         real(rk) :: biot_db_sfc             ! Bioturbation diffusivity at the sediment surface (user: cm2/yr; SI: m2/s)
@@ -69,6 +74,7 @@ module bio_params
         logical :: output_swi_diff_fluxes = .false.    ! Include diffusive component of sediment-water solute fluxes in the output
         logical :: output_swi_bio_fluxes = .false.     ! Include bioirrigation component of sediment-water solute fluxes in the output
         logical :: output_deposition_fluxes = .false.  ! Include deposition fluxes of solids in the output
+        logical :: output_resuspension_fluxes = .false. ! Include gross resuspension fluxes of solids in output
         ! --- Numerics
         real(rk) :: cnpar_sed              ! Crank-Nicolson parameter to solve diffusive mixing [default=0.9, min=0, max=1]
         
@@ -91,6 +97,10 @@ module bio_params
     real(rk), parameter :: def_poro_sfc   = 0.95_rk       ! Porosity at the sediment–water interface. (Soetaert et al., 1996)
     real(rk), parameter :: def_poro_deep  = 0.80_rk       ! Asymptotic porosity at depth [-] (Soetaert et al., 1996)
     real(rk), parameter :: def_poro_decay = 4.0_rk        ! E-folding depth scale for exponential porosity decrease [cm] (Soetaert et al., 1996)
+    logical,  parameter :: def_resuspension_enabled = .false.
+    real(rk), parameter :: def_tau_crit = 0.3_rk                 ! Critical bed stress for erosion [Pa]
+    real(rk), parameter :: def_erosion_coefficient = 1.0e-5_rk   ! Partheniades erosion coefficient [kg m-2 s-1]
+    real(rk), parameter :: def_sediment_density = 2650.0_rk     ! Sediment solid grain density [kg m-3]
     real(rk), parameter :: def_db_sfc     = 5.0_rk        ! Bioturbation at the sediment surface [cm2 yr-1]
     real(rk), parameter :: def_biot_mld   = 5.0_rk        ! Sediment mixed layer depth below which bioturbation decreases exponentially [cm]
     real(rk), parameter :: def_biot_ez    = 1.0_rk        ! Coefficient (decay depth) for exponential bioturbation decrease [cm]
@@ -144,6 +154,18 @@ contains
         SedP%poro_sfc   = cfg_params%get_param_num('biogeochemistry.sediments.porosity_surface', default=def_poro_sfc, finite=.true., min=0.0_rk, max=1._rk)
         SedP%poro_deep  = cfg_params%get_param_num('biogeochemistry.sediments.porosity_depth', default=def_poro_deep, finite=.true., min=0.0_rk, max=SedP%poro_sfc)
         SedP%poro_decay = cfg_params%get_param_num('biogeochemistry.sediments.porosity_decay_depth', default=def_poro_decay, finite=.true., positive=.true.)
+        ! -------- Natural sediment resuspension (SI units) ------------
+        SedP%resuspension_enabled = cfg_params%get_param_logical( &
+            'biogeochemistry.sediments.resuspension.enabled', default=def_resuspension_enabled)
+        SedP%tau_crit = cfg_params%get_param_num( &
+            'biogeochemistry.sediments.resuspension.critical_stress', &
+            default=def_tau_crit, finite=.true., positive=.true.)
+        SedP%erosion_coefficient = cfg_params%get_param_num( &
+            'biogeochemistry.sediments.resuspension.erosion_coefficient', &
+            default=def_erosion_coefficient, finite=.true., min=0.0_rk)
+        SedP%sediment_density = cfg_params%get_param_num( &
+            'biogeochemistry.sediments.resuspension.sediment_density', &
+            default=def_sediment_density, finite=.true., positive=.true.)
         ! -------- Bioturbation profile ------------
         SedP%biot_mode   = cfg_params%get_param_str('biogeochemistry.sediments.bioturbation_mode', default=def_biot_mode, choices=mode_choices, trim_value=.true., match_case=.false.)
         SedP%biot_db_sfc = cfg_params%get_param_num('biogeochemistry.sediments.db_surface', default=def_db_sfc, finite=.true., min=0.0_rk)
@@ -164,7 +186,9 @@ contains
         SedP%output_swi_fluxes      = cfg_params%get_param_logical('biogeochemistry.sediments.output_swi_fluxes', default=.false.)
         SedP%output_swi_diff_fluxes = cfg_params%get_param_logical('biogeochemistry.sediments.output_swi_diff_fluxes', default=.false.)
         SedP%output_swi_bio_fluxes  = cfg_params%get_param_logical('biogeochemistry.sediments.output_swi_bio_fluxes', default=.false.)   
-        SedP%output_deposition_fluxes  = cfg_params%get_param_logical('biogeochemistry.sediments.output_deposition_fluxes', default=.false.)         
+        SedP%output_deposition_fluxes  = cfg_params%get_param_logical('biogeochemistry.sediments.output_deposition_fluxes', default=.false.)
+        SedP%output_resuspension_fluxes = cfg_params%get_param_logical( &
+            'biogeochemistry.sediments.output_resuspension_fluxes', default=.false.)         
         !--------- Numerics---------------------
         SedP%cnpar_sed  = cfg_params%get_param_num('biogeochemistry.sediments.cnpar_sed', default=def_cnpar_sed, finite=.true., min=0.0_rk, max=1._rk)
     end subroutine read_sed_parameters
@@ -189,6 +213,11 @@ contains
         p%poro_deep   = def_poro_deep
         p%poro_decay  = def_poro_decay
 
+        p%resuspension_enabled = def_resuspension_enabled
+        p%tau_crit = def_tau_crit
+        p%erosion_coefficient = def_erosion_coefficient
+        p%sediment_density = def_sediment_density
+
         p%biot_mode   = def_biot_mode
         p%biot_db_sfc = def_db_sfc
         p%biot_mld    = def_biot_mld
@@ -209,6 +238,7 @@ contains
         p%output_swi_diff_fluxes   = .false.
         p%output_swi_bio_fluxes    = .false.
         p%output_deposition_fluxes = .false.
+        p%output_resuspension_fluxes = .false.
     end function default_sed_params
 
 
