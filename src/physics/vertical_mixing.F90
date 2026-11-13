@@ -82,7 +82,7 @@ contains
                                 bc_top_type, bc_top_value,           &
                                 bc_bot_type, bc_bot_value,           &
                                 relax_target, relax_timescale,       &
-                                bc_top_flux_applied, bc_bot_flux_applied)
+                                bc_top_flux_applied, bc_bot_flux_applied, relax_tendency)
 
         real(rk),           intent(inout) :: Var(1:N)
         integer,            intent(in)    :: N
@@ -99,6 +99,7 @@ contains
         real(rk), intent(in),  optional :: relax_target(:)
         real(rk), intent(in),  optional :: relax_timescale
         real(rk), intent(out), optional :: bc_top_flux_applied, bc_bot_flux_applied
+        real(rk), intent(out), optional :: relax_tendency(:) ! Applied source (concentration per second)
 
         integer :: i
         real(rk) :: a, c, relax_coeff
@@ -124,8 +125,15 @@ contains
 
         if (present(bc_top_flux_applied)) bc_top_flux_applied = 0.0_rk
         if (present(bc_bot_flux_applied)) bc_bot_flux_applied = 0.0_rk
+        if (present(relax_tendency)) relax_tendency = 0.0_rk
 
         ierr = 0
+        if (present(relax_tendency)) then
+            if (size(relax_tendency) /= N) then
+                ierr = 6
+                return
+            end if
+        end if
 
         ! Relaxation arguments must be supplied together.
         if (present(relax_target) .neqv. present(relax_timescale)) then
@@ -245,6 +253,16 @@ contains
         ! Solve tridiagonal system
         !---------------------------
         call solve_tridiag(1, N, tricoef, Var)
+
+        ! Report the backward-Euler relaxation source using the solved state.
+        ! Dirichlet rows are not relaxed, so their source stays zero.
+        if (present(relax_tendency) .and. do_relax) then
+            do i = 1, N
+                if (i == 1 .and. bot_type == BC_DIRICHLET) cycle
+                if (i == N .and. top_type == BC_DIRICHLET) cycle
+                relax_tendency(i) = (relax_target(i) - Var(i)) / relax_timescale
+            end do
+        end if
 
         !-----------------------------------------------------------------
         ! Report the Neumann flux actually represented by the solved matrix.
