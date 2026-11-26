@@ -1,7 +1,9 @@
 ! Notes:
 !   - Application regions are represented by complete model layers.
 !   - thickness_eff is the total thickness of the complete model layers
-!     selected for application. It is always <= the requested thickness.
+!     selected for application. It does not exceed the requested thickness,
+!     except when the initial layer alone is thicker than requested.
+!   - Application indices are local to the water-only grid.
 module tracer_pulse
    use bio_types,        only: BioEnv
    use event_types,      only: Event, EventData
@@ -26,7 +28,7 @@ module tracer_pulse
         real(rk) :: min_depth, max_depth
         real(rk) :: thickness = 0._rk
         real(rk) :: thickness_eff = 0._rk      ! Effective thickness
-        ! Indices of layers to apply the pulse
+        ! Water-only grid indices of layers to apply the pulse
         integer  :: depth_idx = 0              
         integer  :: shallow_idx, deep_idx
 
@@ -45,6 +47,7 @@ contains
 
         character(len=:), allocatable :: basekey, tracer, mode, location
         integer  :: idx, i
+        real(rk) :: thickness_check
 
         if (allocated(evt%details)) deallocate(evt%details)
         allocate(TracerPulse :: evt%details)
@@ -74,11 +77,34 @@ contains
             location = to_lower(cfg%get_param_str(basekey//'.location', default='depth', trim_value=.true.))
 
             TP%location_kind = location
-            TP%thickness = cfg%get_param_num(basekey//'.thickness', default=0._rk, min=0.0_rk)
+            TP%thickness = cfg%get_param_num(basekey//'.thickness', default=0._rk, finite=.true., min=0.0_rk)
 
             call resolve_application_layers(basekey, location, cfg, BE%wat_grid,                    &
                                             TP%depth, TP%depth_idx, TP%thickness, TP%thickness_eff, &
                                             TP%shallow_idx, TP%deep_idx, TP%min_depth, TP%max_depth)
+
+            ! Check the mapping between the water-only and combined grids.
+            if (BE%k_wat_btm /= BE%nsed + 1 .or. &
+                BE%k_wat_btm < 1 .or. BE%k_wat_sfc > BE%grid%nz .or. &
+                BE%k_wat_sfc /= BE%grid%nz .or. &
+                BE%wat_grid%nz < 1 .or. BE%nwat /= BE%wat_grid%nz .or. &
+                BE%k_wat_sfc - BE%k_wat_btm + 1 /= BE%wat_grid%nz) then
+                call fatal('tracer_pulse:prepare', &
+                           'Inconsistent water-column grid mapping for "'//trim(evt%name)//'".')
+            end if
+
+            if (TP%deep_idx < 1 .or. TP%shallow_idx > BE%wat_grid%nz .or. &
+                TP%deep_idx > TP%shallow_idx) then
+                call fatal('tracer_pulse:prepare', &
+                           'Injection region outside the water column for "'//trim(evt%name)//'".')
+            end if
+
+            thickness_check = sum(BE%wat_grid%dz(TP%deep_idx:TP%shallow_idx))
+            if (TP%thickness_eff <= 0._rk .or. thickness_check <= 0._rk .or. &
+                abs(thickness_check - TP%thickness_eff) > 1.e-6_rk * max(1._rk, thickness_check)) then
+                call fatal('tracer_pulse:prepare', &
+                           'Inconsistent effective injection thickness for "'//trim(evt%name)//'".')
+            end if
 
             !--------------------------------------------------
             ! Tracer and mode
@@ -126,6 +152,28 @@ contains
                 TP%rate_vol = (TP%amount / evt%duration) / TP%thickness_eff
             end if
 
+            ! Report the resolved application region once per event occurrence.
+            write(*,'(A)') '  Tracer pulse configuration: '//trim(evt%name)
+            if (allocated(evt%date_string)) write(*,'(A)') '    Date: '//trim(evt%date_string)
+            write(*,'(A)') '    Tracer: '//TP%tracer_name
+            write(*,'(A)') '    Location: '//TP%location_kind
+            write(*,'(A)') '    Mode: '//TP%mode
+            write(*,'(A,F12.4,A)') '    Requested thickness: ', TP%thickness, ' m'
+            write(*,'(A,F12.4,A)') '    Effective thickness: ', TP%thickness_eff, ' m'
+            write(*,'(A,F12.4,A)') '    Minimum depth: ', TP%min_depth, ' m'
+            write(*,'(A,F12.4,A)') '    Maximum depth: ', TP%max_depth, ' m'
+            write(*,'(A,I0,A,I0)') '    Water-column indices: ', TP%deep_idx, ' - ', TP%shallow_idx
+            write(*,'(A,I0,A,I0)') '    Combined-grid indices: ', &
+                BE%k_wat_btm + TP%deep_idx - 1, ' - ', BE%k_wat_btm + TP%shallow_idx - 1
+            write(*,'(A,I0)') '    Number of affected layers: ', TP%shallow_idx - TP%deep_idx + 1
+            write(*,'(A,ES14.6,A)') '    Duration: ', evt%duration, ' s'
+            if (TP%mode == 'amount') then
+                write(*,'(A,ES14.6)') '    Prescribed amount (tracer units m-2): ', TP%amount
+            else
+                write(*,'(A,ES14.6)') '    Prescribed rate (tracer units m-2 s-1): ', TP%rate_area
+            end if
+            write(*,'(A,ES14.6)') '    Volumetric injection rate (tracer units m-3 s-1): ', TP%rate_vol
+
         end select
 
     end subroutine tracer_pulse_prepare
@@ -135,7 +183,7 @@ contains
         type(Event),  intent(in)    :: evt
         type(BioEnv), intent(inout) :: BE
 
-        integer  :: k, it
+        integer  :: it
 
         if (.not. evt%changes_tendency) return
         ! Event tendencies are only active on the half-open interval:
@@ -146,10 +194,29 @@ contains
 
             it = TP%tracer_idx
 
-            ! Add to the existing tendencies from other events
-            do k = TP%deep_idx, TP%shallow_idx
-                BE%tendency_int_evt(k, it) = BE%tendency_int_evt(k, it) + TP%rate_vol
-            end do
+            ! Restrict the application to a water-only view of the tendency array.
+            ! Its local indices match BE%wat_grid, even when sediments are enabled.
+            if (.not. allocated(BE%tendency_int_evt)) then
+                call fatal('tracer_pulse:apply', 'Event tendency array is not allocated.')
+            end if
+
+            if (BE%k_wat_btm /= BE%nsed + 1 .or. BE%k_wat_btm < 1 .or. &
+                BE%k_wat_sfc > size(BE%tendency_int_evt, 1) .or. &
+                BE%k_wat_sfc - BE%k_wat_btm + 1 /= BE%wat_grid%nz .or. &
+                it < 1 .or. it > size(BE%tendency_int_evt, 2)) then
+                call fatal('tracer_pulse:apply', 'Invalid water-column tendency array mapping.')
+            end if
+
+            associate(tendency_wat => BE%tendency_int_evt(BE%k_wat_btm:BE%k_wat_sfc, it))
+                if (TP%deep_idx < 1 .or. TP%shallow_idx > size(tendency_wat) .or. &
+                    TP%deep_idx > TP%shallow_idx) then
+                    call fatal('tracer_pulse:apply', 'Injection region outside the water column.')
+                end if
+
+                ! Add to existing tendencies without touching sediment layers.
+                tendency_wat(TP%deep_idx:TP%shallow_idx) = &
+                    tendency_wat(TP%deep_idx:TP%shallow_idx) + TP%rate_vol
+            end associate
         end select
 
     end subroutine tracer_pulse_apply  
