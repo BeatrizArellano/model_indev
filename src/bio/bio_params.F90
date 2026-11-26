@@ -189,6 +189,13 @@ contains
         SedP%output_deposition_fluxes  = cfg_params%get_param_logical('biogeochemistry.sediments.output_deposition_fluxes', default=.false.)
         SedP%output_resuspension_fluxes = cfg_params%get_param_logical( &
             'biogeochemistry.sediments.output_resuspension_fluxes', default=.false.)         
+
+        ! Disable resuspension diagnostics when natural resuspension is disabled.
+        if (SedP%output_resuspension_fluxes .and. .not. SedP%resuspension_enabled) then
+            write(*,'(A)') '  WARNING: Resuspension flux output requested, but natural resuspension is disabled.'
+            write(*,'(A)') '           Resuspension flux output will be disabled.'
+            SedP%output_resuspension_fluxes = .false.
+        end if
         !--------- Numerics---------------------
         SedP%cnpar_sed  = cfg_params%get_param_num('biogeochemistry.sediments.cnpar_sed', default=def_cnpar_sed, finite=.true., min=0.0_rk, max=1._rk)
     end subroutine read_sed_parameters
